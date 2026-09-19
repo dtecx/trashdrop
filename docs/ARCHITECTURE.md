@@ -1,37 +1,120 @@
-# Dual-arm station architecture
+# Architecture
 
-The virtual workcell uses one shared world frame and two namespaced copies of
-the MuJoCo Menagerie SO-ARM100 model. SO-ARM100 is the current kinematic
-stand-in for the SO-101 hardware; it is useful for reachability and sequencing
-work, but it must not be treated as a torque, timing, or safety model of the
-physical installation.
+## The cell
 
-```text
-top-down camera / detector
-            |
-     DetectedItem[]  (shared calibrated table frame)
-            |
-     TwoArmDispatcher
-       |          |
- left queue    right queue
-       |          |
- per-arm controller / future SO-101 adapter
-       \          /
-   shared-strip reservation and hardware safety supervisor
+```
+                              +y
+        [paper]                                    [bio]
+       (-0.20,-0.12)                          (+0.20,-0.12)
+                    +-------------------+
+                    |   FRONT  (0, 0)   |   yaw 0
+                    +-------------------+
+   +--------------------------------------------------+
+   | ArUco                                      ArUco |
+   |          SHARED PICK ZONE  0.20 x 0.15 m         |   <- delivery robot
+   |            centred at (0, -0.215)                |      approaches along x
+   | ArUco                                      ArUco |
+   +--------------------------------------------------+        [mixed]
+                    +-------------------+            (+0.28,-0.215), either arm
+                    | BACK  (0, -0.43)  |   yaw 180
+                    +-------------------+
+       (-0.20,-0.31)                          (+0.20,-0.31)
+        [plastic]                                  [metal]
 ```
 
-`trashdrop.scene_builder` does a structural MJCF composition step rather than
-copying model files: every body, joint, actuator, mesh, material and default
-class gets `left_` or `right_` namespace. That is what makes both arms load
-together in one MuJoCo model without duplicate-name errors.
+Overhead camera at 0.60 m above the pick zone centre, 45° vertical FOV.
 
-The dispatcher has three rules:
+**Bases 43 cm apart, facing each other.** Each arm's own frame then sees the
+pick zone at local y in [-0.14, -0.29], inside the envelope the single-arm
+baseline was verified against. Both arms reach every point of the zone and
+every one of the five bins, which `trashdrop probe` asserts.
 
-1. An object outside the centre strip belongs to the arm owning that side.
-2. An object in the 5 cm centre strip is assigned to one arm only, balanced by
-   queue length, and marked `requires_handoff_clearance`.
-3. An unknown category fails closed: it produces no bin assignment.
+Two consequences follow from this, and most of the design is downstream of them:
 
-The third rule is intentional for the hackathon. A physical executor must also
-have independent e-stop, speed, joint-limit, collision, and human-presence
-controls; none of those are delegated to simulation scheduling.
+- **Assignment is by material, not by position.** Since either arm can reach
+  any item, an item goes to whichever arm owns its bin. There is no hand-off
+  and no item that only one arm can serve.
+- **Execution is serialised.** Two arms sharing one volume must never enter it
+  at once. One arm works while the other is stowed. Concurrent motion would
+  need a real collision checker; the `requires_shared_zone` flag on every
+  assignment is where that would hook in.
+
+## Data flow
+
+```
+overhead frame
+   |
+   v
+[1] detector  ---- class-agnostic: background subtraction against an empty-
+   |                table reference. No training data needed.
+   |  crop
+   v
+[2] classifier --- material + confidence. A few hundred crops per class.
+   |
+   v
+Detection(category, x, y, yaw, confidence, width)   -- table frame, metres
+   |
+   v
+TwoArmDispatcher  -- by material; low confidence / too wide / too heavy -> mixed
+   |
+   v
+ArmAssignment(arm, bin, requires_shared_zone)
+   |
+   v
+SortingCell.execute   -- IK, approach, grasp, transfer, release
+   |
+   v
+ArmController.send    <-- THE HARDWARE SEAM
+```
+
+Splitting detection from classification is the central choice. Stage 1 needs
+zero labels on a fixed camera over a plain surface; stage 2 needs only crops,
+because it never has to learn localisation. It also makes "I don't know" cheap:
+a low score routes to `mixed` instead of guessing, which is what the pitch
+promises.
+
+## Swapping in hardware
+
+Three replacements, nothing else:
+
+| Simulation | Hardware |
+|---|---|
+| `PinholeTopDown` | `HomographyCalibration` from four ArUco markers |
+| `ColorDetector` | `BackgroundDetector` + `OnnxCropClassifier` |
+| `ArmController.send` writing `data.ctrl` | `lerobot` `SO101Follower.send_action` |
+
+Everything above `send` — planning, bin assignment, the motion sequence, the
+graspability gate — is already hardware-neutral and untouched by the swap.
+
+## Motion sequence
+
+Per item, and every step of it is there for a measured reason:
+
+```
+both arms -> STOW          fold vertically; clears the camera and the other arm
+detect
+acting arm -> HOME         transit pose; safe only because the other arm is stowed
+move_to   (x, y, SAFE_Z)   Cartesian approach from above
+move_to   (x, y, GRASP_Z - 4 mm)   aim low: position servos sag under load
+close jaw, attach
+move_to   (x, y, SAFE_Z)   lift straight up
+move_joints -> above bin   JOINT space: a Cartesian path lets the solver flip
+move_joints -> drop height   to a mirrored elbow halfway through
+open jaw, release          jaws open BEFORE contacts are re-enabled
+move_joints -> lift out    or the arm sweeps the item back out of the bin
+-> STOW
+```
+
+Scoring reads the items' final positions. Release drops from where the tool
+actually is; nothing is moved into a bin by fiat.
+
+## Frames
+
+One shared table frame, origin at the front arm's base, metres. `Pose2D` in
+`geometry.py` converts into and out of each arm's own frame.
+
+Only two quantities are base-relative and therefore converted: the shoulder
+heading, and the wrist roll that cancels it. Jacobians and position error stay
+in the shared frame, because that is the frame MuJoCo reports them in. Getting
+this split right is what let the verified single-arm IK carry over unchanged to
+a rotated second arm.

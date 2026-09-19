@@ -1,3 +1,10 @@
+> **Historical.** This is the original single-arm brief the project grew
+> from, kept for provenance. Several of its constraints no longer hold:
+> the cell now has two arms, and `lerobot` is available behind
+> `uv sync --extra teleop` (see [APPROACH.md](APPROACH.md)). The verified
+> script it describes is preserved unchanged at `reference/sim_sort.py`.
+> For the current setup, read the README and [AGENTS.md](../AGENTS.md).
+
 # Task: local SO-101 trash-sorting sandbox
 
 Set up a self-contained MuJoCo sandbox in this folder so `sim_sort.py` runs. The script

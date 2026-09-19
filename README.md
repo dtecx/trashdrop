@@ -1,98 +1,91 @@
 # TrashDrop
 
-TrashDrop is a local-first virtual workcell for sorting household waste with
-two SO-101 arms. It separates the station model, scheduling logic, and future
-hardware adapters so the hackathon prototype can grow without installing a
-large robotics stack.
+Two SO-101 arms facing each other across a shared pick zone, sorting household
+waste into five bins. Built for Alien Bazaar 2026, where another team's robot
+delivers the trash and these two arms sort it.
 
-The initial scope is deliberately narrow: a MuJoCo scene, a deterministic
-dispatcher, reachability-oriented station geometry, and a retained single-arm
-vision/IK baseline. It does **not** install ROS, LeRobot, a training stack, or
-a web dashboard.
+This repository holds the virtual model of the cell and the tooling to build a
+real dataset. Everything stays inside this folder: dependencies live in a
+project-local `.venv` managed by `uv`, nothing is installed system-wide, and
+deleting the folder removes all of it.
+
+```
+uv run trashdrop sim
+...
+cycle 0: 4 item(s) in the pick zone
+  bio      at (-0.062, -0.199) -> front -> bin bio
+    above bin, tcp error 2 mm
+cycle 1: 3 item(s) in the pick zone
+  plastic  at (+0.010, -0.274) -> back  -> bin plastic
+...
+sorted correctly: 4/4  (picks 4, misses 0)
+```
 
 ## Quick start
 
-The default project has no runtime dependencies. Install the simulator only
-when you need it; `uv` keeps everything in this folder's `.venv`.
+```bash
+python scripts/bootstrap_model.py        # SO-ARM100 model, ~7 MB sparse checkout
+uv sync --extra simulation --group dev
+
+uv run trashdrop probe                   # is every bin and pick-zone corner reachable?
+uv run trashdrop sim                     # full two-arm sort, ~7 s, writes out/
+uv run python -m pytest tests/ -q        # 50 tests, ~7 s
+```
+
+Live viewer (macOS needs `mjpython`, which the `mujoco` wheel installs):
 
 ```bash
-uv sync --extra simulation
-./scripts/bootstrap_model.sh
-uv run --extra simulation python -m trashdrop validate
-uv run --extra simulation python -m trashdrop demo
+uv run mjpython -m trashdrop sim --viewer
 ```
 
-That command generates `build/dual_arm_station.xml`, loads it in MuJoCo, and
-checks that both independently named arms, all 12 actuators, cameras, bins,
-and sample objects are present. To inspect the intended division of work
-without importing MuJoCo:
+Only shooting dataset photos? You do not need MuJoCo:
 
 ```bash
-uv run python -m trashdrop plan
+uv sync --extra dataset
+uv run trashdrop capture --session 2026-09-20-kitchen --category plastic --object-id bottle_01
+uv run trashdrop autolabel --session 2026-09-20-kitchen
+uv run trashdrop review --session 2026-09-20-kitchen
 ```
 
-For a live MuJoCo window on macOS:
+## What is here
 
-```bash
-uv run --extra simulation mjpython -m trashdrop viewer
-```
+| | |
+|---|---|
+| `trashdrop/station.py` | All cell geometry as data. Change numbers here, then run `probe` |
+| `trashdrop/planning.py` | Assignment by material; anything uncertain goes to `mixed` |
+| `trashdrop/control.py` | Per-arm IK. `send()` is the hardware seam |
+| `trashdrop/perception/` | Class-agnostic detector + crop classifier; ArUco homography |
+| `trashdrop/dataset/` | Capture on the rig, autolabel, review; TACO and TrashNet indexers |
+| `trashdrop/simulator.py` | The cell: stepping, grasp, scoring |
+| `reference/sim_sort.py` | The verified single-arm baseline this grew from, kept unchanged |
 
-The supplied `sim_sort.py` remains available as a one-arm vision/IK baseline.
-It has a separate optional group because it additionally needs OpenCV:
+## Reading order
 
-```bash
-uv sync --extra vision-baseline
-uv run --extra vision-baseline python sim_sort.py
-```
+- [AGENTS.md](AGENTS.md) — architecture, module layers, and the invariants that
+  must not break. Start here before changing code.
+- [docs/DATASET.md](docs/DATASET.md) — how to shoot the dataset so that nobody
+  draws a bounding box.
+- [docs/APPROACH.md](docs/APPROACH.md) — why classic CV + IK rather than a
+  learned policy, and where a policy would still help.
+- [docs/CALIBRATION.md](docs/CALIBRATION.md) — the real table, ArUco, and using
+  a phone as the camera.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — layout diagram, data flow,
+  motion sequence, frames.
 
-## Layout
+## What the simulation proves
 
-```text
-trashdrop/                Python package: station builder and dispatcher
-  scene_builder.py         Namespaces the SO-ARM100 model twice into one MJCF
-  planning.py              Deterministic, zone-safe two-arm job assignment
-  station.py               Layout constants and hardware-neutral station data
-  __main__.py              build / validate / viewer / plan commands
-scripts/bootstrap_model.sh Sparse model checkout; no global install
-tests/                     Fast dispatcher tests and optional scene checks
-docs/                      Architecture, calibration and reference notes
-sim_sort.py                Preserved single-arm vision + IK baseline
-reference/                 Original supplied baseline copy
-```
+Reachability, transfers, the layout, the serialisation between two arms sharing
+one volume, and the scoring — items are released from where the tool actually
+is and physics decides where they land.
 
-`mujoco_menagerie/` is supported as a legacy local model location because this
-workspace already has one. New clones place the same sparse checkout under
-`vendor/mujoco_menagerie/`; both locations are ignored by the project Git
-repository. The source model is Apache-2.0 licensed by Google DeepMind.
+It does **not** prove grasping: the grasp is kinematic, so nothing here
+predicts whether a real gripper holds a crushed can. It does not prove
+perception either — `perception/color.py` reads back the colour the simulator
+itself assigned, and exists only to exercise the motion stack. Real numbers for
+both have to come from hardware and from our own crops.
 
-## Design boundary for hardware
+## Not installed by default
 
-The simulation builds confidence in **layout and coordination**, not physical
-safety certification. A future SO-101 adapter should consume
-`ArmAssignment` values from `trashdrop.planning`, use per-arm calibration, and
-enforce hardware e-stops, joint limits, speed limits, and a shared exclusion
-zone independently of this demo.
-
-The supplied `docs/SETUP.md` is retained as a single-arm setup reference. It
-is not the specification for this dual-arm workspace.
-
-## Dataset intake
-
-TACO is the recommended starting point because it keeps COCO object boxes for
-pickup. Index its image root and annotation JSON without copying images:
-
-```bash
-uv run python -m trashdrop taco-index /path/to/taco/images \
-  --annotations /path/to/taco/data/annotations.json
-```
-
-For the common TrashNet/"TrashDataset" class-folder layout, use the separate
-crop-classifier manifest generator:
-
-```bash
-uv run python -m trashdrop dataset-index /path/to/dataset-resized
-```
-
-See [dataset integration notes](docs/DATASET.md) for the mapping and the
-important limitation: neither TACO nor TrashNet is a complete bio-waste or
-tabletop-workcell dataset.
+No ROS, no training stack, no `lerobot` unless asked for with
+`uv sync --extra teleop`. Train models elsewhere, export to ONNX, and load them
+through `perception/classifier.py`.
