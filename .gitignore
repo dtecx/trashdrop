@@ -1,0 +1,23 @@
+# Local Python environment and tool state
+.venv/
+.uv-cache/
+.python-version
+.serena/
+
+# Generated simulation outputs and MuJoCo runtime files
+build/
+frames/
+*.mp4
+*.png
+MUJOCO_LOG.TXT
+mujoco_menagerie/trs_so_arm100/_sorting_scene.xml
+
+# The robot model is a sparse checkout fetched by scripts/bootstrap_model.sh.
+# Keep it local rather than committing a nested Git repository.
+mujoco_menagerie/
+vendor/mujoco_menagerie/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/

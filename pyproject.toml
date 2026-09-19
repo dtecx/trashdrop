@@ -1,0 +1,21 @@
+[project]
+name = "trashdrop"
+version = "0.2.0"
+description = "Local-first dual SO-101 virtual trash-sorting workcell"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+simulation = [
+    "mujoco>=3.1.6",
+    "numpy>=1.26",
+]
+vision-baseline = [
+    "mujoco>=3.1.6",
+    "numpy>=1.26",
+    "opencv-python>=4.9",
+]
+
+[tool.uv]
+default-groups = []
