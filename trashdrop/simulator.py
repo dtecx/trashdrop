@@ -1,345 +1,528 @@
-"""Headless two-arm MuJoCo execution smoke test for the TACO station design.
+"""Two-arm sorting cell in MuJoCo.
 
-This is intentionally a kinematic pick/place demonstrator: it validates named
-actuators, reachability, per-arm bin ownership, a shared-zone reservation, and
-where every object finishes. It is not a substitute for physical safety logic.
+What this does and does not prove:
+
+* It proves the *motion* stack -- reachability of every bin and every point of
+  the pick zone from the owning arm, the transfer paths, the shared-zone
+  serialisation, and the scoring.
+* It does not prove *grasping*. The grasp is kinematic: once the jaws close on
+  an item its contacts are disabled and it tracks the tool centre point.
+  Frictional grasping in simulation is not predictive of a real gripper on a
+  crushed can, and pretending otherwise would hide the one thing that has to
+  be tested on hardware.
+* It does not prove *perception*. See trashdrop/perception/color.py.
+
+The scoring is deliberately unforgiving: an item is released from where the
+tool actually is, physics decides where it lands, and success is measured
+from the resulting position. A release that teleports the item into the bin
+would make the number meaningless.
+
+Constants here were measured on this model and carry over to the real arm:
+the position servos sag a few millimetres under load, so the grasp aims low;
+long transfers interpolate in joint space because a Cartesian path lets the
+solver flip to a mirrored elbow halfway; and the jaws open before the item is
+handed back to physics, or the contact solver resolves the overlap explosively.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
 
+from .control import ArmController
 from .planning import ArmAssignment, DetectedItem, TwoArmDispatcher
-from .scene_builder import build_station
-from .station import ARMS, SAMPLE_ITEMS, ArmMount, bin_for, repository_root
+from .scene_builder import DEFAULT_OBJECTS, SceneObject, build_model
+from .station import (
+    ARMS,
+    BIN_TOLERANCE,
+    CAMERA,
+    GRASP_Z,
+    HOME_POSE,
+    JAW_CLOSED,
+    JAW_OPEN,
+    JOINTS,
+    MIXED_CATEGORY,
+    SAFE_Z,
+    STOW_POSE,
+    bin_for,
+    is_graspable,
+)
+
+# Aim this far below the item's centre: the position servos sag under load.
+GRASP_SAG_COMPENSATION = 0.004
+# How far below the tool the item is let go, so it clears the jaw blades.
+RELEASE_CLEARANCE = 0.045
+# Height above a bin at which the item is dropped.
+BIN_DROP_Z = 0.075
+# Radius within which the jaws are considered to have caught the item.
+GRASP_CAPTURE_RADIUS = 0.045
 
 
-JOINTS = ("Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll", "Jaw")
-IK_JOINTS = JOINTS[:4]
-HOME = (0.0, -1.57, 1.57, 1.57, -1.57, 1.5)
-JAW_OPEN, JAW_CLOSED = 1.5, 0.05
-TCP_LOCAL = np.array([0.005, -0.085, 0.0])
-SAFE_Z, GRASP_Z, DROP_Z = 0.095, 0.024, 0.070
+@dataclass
+class CycleReport:
+    """What happened to one item."""
+
+    item_id: str
+    category: str
+    arm: str
+    bin_key: str
+    detected_at: tuple[float, float]
+    grasped: bool
+    tcp_error_mm: float = 0.0
+    note: str = ""
 
 
-@dataclass(frozen=True)
-class DemoEvent:
-    phase: str
-    arms: tuple[str, ...]
-    items: tuple[str, ...]
-    detail: str
+@dataclass
+class RunReport:
+    """Outcome of a full sorting run, scored from final item positions."""
 
-
-@dataclass(frozen=True)
-class DemoReport:
-    scene: str
-    trace: str
-    assigned: int
+    detected: int
+    picked: int
+    missed: int
     placed: int
-    misses: int
-    events: tuple[DemoEvent, ...]
+    total_objects: int
+    cycles: list[CycleReport] = field(default_factory=list)
+    misplaced: list[dict] = field(default_factory=list)
+
+    @property
+    def success(self) -> bool:
+        return self.placed == self.total_objects and self.missed == 0
+
+    def to_json(self, path: Path) -> Path:
+        path = Path(path).expanduser().resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+        return path
 
 
-class _Arm:
-    """Namespaced SO-101 control plus the minimum grasp state for the demo."""
+class SortingCell:
+    """The simulated cell: two arms, one camera, one shared pick zone."""
 
-    def __init__(self, mujoco, model, data, mount: ArmMount) -> None:
-        self._mujoco = mujoco
-        self.model = model
-        self.data = data
-        self.mount = mount
-        self.prefix = mount.prefix
-        self.jaw_body = mujoco.mj_name2id(
-            model, mujoco.mjtObj.mjOBJ_BODY, f"{self.prefix}Fixed_Jaw"
+    def __init__(
+        self,
+        objects: tuple[SceneObject, ...] = DEFAULT_OBJECTS,
+        *,
+        detector=None,
+        record: bool = True,
+        viewer: bool = False,
+    ) -> None:
+        import mujoco
+
+        self.mj = mujoco
+        self.objects = objects
+        self.model = build_model(objects)
+        self.data = mujoco.MjData(self.model)
+        mujoco.mj_resetData(self.model, self.data)
+
+        self.arms = {
+            mount.name: ArmController(mujoco, self.model, self.data, mount) for mount in ARMS
+        }
+        # Start stowed, not at HOME: two arms at HOME have their jaws 4 cm
+        # apart over the middle of the table and jam before anything runs.
+        for arm in self.arms.values():
+            self._apply_pose(arm, STOW_POSE, command_only=False)
+        mujoco.mj_forward(self.model, self.data)
+
+        if detector is None:
+            from .perception.color import ColorDetector
+
+            detector = ColorDetector()
+        self.detector = detector
+
+        self.viewer = None
+        self._viewer_requested = viewer
+        self.frames: list[np.ndarray] | None = [] if (record and not viewer) else None
+        self.renderer = (
+            mujoco.Renderer(self.model, CAMERA.height_px, CAMERA.width)
+            if self.frames is not None
+            else None
         )
-        self.qadr = {
-            joint: model.jnt_qposadr[
-                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"{self.prefix}{joint}")
-            ]
-            for joint in JOINTS
-        }
-        self.dofadr = [
-            model.jnt_dofadr[
-                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"{self.prefix}{joint}")
-            ]
-            for joint in IK_JOINTS
-        ]
-        self.actuator = {
-            joint: mujoco.mj_name2id(
-                model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"{self.prefix}{joint}"
-            )
-            for joint in JOINTS
-        }
-        self.ik_data = mujoco.MjData(model)
-        self.held: tuple[int, list[int]] | None = None
+        self.camera_renderer = mujoco.Renderer(self.model, CAMERA.height_px, CAMERA.width)
+        self.overlay: np.ndarray | None = None
 
-    def tcp(self, data=None) -> np.ndarray:
-        data = data if data is not None else self.data
-        rotation = data.xmat[self.jaw_body].reshape(3, 3)
-        return data.xpos[self.jaw_body] + rotation @ TCP_LOCAL
+    # --- low level ---------------------------------------------------------
 
-    def pose(self) -> dict[str, float]:
-        return {joint: float(self.data.qpos[self.qadr[joint]]) for joint in JOINTS}
+    def _apply_pose(self, arm: ArmController, pose, command_only: bool = True) -> None:
+        for joint, value in zip(JOINTS, pose):
+            self.data.ctrl[arm.actuator[joint]] = value
+            if not command_only:
+                self.data.qpos[arm.qadr[joint]] = value
+        arm.jaw = pose[5]
 
-    def command(self, pose: dict[str, float]) -> None:
-        for joint, value in pose.items():
-            self.data.ctrl[self.actuator[joint]] = value
+    def step(self, count: int = 1) -> None:
+        for _ in range(count):
+            for arm in self.arms.values():
+                self._carry(arm)
+            self.mj.mj_step(self.model, self.data)
+            if self.viewer is not None:
+                self.viewer.sync()
+            if self.frames is not None and self.data.time % 0.04 < self.model.opt.timestep:
+                self._capture()
 
-    def solve_ik(self, target: np.ndarray, yaw: float = 0.0) -> tuple[dict[str, float], float]:
-        """Damped least-squares IK in the mounted arm's shared world frame."""
+    def _carry(self, arm: ArmController) -> None:
+        """A held item tracks the tool, keeping the orientation it was caught in."""
 
-        mujoco = self._mujoco
-        ik = self.ik_data
-        ik.qpos[:] = self.data.qpos
-        ik.qvel[:] = 0
-        relative = target[:2] - np.array([self.mount.x, self.mount.y])
-        base_yaw = np.arctan2(-relative[0], -relative[1])
-        ik.qpos[self.qadr["Wrist_Roll"]] = np.clip(_wrap(yaw - base_yaw), -2.7, 2.7)
-        jacp = np.zeros((3, self.model.nv))
-        jacr = np.zeros((3, self.model.nv))
-        for _ in range(240):
-            mujoco.mj_kinematics(self.model, ik)
-            mujoco.mj_comPos(self.model, ik)
-            rotation = ik.xmat[self.jaw_body].reshape(3, 3)
-            approach = rotation @ np.array([0.0, -1.0, 0.0])
-            position_error = target - self.tcp(ik)
-            orientation_error = np.cross(approach, np.array([0.0, 0.0, -1.0]))
-            if np.linalg.norm(position_error) < 1e-4 and np.linalg.norm(orientation_error) < 1e-3:
+        if arm.held is None:
+            return
+        address = self.model.jnt_qposadr[arm.held["joint"]]
+        dof = self.model.jnt_dofadr[arm.held["joint"]]
+        self.data.qpos[address : address + 3] = arm.tcp()
+        self.data.qpos[address + 3 : address + 7] = arm.held["quat"]
+        self.data.qvel[dof : dof + 6] = 0
+
+    def _capture(self) -> None:
+        import cv2
+
+        self.renderer.update_scene(self.data, camera="operator")
+        scene = cv2.cvtColor(self.renderer.render(), cv2.COLOR_RGB2BGR)
+        panel = self.overlay if self.overlay is not None else scene
+        if panel.shape != scene.shape:
+            panel = cv2.resize(panel, (scene.shape[1], scene.shape[0]))
+        self.frames.append(np.hstack([scene, panel]))
+
+    # --- perception --------------------------------------------------------
+
+    def look(self) -> list:
+        """Move both arms clear of the camera, then detect."""
+
+        for arm in self.arms.values():
+            self._apply_pose(arm, STOW_POSE)
+        self.step(350)
+        self.camera_renderer.update_scene(self.data, camera="topdown")
+        frame = self.camera_renderer.render()
+        detections = self.detector.detect(frame)
+        self.overlay = getattr(self.detector, "overlay", None)
+        return detections
+
+    # --- motion ------------------------------------------------------------
+
+    def goto_pose(self, arm_name: str, pose, settle: int = 450) -> None:
+        self._apply_pose(self.arms[arm_name], pose)
+        self.step(settle)
+
+    def set_jaw(self, arm_name: str, value: float, duration: float = 0.35) -> None:
+        arm = self.arms[arm_name]
+        arm.jaw = value
+        arm.send({"Jaw": value})
+        self.step(int(duration / self.model.opt.timestep))
+
+    def move_to(
+        self,
+        arm_name: str,
+        x: float,
+        y: float,
+        z: float,
+        yaw: float,
+        duration: float = 0.9,
+        keep_vertical: bool = True,
+    ) -> float:
+        """Straight-line Cartesian move. Use for the short approach and lift."""
+
+        arm = self.arms[arm_name]
+        start = arm.tcp().copy()
+        target = np.array([x, y, z])
+        steps = int(duration / self.model.opt.timestep)
+        for index in range(steps):
+            alpha = (index + 1) / steps
+            alpha = 3 * alpha**2 - 2 * alpha**3
+            pose, _ = arm.solve_ik(start + alpha * (target - start), yaw, keep_vertical)
+            arm.send({**pose, "Jaw": arm.jaw})
+            self.step()
+        pose, _ = arm.solve_ik(target, yaw, keep_vertical)
+        for _ in range(600):
+            arm.send({**pose, "Jaw": arm.jaw})
+            self.step()
+            if np.linalg.norm(arm.tcp() - target) < 0.004:
                 break
-            mujoco.mj_jac(self.model, ik, jacp, jacr, self.tcp(ik), self.jaw_body)
-            jacobian = np.vstack((jacp[:, self.dofadr], 0.25 * jacr[:, self.dofadr]))
-            error = np.concatenate((position_error, 0.25 * orientation_error))
-            delta = np.linalg.solve(
-                jacobian.T @ jacobian + 0.12**2 * np.eye(len(self.dofadr)), jacobian.T @ error
-            )
-            for index, joint in enumerate(IK_JOINTS):
-                joint_id = mujoco.mj_name2id(
-                    self.model, mujoco.mjtObj.mjOBJ_JOINT, f"{self.prefix}{joint}"
-                )
-                low, high = self.model.jnt_range[joint_id]
-                address = self.qadr[joint]
-                ik.qpos[address] = np.clip(ik.qpos[address] + np.clip(delta[index], -0.1, 0.1), low, high)
-        pose = {joint: float(ik.qpos[self.qadr[joint]]) for joint in IK_JOINTS + ("Wrist_Roll",)}
-        return pose, float(np.linalg.norm(target - self.tcp(ik)))
+        return float(np.linalg.norm(arm.tcp() - target))
 
-    def attach(self, body_id: int) -> bool:
-        distance = float(np.linalg.norm(self.data.xpos[body_id] - self.tcp()))
-        if distance > 0.052:
+    def move_joints(
+        self,
+        arm_name: str,
+        x: float,
+        y: float,
+        z: float,
+        yaw: float = 0.0,
+        duration: float = 1.0,
+        keep_vertical: bool = False,
+    ) -> float:
+        """Solve once, then ramp joint targets. Use for long transfers."""
+
+        arm = self.arms[arm_name]
+        target = np.array([x, y, z])
+        pose, _ = arm.solve_ik(target, yaw, keep_vertical)
+        start = {joint: float(self.data.qpos[arm.qadr[joint]]) for joint in pose}
+        steps = int(duration / self.model.opt.timestep)
+        for index in range(steps):
+            alpha = (index + 1) / steps
+            alpha = 3 * alpha**2 - 2 * alpha**3
+            arm.send({j: start[j] + alpha * (pose[j] - start[j]) for j in pose})
+            arm.send({"Jaw": arm.jaw})
+            self.step()
+        for _ in range(400):
+            arm.send({**pose, "Jaw": arm.jaw})
+            self.step()
+            if np.linalg.norm(arm.tcp() - target) < 0.006:
+                break
+        return float(np.linalg.norm(arm.tcp() - target))
+
+    # --- grasp -------------------------------------------------------------
+
+    def _held_bodies(self) -> set[int]:
+        return {arm.held["body"] for arm in self.arms.values() if arm.held is not None}
+
+    def attach_nearest(self, arm_name: str) -> bool:
+        """Catch the closest free item, if the jaws actually reached it."""
+
+        arm = self.arms[arm_name]
+        tcp = arm.tcp()
+        taken = self._held_bodies()
+        best, best_distance = None, 1e9
+        for index in range(len(self.objects)):
+            body = self.mj.mj_name2id(self.model, self.mj.mjtObj.mjOBJ_BODY, f"item_{index}")
+            if body in taken:
+                continue
+            distance = float(np.linalg.norm(self.data.xpos[body] - tcp))
+            if distance < best_distance:
+                best, best_distance = body, distance
+        if best is None or best_distance > GRASP_CAPTURE_RADIUS:
             return False
-        joint_id = self.model.body_jntadr[body_id]
-        geoms = [index for index in range(self.model.ngeom) if self.model.geom_bodyid[index] == body_id]
+
+        joint = self.model.body_jntadr[best]
+        address = self.model.jnt_qposadr[joint]
+        geoms = [g for g in range(self.model.ngeom) if self.model.geom_bodyid[g] == best]
+        # The item is driven kinematically from here, so leaving it collidable
+        # makes it fight the gripper geometry.
         for geom in geoms:
             self.model.geom_contype[geom] = 0
             self.model.geom_conaffinity[geom] = 0
-        self.held = (joint_id, geoms)
+        arm.held = {
+            "body": best,
+            "joint": joint,
+            "geoms": geoms,
+            "quat": self.data.qpos[address + 3 : address + 7].copy(),
+        }
         return True
 
-    def carry(self) -> None:
-        if self.held is None:
-            return
-        joint_id, _ = self.held
-        address = self.model.jnt_qposadr[joint_id]
-        self.data.qpos[address : address + 3] = self.tcp()
-        self.data.qpos[address + 3 : address + 7] = (1.0, 0.0, 0.0, 0.0)
-        dof = self.model.jnt_dofadr[joint_id]
-        self.data.qvel[dof : dof + 6] = 0
+    def release(self, arm_name: str) -> None:
+        """Hand the item back to physics, clear of the fingers.
 
-    def release(self, target_xy: tuple[float, float]) -> None:
-        if self.held is None:
+        It is dropped from where the tool actually is -- not moved to the bin.
+        Whether it lands in the bin is then a physical result, which is the
+        only thing worth scoring.
+        """
+
+        arm = self.arms[arm_name]
+        if arm.held is None:
             return
-        joint_id, geoms = self.held
-        address = self.model.jnt_qposadr[joint_id]
-        self.data.qpos[address : address + 3] = (target_xy[0], target_xy[1], 0.026)
-        self.data.qpos[address + 3 : address + 7] = (1.0, 0.0, 0.0, 0.0)
-        dof = self.model.jnt_dofadr[joint_id]
+        address = self.model.jnt_qposadr[arm.held["joint"]]
+        dof = self.model.jnt_dofadr[arm.held["joint"]]
+        self.data.qpos[address : address + 3] = arm.tcp() - np.array([0.0, 0.0, RELEASE_CLEARANCE])
         self.data.qvel[dof : dof + 6] = 0
-        for geom in geoms:
+        for geom in arm.held["geoms"]:
             self.model.geom_contype[geom] = 1
             self.model.geom_conaffinity[geom] = 1
-        self.held = None
+        arm.held = None
 
+    # --- one item ----------------------------------------------------------
 
-def _wrap(value: float) -> float:
-    return (value + np.pi) % (2 * np.pi) - np.pi
+    def execute(self, assignment: ArmAssignment, detection) -> CycleReport:
+        """Run one full pick-and-place. Only this arm moves."""
 
+        arm_name = assignment.arm
+        report = CycleReport(
+            item_id=assignment.item.item_id,
+            category=assignment.item.category,
+            arm=arm_name,
+            bin_key=assignment.bin_key,
+            detected_at=(assignment.item.x, assignment.item.y),
+            grasped=False,
+        )
 
-class DualArmTacoDemo:
-    """Execute the built-in TACO-style jobs with simultaneous safe-side moves."""
+        x, y, yaw = assignment.item.x, assignment.item.y, assignment.item.yaw
+        # Pass through home so the Cartesian approach never sweeps sideways
+        # across the pick zone and scatters the remaining items.
+        self.goto_pose(arm_name, HOME_POSE, settle=300)
+        self.move_to(arm_name, x, y, SAFE_Z, yaw, duration=1.1)
+        self.move_to(arm_name, x, y, GRASP_Z - GRASP_SAG_COMPENSATION, yaw, duration=0.7)
+        self.set_jaw(arm_name, JAW_CLOSED)
 
-    def __init__(self, scene_path: Path) -> None:
-        try:
-            import mujoco
-        except ImportError as error:  # pragma: no cover - environment guidance
-            raise RuntimeError("MuJoCo is optional. Run: uv sync --extra simulation") from error
-        self.mujoco = mujoco
-        self.model = mujoco.MjModel.from_xml_path(str(scene_path))
-        self.data = mujoco.MjData(self.model)
-        mujoco.mj_resetData(self.model, self.data)
-        self.arms = {mount.name: _Arm(mujoco, self.model, self.data, mount) for mount in ARMS}
-        for arm in self.arms.values():
-            for joint, value in zip(JOINTS, HOME, strict=True):
-                self.data.qpos[arm.qadr[joint]] = value
-                self.data.ctrl[arm.actuator[joint]] = value
-        mujoco.mj_forward(self.model, self.data)
-        self.events: list[DemoEvent] = []
+        if not self.attach_nearest(arm_name):
+            report.note = "grasp missed"
+            self.set_jaw(arm_name, JAW_OPEN)
+            self.goto_pose(arm_name, STOW_POSE, settle=250)
+            return report
+        report.grasped = True
 
-    def _step(self, count: int = 1) -> None:
-        for _ in range(count):
-            for arm in self.arms.values():
-                arm.carry()
-            self.mujoco.mj_step(self.model, self.data)
+        self.move_to(arm_name, x, y, SAFE_Z, yaw, duration=0.6)
+        # The gripper need not stay vertical while carrying, which widens reach.
+        self.move_joints(arm_name, assignment.bin_x, assignment.bin_y, SAFE_Z, duration=1.4)
+        error = self.move_joints(
+            arm_name, assignment.bin_x, assignment.bin_y, BIN_DROP_Z, duration=0.5
+        )
+        report.tcp_error_mm = error * 1000.0
 
-    def _move(self, targets: dict[str, tuple[float, float, float]], jaw: float, duration: float) -> bool:
-        poses: dict[str, dict[str, float]] = {}
-        for name, target in targets.items():
-            pose, error = self.arms[name].solve_ik(np.array(target))
-            if error > 0.010:
-                self.events.append(DemoEvent("unreachable", (name,), (), f"IK residual {error * 1000:.1f} mm"))
-                return False
-            pose["Jaw"] = jaw
-            poses[name] = pose
-        starts = {name: self.arms[name].pose() for name in targets}
-        steps = max(1, int(duration / self.model.opt.timestep))
-        for index in range(steps):
-            progress = (index + 1) / steps
-            progress = 3 * progress**2 - 2 * progress**3
-            for name, pose in poses.items():
-                self.arms[name].command(
-                    {joint: starts[name][joint] + progress * (pose[joint] - starts[name][joint]) for joint in JOINTS}
-                )
-            self._step()
-        for _ in range(400):
-            for name, pose in poses.items():
-                self.arms[name].command(pose)
-            self._step()
-        return True
+        # Open before handing back to physics, or the solver resolves the
+        # overlap between the item and the closed fingers explosively.
+        self.set_jaw(arm_name, JAW_OPEN)
+        self.release(arm_name)
+        self.step(250)
+        # Lift straight out, otherwise the arm sweeps the item back out.
+        self.move_joints(
+            arm_name, assignment.bin_x, assignment.bin_y, SAFE_Z + 0.04, duration=0.5
+        )
+        self.goto_pose(arm_name, STOW_POSE, settle=250)
+        return report
 
-    def _body_for(self, item_id: str) -> int:
-        return self.mujoco.mj_name2id(self.model, self.mujoco.mjtObj.mjOBJ_BODY, f"item_{item_id}")
+    # --- the run -----------------------------------------------------------
 
-    def _execute_group(self, group: list[ArmAssignment]) -> int:
-        names = tuple(assignment.arm for assignment in group)
-        items = tuple(assignment.item.item_id for assignment in group)
-        pick_above = {assignment.arm: (assignment.item.x, assignment.item.y, SAFE_Z) for assignment in group}
-        pick_down = {assignment.arm: (assignment.item.x, assignment.item.y, GRASP_Z) for assignment in group}
-        if not self._move(pick_above, JAW_OPEN, 0.65) or not self._move(pick_down, JAW_OPEN, 0.45):
-            return 0
-        self._move(pick_down, JAW_CLOSED, 0.18)
-        attached: list[ArmAssignment] = []
-        for assignment in group:
-            if self.arms[assignment.arm].attach(self._body_for(assignment.item.item_id)):
-                attached.append(assignment)
-            else:
-                distance = np.linalg.norm(
-                    self.data.xpos[self._body_for(assignment.item.item_id)] - self.arms[assignment.arm].tcp()
-                )
-                self.events.append(
-                    DemoEvent(
-                        "miss",
-                        (assignment.arm,),
-                        (assignment.item.item_id,),
-                        f"TCP {distance * 1000:.1f} mm from object",
+    def run(self, max_cycles: int | None = None, verbose: bool = True) -> RunReport:
+        if self._viewer_requested and self.viewer is None:
+            from mujoco import viewer as mj_viewer
+
+            self.viewer = mj_viewer.launch_passive(self.model, self.data)
+
+        dispatcher = TwoArmDispatcher()
+        limit = max_cycles if max_cycles is not None else len(self.objects) + 3
+        cycles: list[CycleReport] = []
+        picked = missed = 0
+        detected_total = 0
+        last_arm: str | None = None
+
+        for cycle in range(limit):
+            detections = self.look()
+            if verbose:
+                print(f"cycle {cycle}: {len(detections)} item(s) in the pick zone")
+            if not detections:
+                break
+            detected_total = max(detected_total, len(detections))
+
+            items = []
+            for index, detection in enumerate(detections):
+                category = detection.category
+                note = ""
+                if not is_graspable(detection.width):
+                    category = MIXED_CATEGORY
+                    note = "too wide for the jaws"
+                items.append(
+                    (
+                        DetectedItem(
+                            item_id=f"c{cycle}_{index}",
+                            category=category,
+                            x=detection.x,
+                            y=detection.y,
+                            yaw=detection.yaw,
+                            confidence=detection.confidence,
+                        ),
+                        detection,
+                        note,
                     )
                 )
-        if not attached:
-            return 0
-        names = tuple(assignment.arm for assignment in attached)
-        items = tuple(assignment.item.item_id for assignment in attached)
-        self.events.append(DemoEvent("pick", names, items, "grasp verified"))
-        pick_lift = {assignment.arm: (assignment.item.x, assignment.item.y, SAFE_Z) for assignment in attached}
-        if not self._move(pick_lift, JAW_CLOSED, 0.45):
-            return 0
-        bin_positions = {
-            assignment.arm: bin_for(assignment.arm, assignment.bin_category) for assignment in attached
-        }
-        bin_above = {
-            arm: (bin_spec.x, bin_spec.y, SAFE_Z) for arm, bin_spec in bin_positions.items()
-        }
-        bin_down = {
-            arm: (bin_spec.x, bin_spec.y, DROP_Z) for arm, bin_spec in bin_positions.items()
-        }
-        if not self._move(bin_above, JAW_CLOSED, 0.75) or not self._move(bin_down, JAW_CLOSED, 0.40):
-            return 0
-        self._move(bin_down, JAW_OPEN, 0.18)
-        for assignment in attached:
-            target = bin_for(assignment.arm, assignment.bin_category)
-            self.arms[assignment.arm].release((target.x, target.y))
-        self._step(120)
-        self.events.append(DemoEvent("place", names, items, "released into local bins"))
-        self._move(bin_above, JAW_OPEN, 0.35)
-        return len(attached)
 
-    def run(self) -> tuple[list[ArmAssignment], int]:
-        detections = [
-            DetectedItem(item_id=item_id, category=category, x=x, y=y)
-            for item_id, category, x, y in SAMPLE_ITEMS
-        ]
-        assignments = TwoArmDispatcher().dispatch(detections)
-        pending = list(assignments)
-        while any(not job.requires_handoff_clearance for job in pending):
-            group: list[ArmAssignment] = []
-            for arm in ("left", "right"):
-                job = next(
-                    (candidate for candidate in pending if candidate.arm == arm and not candidate.requires_handoff_clearance),
-                    None,
+            # order() alternates arms so the cell stays visibly two-armed;
+            # only the first job runs, because both arms share this volume and
+            # execution is serialised on purpose.
+            assignments = dispatcher.order(
+                dispatcher.dispatch([i for i, _, _ in items]), last=last_arm
+            )
+            assignment = assignments[0]
+            by_id = {item.item_id: (detection, note) for item, detection, note in items}
+            detection, note = by_id[assignment.item.item_id]
+
+            if verbose:
+                flag = " [rerouted]" if assignment.rerouted else ""
+                print(
+                    f"  {assignment.item.category:8s} at "
+                    f"({assignment.item.x:+.3f}, {assignment.item.y:+.3f}) "
+                    f"-> {assignment.arm:5s} -> bin {assignment.bin_key}"
+                    f"{flag}{' ' + note if note else ''}"
                 )
-                if job is not None:
-                    pending.remove(job)
-                    group.append(job)
-            self._execute_group(group)
-        for job in pending:
-            self.events.append(DemoEvent("reserve", (job.arm,), (job.item.item_id,), "exclusive shared-strip reservation"))
-            self._execute_group([job])
 
-        self._move({name: (mount.x, mount.y - 0.16, SAFE_Z) for name, mount in ((arm.name, arm) for arm in ARMS)}, JAW_OPEN, 0.5)
-        placed = 0
-        for assignment in assignments:
-            body = self._body_for(assignment.item.item_id)
-            position = self.data.xpos[body]
-            target = bin_for(assignment.arm, assignment.bin_category)
-            if abs(position[0] - target.x) < 0.065 and abs(position[1] - target.y) < 0.065:
-                placed += 1
-        return assignments, placed
+            report = self.execute(assignment, detection)
+            report.note = report.note or note
+            last_arm = assignment.arm
+            cycles.append(report)
+            if report.grasped:
+                picked += 1
+            else:
+                missed += 1
+            if verbose and report.grasped:
+                print(f"    above bin, tcp error {report.tcp_error_mm:.0f} mm")
+            elif verbose:
+                print("    grasp missed")
 
+        for name in self.arms:
+            self.goto_pose(name, STOW_POSE, settle=200)
 
-def run_taco_demo(output_directory: Path | None = None) -> DemoReport:
-    """Run the headless two-arm task and save a concise trace for the visual demo."""
-
-    output_directory = (output_directory or repository_root() / "build").resolve()
-    output_directory.mkdir(parents=True, exist_ok=True)
-    scene = build_station(output_directory / "dual_arm_taco_station.xml")
-    demo = DualArmTacoDemo(scene)
-    assignments, placed = demo.run()
-    trace = output_directory / "dual_arm_taco_trace.json"
-    trace.write_text(
-        json.dumps(
-            {
-                "assigned": len(assignments),
-                "placed": placed,
-                "misses": len(assignments) - placed,
-                "assignments": [
-                    {
-                        "item": assignment.item.item_id,
-                        "category": assignment.bin_category,
-                        "arm": assignment.arm,
-                        "shared": assignment.requires_handoff_clearance,
-                    }
-                    for assignment in assignments
-                ],
-                "events": [asdict(event) for event in demo.events],
-            },
-            indent=2,
+        placed, misplaced = self._score()
+        result = RunReport(
+            detected=detected_total,
+            picked=picked,
+            missed=missed,
+            placed=placed,
+            total_objects=len(self.objects),
+            cycles=cycles,
+            misplaced=misplaced,
         )
-    )
-    return DemoReport(
-        scene=str(scene),
-        trace=str(trace),
-        assigned=len(assignments),
-        placed=placed,
-        misses=len(assignments) - placed,
-        events=tuple(demo.events),
-    )
+        if verbose:
+            print(
+                f"sorted correctly: {placed}/{len(self.objects)}  "
+                f"(picks {picked}, misses {missed})"
+            )
+        return result
+
+    def _score(self) -> tuple[int, list[dict]]:
+        """Score from where the items physically ended up."""
+
+        placed = 0
+        misplaced: list[dict] = []
+        for index, item in enumerate(self.objects):
+            body = self.mj.mj_name2id(self.model, self.mj.mjtObj.mjOBJ_BODY, f"item_{index}")
+            position = self.data.xpos[body]
+            target = bin_for(item.category)
+            if (
+                abs(position[0] - target.x) < BIN_TOLERANCE
+                and abs(position[1] - target.y) < BIN_TOLERANCE
+            ):
+                placed += 1
+            else:
+                misplaced.append(
+                    {
+                        "item_id": item.item_id,
+                        "category": item.category,
+                        "expected_bin": [round(target.x, 3), round(target.y, 3)],
+                        "ended_at": [round(float(v), 3) for v in position],
+                    }
+                )
+        return placed, misplaced
+
+    # --- output ------------------------------------------------------------
+
+    def write_video(self, path: Path, fps: int = 25) -> Path | None:
+        import cv2
+
+        if not self.frames:
+            return None
+        path = Path(path).expanduser().resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        height, width = self.frames[0].shape[:2]
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+        if not writer.isOpened():
+            return None
+        for frame in self.frames:
+            writer.write(frame)
+        writer.release()
+        return path
+
+    def write_overlay(self, path: Path) -> Path | None:
+        import cv2
+
+        if self.overlay is None:
+            return None
+        path = Path(path).expanduser().resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(path), self.overlay)
+        return path

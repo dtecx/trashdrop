@@ -1,21 +1,50 @@
 [project]
 name = "trashdrop"
-version = "0.2.0"
-description = "Local-first dual SO-101 virtual trash-sorting workcell"
+version = "0.3.0"
+description = "Two-arm SO-101 virtual trash-sorting cell: simulation, perception and dataset tooling"
 readme = "README.md"
 requires-python = ">=3.10"
+# Nothing by default: planning and station are pure Python, so a teammate who
+# only reads the layout or runs the dispatcher installs nothing at all.
 dependencies = []
 
 [project.optional-dependencies]
-simulation = [
-    "mujoco>=3.1.6",
-    "numpy>=1.26",
-]
-vision-baseline = [
-    "mujoco>=3.1.6",
+# Dataset capture, autolabelling and review on the rig. This is what the people
+# shooting photos need, and it does not pull in MuJoCo.
+dataset = [
     "numpy>=1.26",
     "opencv-python>=4.9",
 ]
+# The virtual cell.
+simulation = [
+    "mujoco>=3.3",
+    "numpy>=1.26",
+    "opencv-python>=4.9",
+]
+# Run an exported crop classifier without installing a training stack.
+classifier = [
+    "onnxruntime>=1.17",
+]
+# Teleoperation and demonstration recording with the leader arm. Heavy and
+# deliberately opt-in -- see docs/APPROACH.md for when this is worth it.
+teleop = [
+    "lerobot>=0.1",
+]
+
+[project.scripts]
+trashdrop = "trashdrop.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["trashdrop"]
 
 [tool.uv]
 default-groups = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]

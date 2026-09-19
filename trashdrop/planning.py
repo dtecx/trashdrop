@@ -1,9 +1,15 @@
-"""Deterministic work assignment for two SO-101 arms.
+"""Work assignment for two SO-101 arms sharing one pick zone.
 
-This module intentionally has no MuJoCo, camera, or robot-SDK imports. A
-detector can produce :class:`DetectedItem` records and a hardware adapter can
-consume the resulting :class:`ArmAssignment` records without importing the
-virtual workcell.
+No MuJoCo, camera or robot-SDK imports: a detector produces
+:class:`DetectedItem` records and a hardware adapter consumes
+:class:`ArmAssignment` records without either importing the simulator.
+
+The "facing each other" layout makes this simpler than a split-table one.
+Both arms reach every point of the pick zone, so an item goes to the arm that
+*owns its material*, and the awkward case -- an item only one arm can reach --
+does not exist. What the layout costs instead is exclusivity: two arms sharing
+one volume must never enter it at once, so every assignment is marked as
+needing the zone and the executor serialises them.
 """
 
 from __future__ import annotations
@@ -11,17 +17,30 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from .station import ARMS, HANDOFF_HALF_WIDTH, SORT_CATEGORIES, ArmMount, bin_for
+from .station import (
+    ALL_CATEGORIES,
+    ARMS,
+    PICK_ZONE,
+    MIXED_CATEGORY,
+    bin_for,
+    owner_of,
+)
 
 
 @dataclass(frozen=True)
 class DetectedItem:
-    """One classified object in the common calibrated table frame."""
+    """One classified object in the shared table frame.
+
+    ``x``/``y`` are metres, ``yaw`` is the grasp heading in radians, and
+    ``confidence`` is the classifier's own score. A low score is not silently
+    routed to a material bin -- see :meth:`TwoArmDispatcher.dispatch`.
+    """
 
     item_id: str
     category: str
     x: float
     y: float
+    yaw: float = 0.0
     confidence: float = 1.0
 
 
@@ -31,58 +50,87 @@ class ArmAssignment:
 
     arm: str
     item: DetectedItem
+    bin_key: str
     bin_category: str
     bin_x: float
     bin_y: float
-    requires_handoff_clearance: bool
+    requires_shared_zone: bool
+    rerouted: bool = False
 
 
 class TwoArmDispatcher:
-    """Assign items to exactly one arm while keeping zone rules visible.
+    """Assign items by material, keeping the shared-zone rule explicit.
 
-    Items in an arm's outer zone always belong to that arm. Items within the
-    centre strip are load-balanced deterministically and marked so a motion
-    executor can reserve the shared area before moving. This avoids the unsafe
-    implication that two independent controllers may enter a common zone.
+    ``confidence_floor`` is the promise in the pitch that the cell flags what
+    it cannot handle rather than guessing: anything below it is rerouted to the
+    shared mixed bin instead of a material bin.
     """
 
-    def __init__(self, arms: tuple[ArmMount, ArmMount] = ARMS) -> None:
-        self.left, self.right = arms
+    def __init__(self, confidence_floor: float = 0.55) -> None:
+        self.confidence_floor = confidence_floor
 
     def dispatch(self, items: Iterable[DetectedItem]) -> list[ArmAssignment]:
-        """Return stable assignments; reject unknown waste categories early."""
-
-        loads = {self.left.name: 0, self.right.name: 0}
+        mixed_loads = {mount.name: 0 for mount in ARMS}
         assignments: list[ArmAssignment] = []
+
         for item in items:
-            if item.category not in SORT_CATEGORIES:
+            if item.category not in ALL_CATEGORIES:
                 raise ValueError(
                     f"{item.item_id!r} has unknown category {item.category!r}; "
                     "do not route it to a bin"
                 )
-            arm, shared = self._select_arm(item, loads)
-            bin_spec = bin_for(arm.name, item.category)
+
+            rerouted = (
+                item.category != MIXED_CATEGORY
+                and item.confidence < self.confidence_floor
+            )
+            category = MIXED_CATEGORY if rerouted else item.category
+
+            if category == MIXED_CATEGORY:
+                # One shared mixed bin that both arms reach, so balance the
+                # work rather than the bin: whichever arm has done less.
+                arm = min(ARMS, key=lambda m: (mixed_loads[m.name], m.name)).name
+                mixed_loads[arm] += 1
+            else:
+                arm = owner_of(category)
+
+            spec = bin_for(category, arm)
             assignments.append(
                 ArmAssignment(
-                    arm=arm.name,
+                    arm=arm,
                     item=item,
-                    bin_category=bin_spec.category,
-                    bin_x=bin_spec.x,
-                    bin_y=bin_spec.y,
-                    requires_handoff_clearance=shared,
+                    bin_key=spec.key,
+                    bin_category=spec.category,
+                    bin_x=spec.x,
+                    bin_y=spec.y,
+                    # Both arms share the pick zone, so any item lying in it
+                    # requires exclusive access for the duration of the pick.
+                    requires_shared_zone=PICK_ZONE.contains(item.x, item.y),
+                    rerouted=rerouted,
                 )
             )
-            loads[arm.name] += 1
         return assignments
 
-    def _select_arm(
-        self, item: DetectedItem, loads: dict[str, int]
-    ) -> tuple[ArmMount, bool]:
-        if item.x < -HANDOFF_HALF_WIDTH:
-            return self.left, False
-        if item.x > HANDOFF_HALF_WIDTH:
-            return self.right, False
+    def order(
+        self, assignments: list[ArmAssignment], last: str | None = None
+    ) -> list[ArmAssignment]:
+        """Interleave arms where possible.
 
-        # Tie-break on name makes repeated runs and test expectations stable.
-        selected = min((self.left, self.right), key=lambda arm: (loads[arm.name], arm.name))
-        return selected, True
+        Execution is serialised anyway, so this changes nothing about safety.
+        It alternates which arm acts next when both have work, which keeps the
+        cell visibly two-armed instead of draining one arm's queue first.
+        Pass ``last`` -- the arm that acted in the previous cycle -- to keep
+        alternating across re-detections, not just within one batch.
+        """
+
+        queues: dict[str, list[ArmAssignment]] = {m.name: [] for m in ARMS}
+        for assignment in assignments:
+            queues[assignment.arm].append(assignment)
+
+        ordered: list[ArmAssignment] = []
+        while any(queues.values()):
+            candidates = [name for name, queue in queues.items() if queue]
+            pick = next((name for name in candidates if name != last), candidates[0])
+            ordered.append(queues[pick].pop(0))
+            last = pick
+        return ordered

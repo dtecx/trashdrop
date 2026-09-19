@@ -5,15 +5,23 @@
 .serena/
 
 # Generated simulation outputs and MuJoCo runtime files
+out/
 build/
 frames/
-data/
 models/
 artifacts/
 *.mp4
 *.png
 MUJOCO_LOG.TXT
-mujoco_menagerie/trs_so_arm100/_sorting_scene.xml
+
+# Captured dataset: large, and it belongs in shared storage rather than git.
+# Layout is documented in docs/DATASET.md.
+data/
+
+# Trained weights
+*.pt
+*.onnx
+*.tflite
 
 # The robot model is a sparse checkout fetched by scripts/bootstrap_model.sh.
 # Keep it local rather than committing a nested Git repository.

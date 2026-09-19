@@ -15,17 +15,20 @@ from pathlib import Path
 
 IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 
-# TrashNet has six visual classes. The station's bin contract is intentionally
-# narrower: cardboard is routed to paper; glass and unknown "trash" are sent to
-# a reject lane until a locally approved disposal route is configured. TrashNet
-# does not teach the bio class, so it must never be used to route bio-waste.
-TRASHNET_TO_STATION: dict[str, str | None] = {
+# TrashNet has six visual classes and the station has five bins. Cardboard is
+# paper. Glass goes to mixed on purpose and not only because it is ambiguous:
+# a 0.5 L glass bottle is heavier than this arm should lift, so it must never
+# be routed to a material bin. Unknown "trash" goes to mixed as well.
+#
+# TrashNet contains no bio class at all, so a model trained on it alone cannot
+# route bio-waste -- that class has to come from our own captures.
+TRASHNET_TO_STATION: dict[str, str] = {
     "cardboard": "paper",
-    "glass": None,
+    "glass": "mixed",
     "metal": "metal",
     "paper": "paper",
     "plastic": "plastic",
-    "trash": None,
+    "trash": "mixed",
 }
 
 
@@ -35,7 +38,7 @@ class ManifestRecord:
 
     image: str
     source_label: str
-    station_category: str | None
+    station_category: str
     split: str
 
 
@@ -48,7 +51,7 @@ class IndexReport:
     images: int
     source_counts: dict[str, int]
     station_counts: dict[str, int]
-    reject_images: int
+    mixed_images: int
 
 
 def _split_for(relative_image: Path) -> str:
@@ -114,18 +117,17 @@ def write_manifest(dataset_root: Path, manifest_path: Path) -> IndexReport:
 
     source_counts = {label: 0 for label in TRASHNET_TO_STATION}
     station_counts: dict[str, int] = {}
-    reject_images = 0
+    mixed_images = 0
     for record in records:
         source_counts[record.source_label] += 1
-        if record.station_category is None:
-            reject_images += 1
-        else:
-            station_counts[record.station_category] = station_counts.get(record.station_category, 0) + 1
+        station_counts[record.station_category] = station_counts.get(record.station_category, 0) + 1
+        if record.station_category == "mixed":
+            mixed_images += 1
     return IndexReport(
         dataset_root=str(dataset_root.expanduser().resolve()),
         manifest=str(manifest_path),
         images=len(records),
         source_counts=source_counts,
         station_counts=station_counts,
-        reject_images=reject_images,
+        mixed_images=mixed_images,
     )

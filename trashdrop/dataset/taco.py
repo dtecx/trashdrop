@@ -15,11 +15,11 @@ from typing import Any
 
 
 def route_taco_label(label: str) -> str:
-    """Map a TACO taxonomy label to a station route, failing closed to reject.
+    """Map a TACO taxonomy label to a station route, failing closed to mixed.
 
-    TACO's detailed labels are intentionally consolidated only where material
-    is clear. Food *containers* are not classified as bio-waste, and ambiguous
-    litter stays on the reject route for a person to decide.
+    TACO's detailed labels are consolidated only where the material is clear.
+    Food *containers* are not bio-waste, and ambiguous litter goes to the
+    mixed bin rather than being guessed into a material bin.
     """
 
     normalized = label.casefold().replace("_", " ").replace("-", " ")
@@ -31,7 +31,7 @@ def route_taco_label(label: str) -> str:
         return "metal"
     if any(token in normalized for token in ("plastic", "styrofoam", "foam")):
         return "plastic"
-    return "reject"
+    return "mixed"
 
 
 def _split_for(relative_image: Path) -> str:

@@ -1,106 +1,234 @@
-"""Command-line entry points for the local TrashDrop virtual workcell."""
+"""Command line for the TrashDrop cell.
+
+Everything that needs MuJoCo imports it lazily inside its handler, so the
+dataset and planning commands work in an environment without the simulator --
+which is what the team members who are only shooting photos will have.
+"""
 
 from __future__ import annotations
 
 import argparse
+import json
+import sys
 from pathlib import Path
 
-from .dataset import write_manifest
-from .planning import DetectedItem, TwoArmDispatcher
-from .scene_builder import build_station, validate_station
-from .station import SAMPLE_ITEMS
-from .taco import write_taco_manifest
+
+# --- simulation ------------------------------------------------------------
 
 
-def _sample_detections() -> list[DetectedItem]:
-    return [
-        DetectedItem(item_id=item_id, category=category, x=x, y=y)
-        for item_id, category, x, y in SAMPLE_ITEMS
+def _cmd_sim(args: argparse.Namespace) -> int:
+    from .simulator import SortingCell
+
+    cell = SortingCell(record=not args.viewer and not args.no_video, viewer=args.viewer)
+    report = cell.run()
+
+    if not args.viewer and not args.no_video:
+        video = cell.write_video(args.out / "sort_demo.mp4")
+        overlay = cell.write_overlay(args.out / "topdown_detection.png")
+        if video:
+            print(f"wrote {video}")
+        if overlay:
+            print(f"wrote {overlay}")
+    path = report.to_json(args.out / "run_report.json")
+    print(f"wrote {path}")
+    return 0 if report.success else 1
+
+
+def _cmd_probe(args: argparse.Namespace) -> int:
+    from .probe import check_layout, reachability_map
+    from .simulator import SortingCell
+
+    cell = SortingCell(record=False)
+    ok = check_layout(cell)
+    if args.map:
+        reachability_map(cell, z=args.z, keep_vertical=not args.free)
+    return 0 if ok else 1
+
+
+def _cmd_scene(args: argparse.Namespace) -> int:
+    from .scene_builder import write_scene_xml
+
+    path = write_scene_xml(args.out / "cell.xml")
+    print(f"wrote {path}")
+    return 0
+
+
+def _cmd_plan(_args: argparse.Namespace) -> int:
+    from .planning import DetectedItem, TwoArmDispatcher
+    from .scene_builder import DEFAULT_OBJECTS
+
+    items = [
+        DetectedItem(item_id=o.item_id, category=o.category, x=o.x, y=o.y)
+        for o in DEFAULT_OBJECTS
     ]
-
-
-def _print_plan() -> None:
-    for assignment in TwoArmDispatcher().dispatch(_sample_detections()):
-        shared = " reserve shared strip" if assignment.requires_handoff_clearance else ""
+    dispatcher = TwoArmDispatcher()
+    for assignment in dispatcher.order(dispatcher.dispatch(items)):
+        flag = " [rerouted: low confidence]" if assignment.rerouted else ""
+        zone = " [needs shared zone]" if assignment.requires_shared_zone else ""
         print(
-            f"{assignment.item.item_id:16} -> {assignment.arm:5} "
-            f"-> {assignment.bin_category:7} "
-            f"({assignment.bin_x:+.2f}, {assignment.bin_y:+.2f}){shared}"
+            f"{assignment.item.item_id:10} {assignment.item.category:8} -> "
+            f"{assignment.arm:5} -> {assignment.bin_key:8} "
+            f"({assignment.bin_x:+.2f}, {assignment.bin_y:+.2f}){flag}{zone}"
         )
+    return 0
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="TrashDrop dual SO-101 virtual workcell")
-    parser.add_argument(
-        "command",
-        choices=("build", "validate", "viewer", "plan", "demo", "dataset-index", "taco-index"),
-        nargs="?",
-        default="validate",
+# --- dataset ---------------------------------------------------------------
+
+
+def _cmd_capture(args: argparse.Namespace) -> int:
+    from .dataset.capture import CaptureConfig, run_capture
+
+    source: str | int = args.camera
+    if isinstance(source, str) and source.isdigit():
+        source = int(source)
+    config = CaptureConfig(
+        session=args.session,
+        root=args.data,
+        source=source,
+        burst=args.burst,
+        lighting=args.lighting,
     )
-    parser.add_argument(
-        "dataset_root",
-        type=Path,
-        nargs="?",
-        help="TrashNet-style class-folder dataset root (dataset-index only)",
+    run_capture(config, category=args.category, object_id=args.object_id)
+    return 0
+
+
+def _cmd_autolabel(args: argparse.Namespace) -> int:
+    from dataclasses import asdict
+
+    from .dataset.autolabel import autolabel_session
+
+    report = autolabel_session(
+        args.session, root=args.data, threshold=args.threshold, holdout_fraction=args.holdout
     )
-    parser.add_argument("--out", type=Path, help="generated MJCF location")
-    parser.add_argument(
-        "--manifest",
-        type=Path,
-        default=Path("build/trashnet_manifest.jsonl"),
-        help="JSONL manifest location (dataset-index only)",
+    print(json.dumps(asdict(report), indent=2))
+    if report.labelled == 0:
+        print("\nNothing was labelled. Check that the background matches the lighting label.")
+        return 1
+    thin = [c for c, n in report.per_category_objects.items() if n < 10]
+    if thin:
+        print(
+            f"\nWarning: fewer than 10 distinct objects in {', '.join(thin)}. "
+            "Variety of objects matters more than number of frames."
+        )
+    return 0
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    from .dataset.review import contact_sheets, drop_objects
+
+    if args.drop:
+        removed = drop_objects(args.session, args.drop, root=args.data)
+        print(f"removed {removed} crops for {', '.join(args.drop)}")
+        return 0
+    for path in contact_sheets(args.session, root=args.data):
+        print(f"wrote {path}")
+    return 0
+
+
+def _cmd_summary(args: argparse.Namespace) -> int:
+    from .dataset.manifest import read_manifest, summarise
+
+    rows = read_manifest(args.data / "raw" / args.session / "manifest.csv")
+    print(json.dumps(summarise(rows), indent=2))
+    return 0
+
+
+def _cmd_dataset_index(args: argparse.Namespace) -> int:
+    from dataclasses import asdict
+
+    from .dataset.trashnet import write_manifest
+
+    report = write_manifest(args.dataset_root, args.manifest)
+    print(json.dumps(asdict(report), indent=2))
+    return 0
+
+
+def _cmd_taco_index(args: argparse.Namespace) -> int:
+    from dataclasses import asdict
+
+    from .dataset.taco import write_taco_manifest
+
+    report = write_taco_manifest(args.annotations, args.images, args.manifest)
+    print(json.dumps(asdict(report), indent=2))
+    return 0
+
+
+# --- wiring ----------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="trashdrop", description="Two-arm SO-101 trash sorting cell"
     )
-    parser.add_argument("--annotations", type=Path, help="TACO COCO annotations JSON (taco-index only)")
-    args = parser.parse_args()
+    parser.add_argument("--out", type=Path, default=Path("out"), help="artefact directory")
+    parser.add_argument("--data", type=Path, default=Path("data"), help="dataset directory")
+    sub = parser.add_subparsers(dest="command", required=True)
 
-    if args.command == "plan":
-        _print_plan()
-        return
-    if args.command == "dataset-index":
-        if args.dataset_root is None:
-            parser.error("dataset-index requires DATASET_ROOT")
-        report = write_manifest(args.dataset_root, args.manifest)
-        print(f"indexed {report.images} images -> {report.manifest}")
-        print(f"source classes: {report.source_counts}")
-        print(f"station routes: {report.station_counts}; reject: {report.reject_images}")
-        return
-    if args.command == "taco-index":
-        if args.dataset_root is None or args.annotations is None:
-            parser.error("taco-index requires IMAGE_ROOT and --annotations ANNOTATIONS_JSON")
-        manifest = args.manifest
-        if manifest == Path("build/trashnet_manifest.jsonl"):
-            manifest = Path("build/taco_object_manifest.jsonl")
-        report = write_taco_manifest(args.annotations, args.dataset_root, manifest)
-        print(f"indexed {report.objects} TACO objects -> {report.manifest}")
-        print(f"station routes: {report.route_counts}; missing images: {report.missing_images}")
-        return
-    if args.command == "demo":
-        from .simulator import run_taco_demo
+    sim = sub.add_parser("sim", help="run the two-arm sorting demo")
+    sim.add_argument("--viewer", action="store_true", help="live window (mjpython on macOS)")
+    sim.add_argument("--no-video", action="store_true", help="skip recording")
+    sim.set_defaults(func=_cmd_sim)
 
-        report = run_taco_demo()
-        print(f"two-arm TACO demo: {report.placed}/{report.assigned} placed; misses {report.misses}")
-        print(f"scene: {report.scene}")
-        print(f"trace: {report.trace}")
-        return
+    probe = sub.add_parser("probe", help="check the layout is reachable")
+    probe.add_argument("--map", action="store_true", help="also print a reachability grid")
+    probe.add_argument("--z", type=float, default=0.018, help="height for the grid")
+    probe.add_argument("--free", action="store_true", help="do not hold the gripper vertical")
+    probe.set_defaults(func=_cmd_probe)
 
-    scene = build_station(output_path=args.out)
-    print(f"generated {scene}")
-    if args.command == "build":
-        return
+    scene = sub.add_parser("scene", help="dump the assembled MJCF")
+    scene.set_defaults(func=_cmd_scene)
 
-    result = validate_station(scene)
-    print(
-        "validated dual-arm scene: "
-        f"{result['joints']} joints, {result['actuators']} actuators, {result['bodies']} bodies"
-    )
-    if args.command == "viewer":
-        import mujoco
-        from mujoco import viewer
+    plan = sub.add_parser("plan", help="show assignment without running physics")
+    plan.set_defaults(func=_cmd_plan)
 
-        model = mujoco.MjModel.from_xml_path(str(scene))
-        data = mujoco.MjData(model)
-        viewer.launch(model, data)
+    capture = sub.add_parser("capture", help="shoot a dataset session on the rig")
+    capture.add_argument("--session", required=True, help="e.g. 2026-09-20-kitchen")
+    capture.add_argument("--category", required=True, help="bio|paper|plastic|metal|mixed")
+    capture.add_argument("--object-id", required=True, help="e.g. cola_can_01")
+    capture.add_argument("--camera", default="0", help="device index or stream URL")
+    capture.add_argument("--burst", type=int, default=25)
+    capture.add_argument("--lighting", default="default")
+    capture.set_defaults(func=_cmd_capture)
+
+    autolabel = sub.add_parser("autolabel", help="derive masks and crops from a session")
+    autolabel.add_argument("--session", required=True)
+    autolabel.add_argument("--threshold", type=int, default=28)
+    autolabel.add_argument("--holdout", type=float, default=0.25)
+    autolabel.set_defaults(func=_cmd_autolabel)
+
+    review = sub.add_parser("review", help="contact sheets, or drop bad objects")
+    review.add_argument("--session", required=True)
+    review.add_argument("--drop", nargs="*", help="object ids to remove")
+    review.set_defaults(func=_cmd_review)
+
+    summary = sub.add_parser("summary", help="counts for a capture session")
+    summary.add_argument("--session", required=True)
+    summary.set_defaults(func=_cmd_summary)
+
+    trashnet = sub.add_parser("dataset-index", help="index a TrashNet-style folder set")
+    trashnet.add_argument("dataset_root", type=Path)
+    trashnet.add_argument("--manifest", type=Path, default=Path("out/trashnet_manifest.jsonl"))
+    trashnet.set_defaults(func=_cmd_dataset_index)
+
+    taco = sub.add_parser("taco-index", help="index TACO COCO annotations")
+    taco.add_argument("--annotations", type=Path, required=True)
+    taco.add_argument("--images", type=Path, required=True)
+    taco.add_argument("--manifest", type=Path, default=Path("out/taco_manifest.jsonl"))
+    taco.set_defaults(func=_cmd_taco_index)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    args.out.mkdir(parents=True, exist_ok=True)
+    try:
+        return args.func(args)
+    except (FileNotFoundError, ValueError, RuntimeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

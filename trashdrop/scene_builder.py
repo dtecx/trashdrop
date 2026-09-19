@@ -1,262 +1,249 @@
-"""Build one MuJoCo MJCF station containing two namespaced SO-ARM models."""
+"""Assemble the two-arm MuJoCo scene with MjSpec.
+
+``MjSpec.attach`` namespaces a whole model in one call, so the arm model is
+loaded straight from the menagerie checkout and inserted twice under different
+prefixes. Nothing is written into the menagerie folder and no MJCF is
+hand-edited: the previous approach of copying and renaming XML nodes by hand
+had to know about every attribute that can hold a cross-reference.
+
+Two things here are easy to get wrong and are asserted at build time:
+
+* ``<compiler angle="radian">`` on the parent. MJCF defaults to degrees, so a
+  frame built with ``euler=[0, 0, pi]`` silently becomes a 3 degree rotation
+  and the second arm ends up beside the first instead of facing it.
+* ``cone="elliptic" impratio="10"`` on the parent. On attach the parent's
+  options win, and these two are what the arm model itself asks for; losing
+  them changes the contact behaviour the grasp was tuned against.
+"""
 
 from __future__ import annotations
 
-import copy
 import math
-import os
-import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 
-from .station import ARM_BINS, ARMS, SAMPLE_ITEMS, ArmMount, bin_for, find_arm_model, repository_root
+import numpy as np
+
+from .station import (
+    ARMS,
+    BIN_HALF_WIDTH,
+    BIN_WALL,
+    BIN_WALL_HEIGHT,
+    BINS,
+    CAMERA,
+    CATEGORY_COLORS,
+    GRASP_Z,
+    OBJECT_HALF_SIZE,
+    PICK_ZONE,
+    SURFACE_THICKNESS,
+    find_arm_model,
+)
 
 
-_REFERENCE_ATTRIBUTES = {
-    "body1",
-    "body2",
-    "childclass",
-    "class",
-    "joint",
-    "material",
-    "mesh",
-}
+@dataclass(frozen=True)
+class SceneObject:
+    """A stand-in item spawned on the work surface.
 
-
-def _symbol_map(source: ET.Element, prefix: str) -> dict[str, str]:
-    """Map all named model symbols and default classes into one arm namespace."""
-
-    symbols: set[str] = set()
-    for element in source.iter():
-        if name := element.get("name"):
-            symbols.add(name)
-        if default_class := element.get("class"):
-            symbols.add(default_class)
-    return {symbol: f"{prefix}{symbol}" for symbol in symbols}
-
-
-def _namespaced_copy(source: ET.Element, prefix: str) -> ET.Element:
-    """Copy one Menagerie arm and namespace names plus all local references."""
-
-    symbols = _symbol_map(source, prefix)
-    clone = copy.deepcopy(source)
-    for element in clone.iter():
-        for attribute, value in tuple(element.attrib.items()):
-            if attribute == "name" or attribute in _REFERENCE_ATTRIBUTES:
-                element.set(attribute, symbols.get(value, value))
-    return clone
-
-
-def _append_open_bin(worldbody: ET.Element, arm: str, category: str) -> None:
-    """Append a shallow visible collection bin at the configured position."""
-
-    spec = bin_for(arm, category)
-    width, wall, height = 0.052, 0.004, 0.035
-    r, g, b, _a = spec.rgba.split()
-    faint = f"{r} {g} {b} 0.35"
-    ET.SubElement(
-        worldbody,
-        "geom",
-        name=f"bin_{arm}_{category}_floor",
-        type="box",
-        pos=f"{spec.x} {spec.y} 0.004",
-        size=f"{width} {width} 0.004",
-        rgba=spec.rgba,
-    )
-    for suffix, dx, dy, sx, sy in (
-        ("east", width, 0.0, wall, width),
-        ("west", -width, 0.0, wall, width),
-        ("north", 0.0, width, width, wall),
-        ("south", 0.0, -width, width, wall),
-    ):
-        ET.SubElement(
-            worldbody,
-            "geom",
-            name=f"bin_{arm}_{category}_{suffix}",
-            type="box",
-            pos=f"{spec.x + dx} {spec.y + dy} {height / 2}",
-            size=f"{sx} {sy} {height}",
-            rgba=faint,
-        )
-
-
-def _append_station(worldbody: ET.Element) -> None:
-    """Add a shared table, zones, bins, cameras, and coloured demo objects."""
-
-    ET.SubElement(worldbody, "light", name="key", pos="0 -0.1 0.85", directional="true")
-    ET.SubElement(worldbody, "geom", name="floor", type="plane", size="0 0 0.05", rgba="0.06 0.07 0.09 1")
-    ET.SubElement(
-        worldbody,
-        "geom",
-        name="workbench",
-        type="box",
-        pos="0 -0.14 -0.025",
-        size="0.46 0.37 0.025",
-        rgba="0.82 0.84 0.87 1",
-    )
-    # Transparent visual markers make arm ownership obvious in a viewer.
-    ET.SubElement(
-        worldbody,
-        "geom",
-        name="left_zone",
-        type="box",
-        pos="-0.18 -0.15 0.003",
-        size="0.18 0.13 0.002",
-        rgba="0.20 0.45 0.95 0.12",
-        contype="0",
-        conaffinity="0",
-    )
-    ET.SubElement(
-        worldbody,
-        "geom",
-        name="right_zone",
-        type="box",
-        pos="0.18 -0.15 0.003",
-        size="0.18 0.13 0.002",
-        rgba="0.95 0.35 0.20 0.12",
-        contype="0",
-        conaffinity="0",
-    )
-    ET.SubElement(
-        worldbody,
-        "geom",
-        name="handoff_zone",
-        type="box",
-        pos="0 -0.02 0.004",
-        size="0.025 0.06 0.003",
-        rgba="0.95 0.85 0.20 0.25",
-        contype="0",
-        conaffinity="0",
-    )
-    ET.SubElement(
-        worldbody,
-        "camera",
-        name="topdown",
-        pos="0 -0.13 0.82",
-        xyaxes="1 0 0 0 1 0",
-        fovy="46",
-    )
-    ET.SubElement(
-        worldbody,
-        "camera",
-        name="operator",
-        pos="0.72 -0.72 0.5",
-        xyaxes="0.72 0.69 0 -0.29 0.30 0.91",
-        fovy="55",
-    )
-    for arm, bins in ARM_BINS.items():
-        for category in bins:
-            _append_open_bin(worldbody, arm, category)
-    for index, (item_id, category, x, y) in enumerate(SAMPLE_ITEMS):
-        body = ET.SubElement(worldbody, "body", name=f"item_{item_id}", pos=f"{x} {y} 0.02")
-        ET.SubElement(body, "freejoint", name=f"item_{index}_free")
-        ET.SubElement(
-            body,
-            "geom",
-            name=f"item_{item_id}_geom",
-            type="box",
-            size="0.018 0.012 0.018",
-            mass="0.02",
-            friction="1.5 0.02 0.001",
-            rgba=bin_for("left" if x < 0 else "right", category).rgba,
-        )
-
-
-def _append_arm(scene: ET.Element, source: ET.Element, mount: ArmMount) -> None:
-    """Merge one copied arm's assets, defaults, kinematics and actuators."""
-
-    arm = _namespaced_copy(source, mount.prefix)
-    assets = arm.find("asset")
-    defaults = arm.find("default")
-    arm_worldbody = arm.find("worldbody")
-    actuators = arm.find("actuator")
-    contacts = arm.find("contact")
-    if any(section is None for section in (assets, defaults, arm_worldbody, actuators, contacts)):
-        raise ValueError("SO-ARM model is missing a required MJCF section")
-
-    for child in assets:
-        scene.find("asset").append(copy.deepcopy(child))
-    for child in defaults:
-        scene.find("default").append(copy.deepcopy(child))
-
-    source_body = next(iter(arm_worldbody), None)
-    if source_body is None:
-        raise ValueError("SO-ARM model has no base body")
-    source_body.set("pos", f"{mount.x} {mount.y} 0")
-    source_body.set("euler", f"0 0 {math.radians(mount.yaw_degrees)}")
-    scene.find("worldbody").append(source_body)
-
-    for actuator in actuators:
-        scene.find("actuator").append(copy.deepcopy(actuator))
-    for exclusion in contacts:
-        scene.find("contact").append(copy.deepcopy(exclusion))
-
-
-def build_station(
-    output_path: Path | None = None,
-    model_directory: Path | None = None,
-) -> Path:
-    """Generate a dual-arm scene and return its absolute output path.
-
-    The source model is read, never modified. Generated MJCF lives under
-    ``build/`` so it is safe to discard and rebuild after layout changes.
+    ``category`` drives its colour, which the sim-only colour detector reads
+    back. A real run replaces both with a trained classifier over camera crops.
     """
 
-    root = repository_root()
-    model_directory = model_directory or find_arm_model(root)
-    source_path = model_directory / "so_arm100.xml"
-    if not source_path.is_file():
-        raise FileNotFoundError(f"Missing SO-ARM model: {source_path}")
-    source = ET.parse(source_path).getroot()
+    item_id: str
+    category: str
+    x: float
+    y: float
+    yaw_degrees: float = 0.0
 
-    output_path = output_path or root / "build/dual_arm_station.xml"
-    output_path = output_path.resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    meshdir = Path(os.path.relpath(model_directory / "assets", output_path.parent)).as_posix()
 
-    scene = ET.Element("mujoco", model="trashdrop_dual_so101_station")
-    ET.SubElement(scene, "compiler", angle="radian", meshdir=meshdir)
-    ET.SubElement(scene, "option", timestep="0.002", cone="elliptic", impratio="10")
-    ET.SubElement(scene, "asset")
-    ET.SubElement(scene, "default")
-    ET.SubElement(scene, "worldbody")
-    ET.SubElement(scene, "actuator")
-    ET.SubElement(scene, "contact")
+# Four items inside the shared pick zone, at the spawn poses the single-arm
+# baseline was verified against.
+DEFAULT_OBJECTS: tuple[SceneObject, ...] = (
+    SceneObject("bottle", "plastic", 0.010, -0.272, 20.0),
+    SceneObject("peel", "bio", -0.060, -0.200, 0.0),
+    SceneObject("carton", "paper", 0.060, -0.222, 60.0),
+    SceneObject("can", "metal", -0.020, -0.160, -30.0),
+)
 
+
+# Where the recording camera sits and what it points at. Derived rather than
+# hand-written: MJCF wants the camera's x and y axes, and guessing those by
+# hand is how you end up recording a view of empty floor.
+OPERATOR_EYE = (0.60, -0.60, 0.42)
+OPERATOR_TARGET = (0.0, -0.215, 0.03)
+
+
+def _look_at(eye, target, up=(0.0, 0.0, 1.0)) -> str:
+    """MJCF ``xyaxes`` for a camera at ``eye`` looking at ``target``.
+
+    A MuJoCo camera looks along its own -Z, so the frame's z axis is the
+    reverse of the viewing direction.
+    """
+
+    eye = np.asarray(eye, dtype=float)
+    target = np.asarray(target, dtype=float)
+    forward = target - eye
+    forward /= np.linalg.norm(forward)
+    x_axis = np.cross(forward, np.asarray(up, dtype=float))
+    x_axis /= np.linalg.norm(x_axis)
+    y_axis = np.cross(-forward, x_axis)
+    return " ".join(f"{value:.5f}" for value in (*x_axis, *y_axis))
+
+
+def _bin_geoms() -> str:
+    parts: list[str] = []
+    for spec in BINS.values():
+        tint = spec.rgba.rsplit(" ", 1)[0]
+        w, wall, tall = BIN_HALF_WIDTH, BIN_WALL, BIN_WALL_HEIGHT
+        parts.append(
+            f'<geom name="bin_{spec.key}" type="box" pos="{spec.x} {spec.y} 0.004" '
+            f'size="{w} {w} 0.004" rgba="{spec.rgba}"/>'
+        )
+        for suffix, dx, dy, sx, sy in (
+            ("e", w, 0.0, wall, w),
+            ("w", -w, 0.0, wall, w),
+            ("n", 0.0, w, w, wall),
+            ("s", 0.0, -w, w, wall),
+        ):
+            parts.append(
+                f'<geom name="bin_{spec.key}_{suffix}" type="box" '
+                f'pos="{spec.x + dx} {spec.y + dy} {tall / 2}" '
+                f'size="{sx} {sy} {tall}" rgba="{tint} 0.5"/>'
+            )
+    return "".join(parts)
+
+
+def _object_bodies(objects: tuple[SceneObject, ...]) -> str:
+    parts: list[str] = []
+    for index, item in enumerate(objects):
+        half = OBJECT_HALF_SIZE
+        parts.append(
+            f'<body name="item_{index}" pos="{item.x} {item.y} {GRASP_Z}" '
+            f'euler="0 0 {math.radians(item.yaw_degrees)}">'
+            f'<freejoint name="item_{index}_free"/>'
+            f'<geom name="item_{index}_geom" type="box" '
+            f'size="{half} {half * 0.6} {half}" '
+            f'rgba="{CATEGORY_COLORS[item.category]}" mass="0.02" '
+            f'friction="1.5 0.02 0.001"/>'
+            f"</body>"
+        )
+    return "".join(parts)
+
+
+def _world_xml(objects: tuple[SceneObject, ...]) -> str:
+    return f"""<mujoco model="trashdrop_cell">
+  <compiler angle="radian"/>
+  <option timestep="0.002" cone="elliptic" impratio="10"/>
+  <visual>
+    <headlight diffuse="0.7 0.7 0.7" ambient="0.4 0.4 0.4" specular="0 0 0"/>
+    <global azimuth="130" elevation="-30"/>
+  </visual>
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.25 0.28 0.32"
+             rgb2="0.05 0.05 0.07" width="512" height="3072"/>
+    <material name="floor_mat" rgba="0.18 0.18 0.20 1"/>
+    <material name="board_mat" rgba="0.92 0.92 0.92 1"/>
+  </asset>
+  <worldbody>
+    <light pos="0.2 -0.2 1.0" dir="-0.2 0.2 -1" directional="true"/>
+    <geom name="floor" type="plane" size="0 0 0.05" material="floor_mat"/>
+    <geom name="board" type="box"
+          pos="{PICK_ZONE.center_x} {PICK_ZONE.center_y} {SURFACE_THICKNESS / 2}"
+          size="{PICK_ZONE.half_x} {PICK_ZONE.half_y} {SURFACE_THICKNESS / 2}"
+          material="board_mat"/>
+    <camera name="topdown"
+            pos="{CAMERA.center_x} {CAMERA.center_y} {CAMERA.height + SURFACE_THICKNESS}"
+            xyaxes="1 0 0 0 1 0" fovy="{CAMERA.fovy_degrees}"/>
+    <camera name="operator" pos="{OPERATOR_EYE[0]} {OPERATOR_EYE[1]} {OPERATOR_EYE[2]}"
+            xyaxes="{_look_at(OPERATOR_EYE, OPERATOR_TARGET)}" fovy="52"/>
+    {_bin_geoms()}
+    {_object_bodies(objects)}
+  </worldbody>
+</mujoco>
+"""
+
+
+def build_spec(objects: tuple[SceneObject, ...] = DEFAULT_OBJECTS, model_directory: Path | None = None):
+    """Return a compiled-ready MjSpec holding the table and both arms."""
+
+    import mujoco
+
+    model_directory = model_directory or find_arm_model()
+    arm_xml = model_directory / "so_arm100.xml"
+    if not arm_xml.is_file():
+        raise FileNotFoundError(f"Missing SO-ARM model: {arm_xml}")
+
+    world = mujoco.MjSpec.from_string(_world_xml(objects))
     for mount in ARMS:
-        _append_arm(scene, source, mount)
-    _append_station(scene.find("worldbody"))
+        arm = mujoco.MjSpec.from_file(str(arm_xml))
+        frame = world.worldbody.add_frame(
+            pos=[mount.pose.x, mount.pose.y, 0.0],
+            euler=[0.0, 0.0, mount.pose.yaw],
+        )
+        world.attach(arm, prefix=mount.prefix, frame=frame)
+    return world
 
-    ET.indent(scene, space="  ")
-    ET.ElementTree(scene).write(output_path, encoding="utf-8", xml_declaration=True)
-    return output_path
 
+def build_model(objects: tuple[SceneObject, ...] = DEFAULT_OBJECTS, model_directory: Path | None = None):
+    """Compile the cell and verify the parts that fail silently."""
 
-def validate_station(scene_path: Path) -> dict[str, int]:
-    """Load the generated scene with MuJoCo and verify its core interface."""
+    import mujoco
 
-    try:
-        import mujoco
-    except ImportError as error:  # pragma: no cover - user-environment guidance
-        raise RuntimeError(
-            "MuJoCo is optional. Run: uv sync --extra simulation"
-        ) from error
+    model = build_spec(objects, model_directory).compile()
 
-    model = mujoco.MjModel.from_xml_path(str(scene_path))
-    joints = ("Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll", "Jaw")
-    expected_actuators = {f"{arm.prefix}{joint}" for arm in ARMS for joint in joints}
-    available_actuators = {
-        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, index)
-        for index in range(model.nu)
+    expected = {f"{m.prefix}{j}" for m in ARMS for j in ("Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll", "Jaw")}
+    actual = {
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, i) for i in range(model.nu)
     }
-    missing = expected_actuators - available_actuators
-    if missing:
+    if missing := expected - actual:
         raise RuntimeError(f"Scene is missing actuators: {sorted(missing)}")
+
     for camera in ("topdown", "operator"):
         if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera) < 0:
-            raise RuntimeError(f"Scene is missing {camera!r} camera")
-    for arm, bins in ARM_BINS.items():
-        for category in bins:
-            name = f"bin_{arm}_{category}_floor"
-            if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name) < 0:
-                raise RuntimeError(f"Scene is missing {name!r}")
-    return {"joints": model.njnt, "actuators": model.nu, "bodies": model.nbody}
+            raise RuntimeError(f"Scene is missing the {camera!r} camera")
+    for key in BINS:
+        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"bin_{key}") < 0:
+            raise RuntimeError(f"Scene is missing bin {key!r}")
+
+    _assert_arms_face_each_other(mujoco, model)
+    return model
+
+
+def _assert_arms_face_each_other(mujoco, model) -> None:
+    """Catch a degrees/radians mix-up in the attach frame.
+
+    With the mounts rotated correctly each arm's base sits at its configured
+    position; with the rotation silently dropped the second arm's links extend
+    the wrong way and every IK target lands outside its reach.
+    """
+
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    for mount in ARMS:
+        base = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"{mount.prefix}Base")
+        if base < 0:
+            raise RuntimeError(f"Scene is missing {mount.prefix}Base")
+        got = np.asarray(data.xpos[base][:2])
+        want = np.array([mount.pose.x, mount.pose.y])
+        if not np.allclose(got, want, atol=1e-6):
+            raise RuntimeError(f"{mount.name} base at {got}, expected {want}")
+
+        # The Base body carries the mount yaw; compare its heading to the spec.
+        rot = data.xmat[base].reshape(3, 3)
+        heading = math.atan2(rot[1, 0], rot[0, 0])
+        if abs((heading - mount.pose.yaw + math.pi) % (2 * math.pi) - math.pi) > 1e-4:
+            raise RuntimeError(
+                f"{mount.name} base yaw is {math.degrees(heading):.1f} deg, "
+                f"expected {math.degrees(mount.pose.yaw):.1f} deg -- the attach "
+                "frame lost its rotation (check compiler angle=radian)"
+            )
+
+
+def write_scene_xml(path: Path, objects: tuple[SceneObject, ...] = DEFAULT_OBJECTS) -> Path:
+    """Dump the assembled scene for inspection in a viewer or a diff."""
+
+    path = path.expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    spec = build_spec(objects)
+    spec.compile()
+    path.write_text(spec.to_xml(), encoding="utf-8")
+    return path

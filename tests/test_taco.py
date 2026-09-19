@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from trashdrop.taco import route_taco_label, write_taco_manifest
+from trashdrop.dataset.taco import route_taco_label, write_taco_manifest
 
 
 class TacoIndexTests(unittest.TestCase):
@@ -13,8 +13,8 @@ class TacoIndexTests(unittest.TestCase):
         self.assertEqual(route_taco_label("clear_plastic_bottle"), "plastic")
         self.assertEqual(route_taco_label("drink_can"), "metal")
         self.assertEqual(route_taco_label("corrugated_carton"), "paper")
-        self.assertEqual(route_taco_label("food_container"), "reject")
-        self.assertEqual(route_taco_label("unlabeled_litter"), "reject")
+        self.assertEqual(route_taco_label("food_container"), "mixed")
+        self.assertEqual(route_taco_label("unlabeled_litter"), "mixed")
 
     def test_coco_records_keep_box_and_route(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -46,7 +46,7 @@ class TacoIndexTests(unittest.TestCase):
         self.assertEqual(report.missing_images, 0)
         self.assertEqual(records[0]["bbox_xywh"], [1.0, 2.0, 3.0, 4.0])
         self.assertEqual(records[0]["station_category"], "plastic")
-        self.assertEqual(records[1]["station_category"], "reject")
+        self.assertEqual(records[1]["station_category"], "mixed")
 
 
 if __name__ == "__main__":

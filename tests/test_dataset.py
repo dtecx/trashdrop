@@ -25,11 +25,13 @@ class TrashNetManifestTests(unittest.TestCase):
             records = [json.loads(line) for line in manifest.read_text().splitlines()]
 
         self.assertEqual(report.images, 6)
-        self.assertEqual(report.reject_images, 2)
+        self.assertEqual(report.mixed_images, 2)
         routes = {record["source_label"]: record["station_category"] for record in records}
         self.assertEqual(routes["cardboard"], "paper")
-        self.assertIsNone(routes["glass"])
-        self.assertIsNone(routes["trash"])
+        # Glass is routed to mixed on purpose: a glass bottle is heavier than
+        # this arm should lift, so it must never reach a material bin.
+        self.assertEqual(routes["glass"], "mixed")
+        self.assertEqual(routes["trash"], "mixed")
 
     def test_missing_class_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
