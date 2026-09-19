@@ -8,7 +8,7 @@ import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from .station import ARMS, BINS, SAMPLE_ITEMS, ArmMount, find_arm_model, repository_root
+from .station import ARM_BINS, ARMS, SAMPLE_ITEMS, ArmMount, bin_for, find_arm_model, repository_root
 
 
 _REFERENCE_ATTRIBUTES = {
@@ -46,17 +46,17 @@ def _namespaced_copy(source: ET.Element, prefix: str) -> ET.Element:
     return clone
 
 
-def _append_open_bin(worldbody: ET.Element, category: str) -> None:
+def _append_open_bin(worldbody: ET.Element, arm: str, category: str) -> None:
     """Append a shallow visible collection bin at the configured position."""
 
-    spec = BINS[category]
+    spec = bin_for(arm, category)
     width, wall, height = 0.052, 0.004, 0.035
     r, g, b, _a = spec.rgba.split()
     faint = f"{r} {g} {b} 0.35"
     ET.SubElement(
         worldbody,
         "geom",
-        name=f"bin_{category}_floor",
+        name=f"bin_{arm}_{category}_floor",
         type="box",
         pos=f"{spec.x} {spec.y} 0.004",
         size=f"{width} {width} 0.004",
@@ -71,7 +71,7 @@ def _append_open_bin(worldbody: ET.Element, category: str) -> None:
         ET.SubElement(
             worldbody,
             "geom",
-            name=f"bin_{category}_{suffix}",
+            name=f"bin_{arm}_{category}_{suffix}",
             type="box",
             pos=f"{spec.x + dx} {spec.y + dy} {height / 2}",
             size=f"{sx} {sy} {height}",
@@ -121,8 +121,8 @@ def _append_station(worldbody: ET.Element) -> None:
         "geom",
         name="handoff_zone",
         type="box",
-        pos="0 -0.15 0.004",
-        size="0.025 0.13 0.003",
+        pos="0 -0.02 0.004",
+        size="0.025 0.06 0.003",
         rgba="0.95 0.85 0.20 0.25",
         contype="0",
         conaffinity="0",
@@ -143,8 +143,9 @@ def _append_station(worldbody: ET.Element) -> None:
         xyaxes="0.72 0.69 0 -0.29 0.30 0.91",
         fovy="55",
     )
-    for category in BINS:
-        _append_open_bin(worldbody, category)
+    for arm, bins in ARM_BINS.items():
+        for category in bins:
+            _append_open_bin(worldbody, arm, category)
     for index, (item_id, category, x, y) in enumerate(SAMPLE_ITEMS):
         body = ET.SubElement(worldbody, "body", name=f"item_{item_id}", pos=f"{x} {y} 0.02")
         ET.SubElement(body, "freejoint", name=f"item_{index}_free")
@@ -156,7 +157,7 @@ def _append_station(worldbody: ET.Element) -> None:
             size="0.018 0.012 0.018",
             mass="0.02",
             friction="1.5 0.02 0.001",
-            rgba=BINS[category].rgba,
+            rgba=bin_for("left" if x < 0 else "right", category).rgba,
         )
 
 
@@ -253,7 +254,9 @@ def validate_station(scene_path: Path) -> dict[str, int]:
     for camera in ("topdown", "operator"):
         if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera) < 0:
             raise RuntimeError(f"Scene is missing {camera!r} camera")
-    for category in BINS:
-        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"bin_{category}_floor") < 0:
-            raise RuntimeError(f"Scene is missing {category!r} bin")
+    for arm, bins in ARM_BINS.items():
+        for category in bins:
+            name = f"bin_{arm}_{category}_floor"
+            if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name) < 0:
+                raise RuntimeError(f"Scene is missing {name!r}")
     return {"joints": model.njnt, "actuators": model.nu, "bodies": model.nbody}

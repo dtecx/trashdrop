@@ -19,6 +19,7 @@ when you need it; `uv` keeps everything in this folder's `.venv`.
 uv sync --extra simulation
 ./scripts/bootstrap_model.sh
 uv run --extra simulation python -m trashdrop validate
+uv run --extra simulation python -m trashdrop demo
 ```
 
 That command generates `build/dual_arm_station.xml`, loads it in MuJoCo, and
@@ -77,13 +78,21 @@ is not the specification for this dual-arm workspace.
 
 ## Dataset intake
 
-For the common TrashNet/"TrashDataset" class-folder layout, use the built-in
-manifest generator. It never downloads, copies, or adds images to Git:
+TACO is the recommended starting point because it keeps COCO object boxes for
+pickup. Index its image root and annotation JSON without copying images:
+
+```bash
+uv run python -m trashdrop taco-index /path/to/taco/images \
+  --annotations /path/to/taco/data/annotations.json
+```
+
+For the common TrashNet/"TrashDataset" class-folder layout, use the separate
+crop-classifier manifest generator:
 
 ```bash
 uv run python -m trashdrop dataset-index /path/to/dataset-resized
 ```
 
 See [dataset integration notes](docs/DATASET.md) for the mapping and the
-important limitation: TrashNet does not include bio-waste or multi-object
-detection labels.
+important limitation: neither TACO nor TrashNet is a complete bio-waste or
+tabletop-workcell dataset.

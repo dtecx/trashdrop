@@ -1,4 +1,25 @@
-# Integrating TrashNet safely
+# Integrating TACO and TrashNet safely
+
+## Recommended: TACO for pickup localisation
+
+TACO stores real-world litter annotations in COCO format, including object
+boxes and segmentation masks. That is the useful starting format for a robotic
+arm because it preserves *where* each grasp candidate is. Its detailed labels
+are conservatively mapped into the station routes by `trashdrop.taco`:
+
+```bash
+uv run python -m trashdrop taco-index /path/to/taco/images \
+  --annotations /path/to/taco/data/annotations.json \
+  --manifest build/taco_object_manifest.jsonl
+```
+
+The generated JSONL records the image path, TACO source label, bounding box,
+station category, and stable data split. Unclear classes become `reject`; a
+food container is not treated as bio-waste. The simulator's `demo` command
+uses the same per-arm routes and validates that its five representative objects
+finish in local bins with an exclusive shared-strip reservation.
+
+## Optional: TrashNet for crop classification
 
 This project treats a data source and a waste-routing policy as different
 things. The commonly referenced TrashNet dataset is a small **classification**

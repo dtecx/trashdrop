@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from .station import ARMS, BINS, HANDOFF_HALF_WIDTH, ArmMount
+from .station import ARMS, HANDOFF_HALF_WIDTH, SORT_CATEGORIES, ArmMount, bin_for
 
 
 @dataclass(frozen=True)
@@ -55,13 +55,13 @@ class TwoArmDispatcher:
         loads = {self.left.name: 0, self.right.name: 0}
         assignments: list[ArmAssignment] = []
         for item in items:
-            if item.category not in BINS:
+            if item.category not in SORT_CATEGORIES:
                 raise ValueError(
                     f"{item.item_id!r} has unknown category {item.category!r}; "
                     "do not route it to a bin"
                 )
             arm, shared = self._select_arm(item, loads)
-            bin_spec = BINS[item.category]
+            bin_spec = bin_for(arm.name, item.category)
             assignments.append(
                 ArmAssignment(
                     arm=arm.name,

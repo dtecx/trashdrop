@@ -9,6 +9,7 @@ from .dataset import write_manifest
 from .planning import DetectedItem, TwoArmDispatcher
 from .scene_builder import build_station, validate_station
 from .station import SAMPLE_ITEMS
+from .taco import write_taco_manifest
 
 
 def _sample_detections() -> list[DetectedItem]:
@@ -32,7 +33,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="TrashDrop dual SO-101 virtual workcell")
     parser.add_argument(
         "command",
-        choices=("build", "validate", "viewer", "plan", "dataset-index"),
+        choices=("build", "validate", "viewer", "plan", "demo", "dataset-index", "taco-index"),
         nargs="?",
         default="validate",
     )
@@ -49,6 +50,7 @@ def main() -> None:
         default=Path("build/trashnet_manifest.jsonl"),
         help="JSONL manifest location (dataset-index only)",
     )
+    parser.add_argument("--annotations", type=Path, help="TACO COCO annotations JSON (taco-index only)")
     args = parser.parse_args()
 
     if args.command == "plan":
@@ -61,6 +63,24 @@ def main() -> None:
         print(f"indexed {report.images} images -> {report.manifest}")
         print(f"source classes: {report.source_counts}")
         print(f"station routes: {report.station_counts}; reject: {report.reject_images}")
+        return
+    if args.command == "taco-index":
+        if args.dataset_root is None or args.annotations is None:
+            parser.error("taco-index requires IMAGE_ROOT and --annotations ANNOTATIONS_JSON")
+        manifest = args.manifest
+        if manifest == Path("build/trashnet_manifest.jsonl"):
+            manifest = Path("build/taco_object_manifest.jsonl")
+        report = write_taco_manifest(args.annotations, args.dataset_root, manifest)
+        print(f"indexed {report.objects} TACO objects -> {report.manifest}")
+        print(f"station routes: {report.route_counts}; missing images: {report.missing_images}")
+        return
+    if args.command == "demo":
+        from .simulator import run_taco_demo
+
+        report = run_taco_demo()
+        print(f"two-arm TACO demo: {report.placed}/{report.assigned} placed; misses {report.misses}")
+        print(f"scene: {report.scene}")
+        print(f"trace: {report.trace}")
         return
 
     scene = build_station(output_path=args.out)

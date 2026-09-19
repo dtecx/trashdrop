@@ -21,7 +21,8 @@ class SceneBuilderTests(unittest.TestCase):
         self.assertIn('name="left_Rotation"', xml)
         self.assertIn('name="right_Rotation"', xml)
         self.assertIn('name="topdown"', xml)
-        self.assertIn('name="bin_plastic_floor"', xml)
+        self.assertIn('name="bin_right_plastic_floor"', xml)
+        self.assertIn('name="bin_left_reject_floor"', xml)
 
 
 if __name__ == "__main__":
