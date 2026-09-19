@@ -7,6 +7,9 @@
 # Generated simulation outputs and MuJoCo runtime files
 build/
 frames/
+data/
+models/
+artifacts/
 *.mp4
 *.png
 MUJOCO_LOG.TXT

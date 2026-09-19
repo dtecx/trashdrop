@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .dataset import write_manifest
 from .planning import DetectedItem, TwoArmDispatcher
 from .scene_builder import build_station, validate_station
 from .station import SAMPLE_ITEMS
@@ -31,15 +32,35 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="TrashDrop dual SO-101 virtual workcell")
     parser.add_argument(
         "command",
-        choices=("build", "validate", "viewer", "plan"),
+        choices=("build", "validate", "viewer", "plan", "dataset-index"),
         nargs="?",
         default="validate",
     )
+    parser.add_argument(
+        "dataset_root",
+        type=Path,
+        nargs="?",
+        help="TrashNet-style class-folder dataset root (dataset-index only)",
+    )
     parser.add_argument("--out", type=Path, help="generated MJCF location")
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=Path("build/trashnet_manifest.jsonl"),
+        help="JSONL manifest location (dataset-index only)",
+    )
     args = parser.parse_args()
 
     if args.command == "plan":
         _print_plan()
+        return
+    if args.command == "dataset-index":
+        if args.dataset_root is None:
+            parser.error("dataset-index requires DATASET_ROOT")
+        report = write_manifest(args.dataset_root, args.manifest)
+        print(f"indexed {report.images} images -> {report.manifest}")
+        print(f"source classes: {report.source_counts}")
+        print(f"station routes: {report.station_counts}; reject: {report.reject_images}")
         return
 
     scene = build_station(output_path=args.out)

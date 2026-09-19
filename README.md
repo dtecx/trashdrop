@@ -74,3 +74,16 @@ zone independently of this demo.
 
 The supplied `docs/SETUP.md` is retained as a single-arm setup reference. It
 is not the specification for this dual-arm workspace.
+
+## Dataset intake
+
+For the common TrashNet/"TrashDataset" class-folder layout, use the built-in
+manifest generator. It never downloads, copies, or adds images to Git:
+
+```bash
+uv run python -m trashdrop dataset-index /path/to/dataset-resized
+```
+
+See [dataset integration notes](docs/DATASET.md) for the mapping and the
+important limitation: TrashNet does not include bio-waste or multi-object
+detection labels.
