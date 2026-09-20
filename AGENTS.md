@@ -16,7 +16,9 @@ build a real dataset. Hardware is not connected yet.
 
 | | |
 |---|---|
-| Hackathon | starts ~2026-09-25; this is preparation |
+| Hackathon | Alien Bazaar, Warsaw, 2026-09-25 to 09-27; this is preparation |
+| Judged on | creativity, **proactive collaboration with other teams**, and effort during the event |
+| Hardware | issued at the venue. Nothing can be bring-upped in advance |
 | Success criterion the team set | **zero sorting errors**, not speed |
 | Bins | `bio`, `paper`, `plastic`, `metal`, `mixed` |
 | Compute on site | one MacBook, arms plugged into it |
@@ -65,6 +67,10 @@ simulator.py  probe.py
 - `dataset/` — capture on the rig, autolabel, review; plus indexers for the
   public datasets.
 - `simulator.py` — the cell, stepping, grasp, scoring.
+- `api.py` — the open intake API. Standard library only, on purpose: no team
+  should install anything to talk to us, and it must not break on venue wifi.
+  Collaboration is a judging criterion, so treat this as product surface, not
+  scaffolding.
 
 ## Invariants that must not break
 
@@ -109,6 +115,7 @@ this list fails, fix the code, not the test.
 uv sync --extra simulation --group dev
 uv run trashdrop probe                # layout reachability -- run after ANY geometry edit
 uv run trashdrop sim                  # full sort, writes out/
+uv run trashdrop serve --mock         # intake API for other teams
 uv run mjpython -m trashdrop sim --viewer   # live window (macOS needs mjpython)
 uv run python -m pytest tests/ -q
 ```

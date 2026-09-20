@@ -73,6 +73,21 @@ def _cmd_plan(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    from .api import DEFAULT_PORT, SortingLog, mock_sorter, serve
+
+    log = SortingLog(snapshot=args.out / "intake_log.json")
+    sorter = mock_sorter(log) if args.mock else None
+    if not args.mock:
+        print(
+            "note: no cell is wired in yet, so deliveries will sit in 'queued'.\n"
+            "      Use --mock to serve plausible results while the arms do not exist."
+        )
+    serve(host=args.host, port=args.port, log=log, sorter=sorter,
+          mode="mock" if args.mock else "live")
+    return 0
+
+
 # --- dataset ---------------------------------------------------------------
 
 
@@ -181,6 +196,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan = sub.add_parser("plan", help="show assignment without running physics")
     plan.set_defaults(func=_cmd_plan)
+
+    serve_parser = sub.add_parser("serve", help="open intake API for other teams' robots")
+    serve_parser.add_argument("--host", default="0.0.0.0")
+    serve_parser.add_argument("--port", type=int, default=8742)
+    serve_parser.add_argument(
+        "--mock", action="store_true", help="sort on a timer so others can integrate early"
+    )
+    serve_parser.set_defaults(func=_cmd_serve)
 
     capture = sub.add_parser("capture", help="shoot a dataset session on the rig")
     capture.add_argument("--session", required=True, help="e.g. 2026-09-20-kitchen")

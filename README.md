@@ -57,12 +57,15 @@ uv run trashdrop review --session 2026-09-20-kitchen
 | `trashdrop/perception/` | Class-agnostic detector + crop classifier; ArUco homography |
 | `trashdrop/dataset/` | Capture on the rig, autolabel, review; TACO and TrashNet indexers |
 | `trashdrop/simulator.py` | The cell: stepping, grasp, scoring |
+| `trashdrop/api.py` | Open intake API other teams' robots call. Standard library only |
 | `reference/sim_sort.py` | The verified single-arm baseline this grew from, kept unchanged |
 
 ## Reading order
 
 - [AGENTS.md](AGENTS.md) — architecture, module layers, and the invariants that
   must not break. Start here before changing code.
+- [docs/API.md](docs/API.md) — the open intake API. Hand this to any team
+  whose robot wants to deliver trash to us.
 - [docs/DATASET.md](docs/DATASET.md) — how to shoot the dataset so that nobody
   draws a bounding box.
 - [docs/APPROACH.md](docs/APPROACH.md) — why classic CV + IK rather than a
