@@ -11,6 +11,9 @@ Two practical notes:
   lights change. A stale background is the main failure mode.
 * Shadows read as change. ``shadow_value_ratio`` suppresses regions that only
   got darker without changing colour, which is what a shadow does.
+* Auto-exposure is handled rather than forbidden: the reference is pushed
+  through the camera's current response before differencing. See
+  ``perception/photometric.py`` for why that matters more than it sounds.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import numpy as np
 from ..station import MIXED_CATEGORY, PICK_ZONE
 from . import Detection
 from .calibration import PlaneCalibration
+from .photometric import compensated_reference
 
 
 class BackgroundDetector:
@@ -54,6 +58,8 @@ class BackgroundDetector:
         self.shadow_value_ratio = shadow_value_ratio
         self.crop_padding_px = crop_padding_px
         self.overlay: np.ndarray | None = None
+        # Last exposure correction, for diagnostics after a detection.
+        self.last_fit = None
 
     @classmethod
     def from_file(cls, path: Path, calibration: PlaneCalibration, classifier=None, **kwargs):
@@ -76,7 +82,12 @@ class BackgroundDetector:
                 "resolution as the live feed"
             )
         blur_live = cv2.GaussianBlur(rgb, (5, 5), 0)
-        blur_reference = cv2.GaussianBlur(self.background, (5, 5), 0)
+        # Correct the reference for exposure and white-balance drift first,
+        # otherwise a camera that rebalanced when the item arrived makes the
+        # entire frame read as foreground.
+        corrected, fit = compensated_reference(blur_live, cv2.GaussianBlur(self.background, (5, 5), 0))
+        self.last_fit = fit
+        blur_reference = corrected
         difference = cv2.absdiff(blur_live, blur_reference).max(axis=2)
         mask = (difference > self.diff_threshold).astype(np.uint8) * 255
 

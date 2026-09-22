@@ -64,6 +64,9 @@ simulator.py  probe.py
   hardware seam**: implementing it against `lerobot`'s `SO101Follower` is what
   makes the rest of the stack drive real arms.
 - `perception/` — two-stage: class-agnostic detector, then crop classifier.
+  `photometric.py` cancels exposure drift before any background subtraction;
+  without it a camera that re-exposes when an item arrives makes the whole
+  frame read as foreground.
 - `dataset/` — capture on the rig, autolabel, review; plus indexers for the
   public datasets.
 - `simulator.py` — the cell, stepping, grasp, scoring.
@@ -103,7 +106,14 @@ this list fails, fix the code, not the test.
    back the colour the simulator itself assigned. Never cite its results as
    perception performance, and never extend it toward real trash.
 
-7. **Anything uncertain goes to `mixed`.** Low classifier confidence, unknown
+7. **Never require the camera's exposure to be locked.** It frequently cannot
+   be: OpenCV on macOS goes through AVFoundation, which ignores the exposure
+   property on most cameras. Compensate instead — `perception/photometric.py`
+   fits the drift on the pixels that did not change. Guarded by
+   `test_photometric.py`, which asserts that a naive difference floods and the
+   compensated one does not.
+
+8. **Anything uncertain goes to `mixed`.** Low classifier confidence, unknown
    category, too wide for the jaws, too heavy. The pitch promises the cell
    flags what it cannot handle instead of guessing; that promise lives in
    `TwoArmDispatcher.dispatch` and `station.is_graspable`.
@@ -116,6 +126,7 @@ uv sync --extra simulation --group dev
 uv run trashdrop probe                # layout reachability -- run after ANY geometry edit
 uv run trashdrop sim                  # full sort, writes out/
 uv run trashdrop serve --mock         # intake API for other teams
+uv run trashdrop camcheck             # is this camera worth shooting through?
 uv run mjpython -m trashdrop sim --viewer   # live window (macOS needs mjpython)
 uv run python -m pytest tests/ -q
 ```

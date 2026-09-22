@@ -20,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ..perception.photometric import compensated_reference
 from .manifest import ManifestRow, read_manifest, split_by_object
 
 MIN_AREA_FRACTION = 0.0008
@@ -56,18 +57,29 @@ class AutolabelReport:
     labels_path: str
     per_category: dict[str, int]
     per_category_objects: dict[str, int]
+    # Frames where the camera had visibly re-exposed since the reference was
+    # shot. Compensated for, but a high count means the reference is going
+    # stale -- re-shoot it more often.
+    exposure_drifted_frames: int = 0
 
 
 def _foreground(frame, background, threshold: int = 28):
+    """Difference against the reference, after cancelling exposure drift.
+
+    Returns the mask and the photometric fit, so a caller can report frames
+    where the camera had visibly rebalanced -- that is worth knowing during a
+    shoot, while it can still be fixed.
+    """
+
     import cv2
 
     live = cv2.GaussianBlur(frame, (5, 5), 0)
-    reference = cv2.GaussianBlur(background, (5, 5), 0)
+    reference, fit = compensated_reference(live, cv2.GaussianBlur(background, (5, 5), 0))
     difference = cv2.absdiff(live, reference).max(axis=2)
     mask = (difference > threshold).astype(np.uint8) * 255
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2), fit
 
 
 def _largest_region(mask, frame_area: int):
@@ -128,6 +140,7 @@ def autolabel_session(
     records: list[LabelRecord] = []
     reasons: dict[str, int] = {}
     objects_seen: dict[str, set] = {}
+    drifted_frames = 0
 
     for row in rows:
         frame_path = root / row.image
@@ -144,7 +157,12 @@ def autolabel_session(
             continue
 
         height, width = frame.shape[:2]
-        mask = _foreground(frame, background, threshold)
+        mask, fit = _foreground(frame, background, threshold)
+        if not fit.trusted:
+            reasons["exposure_fit_failed"] = reasons.get("exposure_fit_failed", 0) + 1
+            continue
+        if fit.drifted:
+            drifted_frames += 1
         contour, info = _largest_region(mask, height * width)
         if contour is None:
             reasons[info] = reasons.get(info, 0) + 1
@@ -213,4 +231,5 @@ def autolabel_session(
         labels_path=str(labels_path),
         per_category=dict(sorted(per_category.items())),
         per_category_objects={k: len(v) for k, v in sorted(objects_seen.items())},
+        exposure_drifted_frames=drifted_frames,
     )

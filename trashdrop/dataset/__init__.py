@@ -17,6 +17,7 @@ assigned by object rather than by frame.
 from __future__ import annotations
 
 from .autolabel import AutolabelReport, LabelRecord, autolabel_session
+from .camcheck import CameraReport, analyse_idle, analyse_response, judge, run_camcheck
 from .capture import CaptureConfig, open_camera, run_capture
 from .manifest import ManifestRow, ManifestWriter, read_manifest, split_by_object, summarise
 from .taco import TacoIndexReport, index_taco_coco, route_taco_label, write_taco_manifest
@@ -29,7 +30,10 @@ from .trashnet import (
 
 __all__ = [
     "AutolabelReport",
+    "CameraReport",
     "CaptureConfig",
+    "analyse_idle",
+    "analyse_response",
     "IndexReport",
     "LabelRecord",
     "ManifestRow",
@@ -40,7 +44,9 @@ __all__ = [
     "index_taco_coco",
     "index_trashnet_style_dataset",
     "open_camera",
+    "judge",
     "read_manifest",
+    "run_camcheck",
     "route_taco_label",
     "run_capture",
     "split_by_object",

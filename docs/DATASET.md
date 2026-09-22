@@ -10,13 +10,36 @@ working minimum.
 
 ## Before the first photo
 
-1. **Fix the camera and do not touch it again.** Tape it down. If it moves, the
+0. **Grant camera permission, the day before.** On macOS the first call to the
+   camera fails with `not authorized to capture video` until the terminal is
+   allowed in System Settings → Privacy & Security → Camera. Find that out now,
+   not on the morning of the shoot.
+
+1. **Check the camera is worth shooting through.** Sixty seconds:
+
+   ```bash
+   uv run trashdrop camcheck
+   ```
+
+   It measures the four things that break background subtraction — exposure
+   wandering on a still scene, focus hunting, the view drifting, and which
+   camera properties can actually be set — and prints a verdict with the fix
+   for anything it fails. Run it again whenever the camera or the lighting
+   moves.
+
+   One warning worth knowing in advance: if it reports **the view moved** while
+   nothing was happening, suspect "auto-framing" or "smart zoom" before you
+   suspect the clamp. Those features digitally pan the image to follow a
+   subject, which voids the calibration and is fixed in the camera's software,
+   not on the table.
+
+2. **Fix the camera and do not touch it again.** Tape it down. If it moves, the
    calibration is void and every frame shot before the move belongs to a
    different geometry. Re-shoot the homography if it happens.
-2. **Shoot the empty table** — press `b` in the capture window. One reference
+3. **Shoot the empty table** — press `b` in the capture window. One reference
    per lighting condition. A stale background is the main failure mode of the
    whole pipeline.
-3. Shoot at **the same resolution and field of view** that inference will use.
+4. Shoot at **the same resolution and field of view** that inference will use.
 
 ## The loop
 
@@ -72,9 +95,27 @@ uv run trashdrop review   --session 2026-09-20-kitchen --drop bad_object_03
 
 `autolabel` refuses frames it cannot label confidently — more than one large
 region, a region touching the frame edge, or nothing changed. Read the
-`reasons` block it prints. A high `touches_frame_edge` count usually means the
+`reasons` block it prints, and the `exposure_drifted_frames` count next to it. A high `touches_frame_edge` count usually means the
 items are landing too close to the edge of the view; `more_than_one_object`
 usually means a hand stayed in shot.
+
+### About auto-exposure
+
+You do not have to defeat it. Put a dark item on a light table and most cameras
+brighten the whole frame; a naive difference then marks everything as
+foreground and the item disappears into it. Locking exposure is the textbook
+answer and often impossible — OpenCV on macOS talks to AVFoundation, which
+ignores the exposure property on most cameras.
+
+So the reference is pushed through the camera's current response before
+differencing, and the item survives regardless. `exposure_drifted_frames` in
+the autolabel report counts how often that correction was needed: a high number
+is not a failure, it just means re-shooting the background more often would
+give cleaner masks.
+
+The one case it cannot save is an item covering most of the view — there is
+then too little table left to measure the drift against. Those frames are
+refused as `exposure_fit_failed`.
 
 Then look at the contact sheets. A handful of wrong crops in a class of two
 hundred is enough to confuse a small classifier, and one bad burst is one

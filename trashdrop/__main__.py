@@ -108,6 +108,16 @@ def _cmd_capture(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_camcheck(args: argparse.Namespace) -> int:
+    from .dataset.camcheck import run_camcheck
+
+    source: str | int = args.camera
+    if isinstance(source, str) and source.isdigit():
+        source = int(source)
+    report = run_camcheck(source, idle_seconds=args.seconds, interactive=not args.quick)
+    return 0 if report.usable else 1
+
+
 def _cmd_autolabel(args: argparse.Namespace) -> int:
     from dataclasses import asdict
 
@@ -213,6 +223,12 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--burst", type=int, default=25)
     capture.add_argument("--lighting", default="default")
     capture.set_defaults(func=_cmd_capture)
+
+    camcheck = sub.add_parser("camcheck", help="is this camera good enough to shoot through?")
+    camcheck.add_argument("--camera", default="0", help="device index or stream URL")
+    camcheck.add_argument("--seconds", type=float, default=8.0, help="idle measurement window")
+    camcheck.add_argument("--quick", action="store_true", help="skip the dark-item step")
+    camcheck.set_defaults(func=_cmd_camcheck)
 
     autolabel = sub.add_parser("autolabel", help="derive masks and crops from a session")
     autolabel.add_argument("--session", required=True)
