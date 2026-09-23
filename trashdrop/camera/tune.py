@@ -3,8 +3,12 @@
 Three settings, three strategies -- each chosen after watching a simpler one
 fail on the real C920:
 
-* **Exposure and gain** -- let auto-exposure settle, read what it chose, freeze
-  it. The C920 reports its live auto values for these, so this is exact.
+* **Exposure and gain** -- measured from the image, not read back. The second
+  real tune froze what auto-exposure reported, 9.9 ms at gain 222, under a new
+  desk lamp: a short, noisy exposure. Now the exposure is chosen from 30, 20
+  and 10 ms -- multiples of the 10 ms mains period, so LED light cannot band --
+  as the longest that does not clip the brightest paper at the lowest gain,
+  and gain is raised only if that is still too dark.
 * **Focus** -- autofocus gives a starting point, a sweep over the printed
   target decides. The first version measured sharpness over the whole frame
   and chose position 140, which is badly out of focus at 70 cm. At gain 159 the
@@ -18,8 +22,11 @@ fail on the real C920:
   paper comes out neutral, red equal to blue.
 
 Put the marker sheet (``trashdrop camera markers``) flat in the middle of the
-table first. Without it the tune falls back to the frame centre for focus and
-to the camera's own report for white balance, and says so.
+view first. Without it the focus sweep does not run at all -- sweeping the
+frame centre is how the second real tune chose 250, the macro end of the
+range -- and white balance stays automatic; both are reported.
+
+``trashdrop camera preview`` shows what the tune sees, live.
 """
 
 from __future__ import annotations
@@ -275,6 +282,104 @@ def balance_white(
     return best, final
 
 
+# --- exposure ---------------------------------------------------------------
+
+# The brightest percentile of the frame -- the paper when the sheet is in view
+# -- should land here: bright enough to keep gain low, far enough under 255
+# that paper keeps its colour for white balance and items keep contrast.
+TARGET_BRIGHT = 215.0
+CLIP_LIMIT = 240.0
+# Exposure times that are whole multiples of the 10 ms period of 50 Hz light,
+# in the camera's units of 100 microseconds; 333 is the ceiling at 30 fps.
+FLICKER_SAFE = (300, 200, 100)
+FRAME_TIME_LIMIT = 333
+
+
+def brightness(frame) -> dict:
+    """Median, 99th percentile and clipped share, on the brightest channel."""
+
+    peak = np.asarray(frame).max(axis=2)
+    return {
+        "median": float(np.median(peak)),
+        "p99": float(np.percentile(peak, 99)),
+        "clipped": float((peak >= 250).mean()),
+    }
+
+
+def _bisect(measure, low: int, high: int, target: float, step: int = 1) -> int:
+    """Largest value in [low, high] whose measurement stays at or under target."""
+
+    while high - low > step:
+        middle = (low + high) // 2
+        if measure(middle) <= target:
+            low = middle
+        else:
+            high = middle
+    return low
+
+
+def tune_exposure(
+    capture,
+    camera,
+    *,
+    settle_frames: int = WHITE_SETTLE_FRAMES,
+    average: int = AVERAGE_FRAMES,
+    log=print,
+) -> tuple[int, int, dict, list[str]]:
+    """Choose exposure and gain from the image. Returns them, stats, notes."""
+
+    ranges = camera.ranges()
+    exposure_range = ranges["exposure"]
+    notes: list[str] = []
+    camera.set("exposure_auto", 0)
+    gain = ranges["gain"].minimum if "gain" in ranges else None
+    if gain is not None:
+        camera.set("gain", gain)
+
+    def bright_at(**settings) -> float:
+        for name, value in settings.items():
+            camera.set(name, value)
+        _drain(capture, settle_frames)
+        return brightness(average_frames(capture, average))["p99"]
+
+    ceiling = min(exposure_range.maximum, FRAME_TIME_LIMIT)
+    candidates = [value for value in FLICKER_SAFE if exposure_range.minimum <= value <= ceiling]
+    exposure = None
+    for value in candidates:  # longest first: least gain needed, least noise
+        if bright_at(exposure=value) <= CLIP_LIMIT:
+            exposure = value
+            break
+    if exposure is None:
+        # Even 10 ms clips at the lowest gain: go shorter, and accept that LED
+        # light may band at these speeds.
+        upper = candidates[-1] if candidates else ceiling
+        exposure = _bisect(lambda v: bright_at(exposure=v), exposure_range.minimum, upper, TARGET_BRIGHT)
+        notes.append(
+            f"the scene is bright enough to need {exposure / 10:.1f} ms, shorter than 10 ms; "
+            "under LED light that can show as bands. Dim or move the lamp if you see them."
+        )
+    camera.set("exposure", exposure)
+
+    if gain is not None and bright_at() < TARGET_BRIGHT - 15:
+        gain_range = ranges["gain"]
+        gain = _bisect(lambda v: bright_at(gain=v), gain_range.minimum, gain_range.maximum, TARGET_BRIGHT)
+        camera.set("gain", gain)
+        if gain > gain_range.minimum + DIM_GAIN_FRACTION * (gain_range.maximum - gain_range.minimum):
+            notes.append(
+                f"needed gain {gain} of {gain_range.maximum} even at {exposure / 10:.0f} ms: "
+                "the scene is too dark, so frames are noisy. Add light and tune again."
+            )
+
+    _drain(capture, settle_frames)
+    stats = brightness(average_frames(capture, average))
+    log(
+        f"  exposure {exposure / 10:.1f} ms, gain {gain}: "
+        f"brightest paper {stats['p99']:.0f}/255, median {stats['median']:.0f}, "
+        f"clipped {stats['clipped']:.1%}"
+    )
+    return exposure, gain, stats, notes
+
+
 # --- the whole tune ---------------------------------------------------------
 
 
@@ -302,40 +407,48 @@ def tune(
             camera.set(name, value)
             result.controls[name] = camera.get(name)
 
-    # Everything automatic, streaming, on the sheet: exposure settles, and
-    # autofocus finds a first guess on the star.
+    # Everything automatic, streaming, on the sheet: autofocus finds a first
+    # guess on the star while auto-exposure gives it a usable picture.
     for name in ("exposure_auto", "white_balance_auto", "focus_auto"):
         if name in ranges:
             camera.set(name, 1)
     log(f"  letting the camera's automatics settle ({converge_frames} frames)...")
     _drain(capture, converge_frames)
-
-    frozen = {name: camera.get(name) for name in ("exposure", "gain") if name in ranges}
     if "focus" in ranges:
         result.autofocus_guess = camera.get("focus")
-    for name in ("exposure_auto", "exposure_priority"):
-        if name in ranges:
-            camera.set(name, 0)
-            result.controls[name] = 0
-    for name, value in frozen.items():
-        camera.set(name, value)
-        result.controls[name] = camera.get(name)
-    log("  froze " + ", ".join(f"{name}={result.controls[name]}" for name in frozen))
 
-    if "gain" in ranges:
-        known = ranges["gain"]
-        level = (result.controls["gain"] - known.minimum) / max(1, known.maximum - known.minimum)
-        if level > DIM_GAIN_FRACTION:
-            result.notes.append(
-                f"gain is {result.controls['gain']} of {known.maximum}: the scene is too dark, "
-                "so frames are noisy. Add light on the table and tune again."
-            )
+    if "exposure" in ranges and "exposure_auto" in ranges:
+        exposure, gain, stats, notes = tune_exposure(
+            capture, camera, settle_frames=settle_frames, average=average, log=log
+        )
+        result.controls["exposure_auto"] = 0
+        result.controls["exposure"] = camera.get("exposure")
+        if gain is not None:
+            result.controls["gain"] = camera.get("gain")
+        result.notes.extend(notes)
+    if "exposure_priority" in ranges:
+        camera.set("exposure_priority", 0)
+        result.controls["exposure_priority"] = 0
 
     sheet = locate_sheet(average_frames(capture, average))
+    if sheet is None and "focus" in ranges and "focus_auto" in ranges:
+        # Autofocus may have parked the lens where the markers are too soft to
+        # read. Look for the sheet across the focus range before giving up.
+        known = ranges["focus"]
+        stride = max(known.step, ((known.maximum - known.minimum) // 10 // known.step) * known.step)
+        camera.set("focus_auto", 0)
+        for position in range(known.minimum, known.maximum + 1, stride):
+            camera.set("focus", position)
+            _drain(capture, settle_frames)
+            sheet = locate_sheet(average_frames(capture, average))
+            if sheet is not None:
+                log(f"  the sheet came into view at focus {position}")
+                break
     if sheet is None:
         result.notes.append(
-            "marker sheet not found -- focus was judged on the frame centre and white "
-            "balance taken from the camera. Lay the sheet flat in view and tune again."
+            "marker sheet NOT found in the view, so focus was not swept and white balance "
+            "stays automatic. Check with `trashdrop camera preview` that the whole sheet is "
+            "in the picture, then tune again."
         )
     else:
         log(f"  found the marker sheet ({sheet.markers} of 4 markers)")
@@ -343,24 +456,25 @@ def tune(
     if "focus" in ranges and "focus_auto" in ranges:
         camera.set("focus_auto", 0)
         result.controls["focus_auto"] = 0
-        roi = sheet.focus_roi if sheet else centre_roi(average_frames(capture, 1))
-        log(f"  autofocus suggested {result.autofocus_guess}; sweeping the lens to check...")
-        best, curve, clarity = sweep_focus(capture, camera, roi, settle_frames=settle_frames, average=average)
-        result.focus_curve = curve
-        if clarity >= MIN_PEAK_RATIO:
-            chosen = best
-            log(f"  focus: {best} ({clarity:.1f}x sharper than typical)")
-        elif result.autofocus_guess is not None:
-            chosen = result.autofocus_guess
-            result.notes.append(
-                f"the focus sweep had no clear peak ({clarity:.2f}x); kept autofocus's "
-                f"position {chosen}. Check the image, and add light if gain is high."
+        known = ranges["focus"]
+        chosen = result.autofocus_guess
+        if sheet is not None:
+            log(f"  autofocus suggested {result.autofocus_guess}; sweeping the lens over the star...")
+            best, curve, clarity = sweep_focus(
+                capture, camera, sheet.focus_roi, settle_frames=settle_frames, average=average
             )
+            result.focus_curve = curve
+            at_the_edge = best in (known.minimum, known.maximum)
+            if clarity >= MIN_PEAK_RATIO and not at_the_edge:
+                chosen = best
+                log(f"  focus: {best} ({clarity:.1f}x sharper than typical)")
+            else:
+                why = "the best was at the end of the range" if at_the_edge else f"no clear peak ({clarity:.2f}x)"
+                result.notes.append(f"focus sweep rejected: {why}; kept autofocus's position {chosen}.")
         else:
-            raise TuneError(
-                "no clear focus peak -- put the printed marker sheet flat in the middle "
-                "of the table, add light, and run the tune again."
-            )
+            result.notes.append(f"focus fixed at autofocus's own choice, {chosen}, without a check.")
+        if chosen is None:
+            raise TuneError("autofocus gave no position and the sweep could not run")
         camera.set("focus", chosen)
         result.controls["focus"] = camera.get("focus")
 
@@ -371,18 +485,17 @@ def tune(
             value, ratio = balance_white(
                 capture, camera, sheet.paper_patches, settle_frames=settle_frames, average=average
             )
-            log(f"  white balance: {value} K (red/blue {ratio:.3f})")
+            camera.set("white_balance", value)
+            result.controls["white_balance_auto"] = 0
+            result.controls["white_balance"] = camera.get("white_balance")
+            log(f"  white balance: {result.controls['white_balance']} K (red/blue {ratio:.3f})")
         else:
+            # Freezing an unmeasured value is worse than leaving it automatic:
+            # the C920 does not report what its auto white balance chose.
+            camera.set("white_balance_auto", 1)
+            result.controls["white_balance_auto"] = 1
             if paper is not None:
-                result.notes.append(
-                    "the sheet's paper is overexposed, so white balance could not be measured "
-                    "on it; kept the camera's own value."
-                )
-            value = camera.get("white_balance")
-            camera.set("white_balance_auto", 0)
-        camera.set("white_balance", value)
-        result.controls["white_balance_auto"] = 0
-        result.controls["white_balance"] = camera.get("white_balance")
+                result.notes.append("the sheet's paper is overexposed; white balance left automatic.")
 
     if "focus" not in ranges:
         result.notes.append("this camera has no adjustable focus; nothing to tune there")

@@ -46,6 +46,8 @@ class CameraReport:
     controllable: dict[str, bool] = field(default_factory=dict)
 
     idle_brightness_drift: float = 0.0
+    median_level: float | None = None
+    clipped_fraction: float | None = None
     focus_swing_ratio: float = 0.0
     geometric_drift_px: float | None = 0.0
 
@@ -77,6 +79,11 @@ class CameraReport:
             )
             if ignored:
                 lines.append(f"  ignored          {', '.join(ignored)}")
+        if self.median_level is not None and self.clipped_fraction is not None:
+            lines.append(
+                f"  exposure         median {self.median_level:.0f}/255, "
+                f"clipped {self.clipped_fraction:.1%} of pixels"
+            )
         lines += [
             "",
             f"  brightness drift {self.idle_brightness_drift:5.2f} levels "
@@ -197,8 +204,24 @@ def analyse_response(reference, occupied) -> dict:
     }
 
 
+# More than this share of blown-out pixels and white items lose their shape.
+MAX_CLIPPED_FRACTION = 0.02
+MIN_MEDIAN_LEVEL = 40.0
+
+
 def judge(report: CameraReport) -> CameraReport:
     """Turn measurements into warnings a person can act on."""
+
+    if report.clipped_fraction is not None and report.clipped_fraction > MAX_CLIPPED_FRACTION:
+        report.warnings.append(
+            f"overexposed: {report.clipped_fraction:.0%} of the picture is blown to white. "
+            "Run `uv run trashdrop camera tune` with the sheet in view -- it picks the "
+            "exposure from the image -- or turn the lamp away from the table."
+        )
+    if report.median_level is not None and report.median_level < MIN_MEDIAN_LEVEL:
+        report.notes.append(
+            f"the picture is dark (median {report.median_level:.0f}/255): add light, then tune."
+        )
 
     if report.idle_brightness_drift > MAX_IDLE_BRIGHTNESS_DRIFT:
         report.warnings.append(
@@ -340,6 +363,10 @@ def run_camcheck(
         report.idle_brightness_drift = idle["brightness_drift"]
         report.focus_swing_ratio = idle["focus_swing_ratio"]
         report.geometric_drift_px = idle["geometric_drift_px"]
+        from ..camera.tune import brightness
+
+        levels = brightness(_average(frames[-5:]))
+        report.median_level, report.clipped_fraction = levels["median"], levels["clipped"]
         if not idle["sheet_found"]:
             report.notes.append("marker sheet not in view: focus was judged on the frame centre")
         reference = frames[-1]

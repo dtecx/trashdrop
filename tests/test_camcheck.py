@@ -167,6 +167,20 @@ class ResponseTests(unittest.TestCase):
         self.assertFalse(report.usable)
 
 
+class ExposureLevelTests(unittest.TestCase):
+    def test_a_blown_out_picture_is_a_problem(self) -> None:
+        # The second real tune left the camera at 31 ms and gain 222 under a
+        # desk lamp: the preview was nearly all white.
+        report = judge(CameraReport(median_level=250.0, clipped_fraction=0.6))
+        self.assertFalse(report.usable)
+        self.assertTrue(any("overexposed" in w for w in report.warnings), report.warnings)
+        self.assertIn("clipped 60.0%", report.render())
+
+    def test_a_normal_picture_passes(self) -> None:
+        report = judge(CameraReport(median_level=140.0, clipped_fraction=0.001))
+        self.assertTrue(report.usable, report.warnings)
+
+
 class RenderTests(unittest.TestCase):
     def test_render_states_a_verdict(self) -> None:
         text = report_from(steady()).render()

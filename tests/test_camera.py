@@ -22,7 +22,7 @@ from trashdrop.camera import config as camera_config  # noqa: E402
 from trashdrop.camera.config import CameraSettings, apply, load, render, save  # noqa: E402
 from trashdrop.camera.iokit import TransportError  # noqa: E402
 from trashdrop.camera.markers import MARKER_WORLD, marker_page_positions, render_sheet, write_pdf  # noqa: E402
-from trashdrop.camera.tune import focus_chart, locate_sheet, sharpness, tune  # noqa: E402
+from trashdrop.camera.tune import brightness, focus_chart, locate_sheet, sharpness, tune  # noqa: E402
 from trashdrop.camera.uvc import (  # noqa: E402
     AE_APERTURE_PRIORITY,
     AE_MANUAL,
@@ -235,21 +235,24 @@ class ConfigTests(unittest.TestCase):
 class RigScene:
     """A webcam over the marker sheet that reacts like the real rig did.
 
-    Heavy sensor noise (the real tune ran at gain 159), blur that grows with
-    focus error, a colour cast that depends on the white-balance setting, and
-    a C920-like autofocus that parks the lens at its own guess. White balance
-    is deliberately NOT updated by the fake's "auto" mode -- the real C920 did
-    not report it either.
+    Sensor noise like the real tune saw, blur that grows with focus error, a
+    colour cast set by the white-balance value, and brightness that follows
+    exposure and gain -- ``light`` is how much light is on the table, where
+    1.0 exposes the paper at about 210 with 30 ms at gain 0. Autofocus parks
+    the lens at its own guess. White balance is NOT updated by the fake's
+    "auto" mode -- the real C920 did not report it either.
     """
 
     def __init__(self, device: FakeC920, *, true_focus: int = 35, neutral_wb: int = 4600,
-                 noise: float = 9.0, af_guess: int | None = None, with_sheet: bool = True):
-        self.device, self.true_focus, self.neutral_wb, self.noise = device, true_focus, neutral_wb, noise
+                 noise: float = 9.0, af_guess: int | None = None, with_sheet: bool = True,
+                 light: float = 1.0):
+        self.device, self.true_focus, self.neutral_wb = device, true_focus, neutral_wb
+        self.noise, self.light = noise, light
         self.af_guess = true_focus if af_guess is None else af_guess
         self.rng = np.random.default_rng(7)
         canvas = np.full((360, 640), 150.0, np.float32)  # the board
         if with_sheet:
-            page = render_sheet().astype(np.float32) * 0.82  # paper not clipped
+            page = render_sheet().astype(np.float32) * 0.82
             page = cv2.resize(page, (340, 240), interpolation=cv2.INTER_AREA)
             canvas[60:300, 150:490] = page
         self.base = cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)
@@ -262,6 +265,7 @@ class RigScene:
         error = abs(state["focus"] - self.true_focus)
         if error:
             frame = cv2.GaussianBlur(frame, (0, 0), error / 10.0)
+        frame *= self.light * (state["exposure"] / 300.0) * (1.0 + state["gain"] / 64.0)
         tint = (state["white_balance"] - self.neutral_wb) * 0.00012
         frame[..., 2] *= 1.0 + tint
         frame[..., 0] *= 1.0 - tint
@@ -273,7 +277,7 @@ def quick_tune(scene: RigScene, camera: UvcCamera):
     return tune(scene, camera, converge_frames=3, settle_frames=1, average=2, log=lambda *_: None)
 
 
-class TuneTests(unittest.TestCase):
+class TuneFocusTests(unittest.TestCase):
     def test_focus_is_found_through_heavy_noise(self) -> None:
         # The first real tune chose 140 for a scene in focus near 35: a
         # whole-frame metric at high gain measures noise. This is that scene.
@@ -289,38 +293,26 @@ class TuneTests(unittest.TestCase):
         self.assertEqual(result.autofocus_guess, 60)
         self.assertLessEqual(abs(result.controls["focus"] - 35), 5, result.focus_curve)
 
-    def test_white_balance_is_measured_not_read_back(self) -> None:
+    def test_a_peak_at_the_end_of_the_range_is_rejected(self) -> None:
+        # The second real tune chose 250, the macro end. At 70 cm a peak at the
+        # end of the range means the sweep went wrong, not that the table is
+        # ten centimetres away.
         camera, device = fake_camera()
-        device.current["white_balance"] = 4200  # a stale value, like the real camera held
-        result = quick_tune(RigScene(device, neutral_wb=4600), camera)
-        self.assertLessEqual(abs(result.controls["white_balance"] - 4600), 150)
-        self.assertEqual(result.controls["white_balance_auto"], 0)
+        result = quick_tune(RigScene(device, true_focus=250, af_guess=40), camera)
+        self.assertEqual(result.controls["focus"], 40)
+        self.assertTrue(any("end of the range" in note for note in result.notes), result.notes)
 
-    def test_auto_exposure_choice_is_frozen_not_invented(self) -> None:
+    def test_without_the_sheet_focus_is_not_swept(self) -> None:
         camera, device = fake_camera()
-        device.current["exposure"] = 312  # what "auto" converged to
-        device.current["gain"] = 40
-        result = quick_tune(RigScene(device), camera)
-        self.assertEqual(result.controls["exposure"], 312)
-        self.assertEqual(result.controls["gain"], 40)
-        self.assertEqual(result.controls["exposure_auto"], 0)
-        self.assertEqual(result.controls["power_line_frequency"], 1)  # 50 Hz, Europe
-
-    def test_a_dark_scene_is_called_out(self) -> None:
-        camera, device = fake_camera()
-        device.current["gain"] = 159  # what the real rig ran at
-        result = quick_tune(RigScene(device), camera)
-        self.assertTrue(any("too dark" in note for note in result.notes), result.notes)
-
-    def test_without_the_sheet_it_says_so_and_falls_back(self) -> None:
-        camera, device = fake_camera()
-        scene = RigScene(device, with_sheet=False, noise=2.0)
-        # A bare board has nothing to focus on; the tune must not invent a peak.
-        result = quick_tune(scene, camera)
-        self.assertTrue(any("marker sheet not found" in note for note in result.notes), result.notes)
+        result = quick_tune(RigScene(device, with_sheet=False, af_guess=45, noise=2.0), camera)
+        self.assertEqual(result.focus_curve, {})
+        self.assertEqual(result.controls["focus"], 45)  # autofocus's own choice
+        self.assertEqual(result.controls["white_balance_auto"], 1)  # never freeze an unmeasured value
+        self.assertTrue(any("NOT found" in note for note in result.notes), result.notes)
 
     def test_the_sheet_is_located_by_its_markers(self) -> None:
         camera, device = fake_camera()
+        device.current["exposure"] = 300
         _, frame = RigScene(device, noise=2.0).read()
         sheet = locate_sheet(frame)
         self.assertIsNotNone(sheet)
@@ -333,6 +325,55 @@ class TuneTests(unittest.TestCase):
         self.assertIn("<- chosen", focus_chart({0: 1.0, 5: 3.0, 10: 2.0}))
         chart = focus_chart({0: 1.0, 5: 3.0, 10: 2.0}, chosen=10)
         self.assertTrue(chart.splitlines()[2].endswith("<- chosen"))
+
+
+class TuneExposureTests(unittest.TestCase):
+    def test_exposure_is_measured_not_read_back(self) -> None:
+        # The second real tune froze what auto-exposure reported -- 9.9 ms at
+        # gain 222 -- and the picture came out wrong. A fake camera reporting
+        # exactly that must not be believed.
+        camera, device = fake_camera()
+        device.current["exposure"], device.current["gain"] = 99, 222
+        result = quick_tune(RigScene(device, light=1.0), camera)
+        self.assertEqual(result.controls["exposure"], 300)  # 30 ms: longest, flicker-safe
+        self.assertLess(result.controls["gain"], 30)
+        self.assertEqual(result.controls["exposure_auto"], 0)
+
+    def test_a_bright_lamp_shortens_exposure_in_flicker_safe_steps(self) -> None:
+        camera, device = fake_camera()
+        result = quick_tune(RigScene(device, light=2.0), camera)
+        self.assertEqual(result.controls["exposure"], 100)  # 10 ms, a whole mains period
+
+    def test_very_bright_goes_under_10_ms_and_warns_about_banding(self) -> None:
+        camera, device = fake_camera()
+        result = quick_tune(RigScene(device, light=5.0), camera)
+        self.assertLess(result.controls["exposure"], 100)
+        self.assertTrue(any("bands" in note for note in result.notes), result.notes)
+
+    def test_a_dark_scene_raises_gain_and_says_so(self) -> None:
+        camera, device = fake_camera()
+        result = quick_tune(RigScene(device, light=0.3), camera)
+        self.assertEqual(result.controls["exposure"], 300)
+        self.assertGreater(result.controls["gain"], 100)
+        self.assertTrue(any("too dark" in note for note in result.notes), result.notes)
+
+    def test_paper_is_not_clipped_after_the_tune(self) -> None:
+        camera, device = fake_camera()
+        scene = RigScene(device, light=1.6, noise=2.0)
+        quick_tune(scene, camera)
+        self.assertLess(brightness(scene.read()[1])["p99"], 245)
+
+    def test_white_balance_is_measured_not_read_back(self) -> None:
+        camera, device = fake_camera()
+        device.current["white_balance"] = 4200  # a stale value, like the real camera held
+        result = quick_tune(RigScene(device, neutral_wb=4600), camera)
+        self.assertLessEqual(abs(result.controls["white_balance"] - 4600), 150)
+        self.assertEqual(result.controls["white_balance_auto"], 0)
+
+    def test_mains_is_set_to_50_hz(self) -> None:
+        camera, device = fake_camera()
+        result = quick_tune(RigScene(device), camera)
+        self.assertEqual(result.controls["power_line_frequency"], 1)
 
 
 class MarkerSheetTests(unittest.TestCase):
