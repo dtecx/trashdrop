@@ -56,6 +56,18 @@ autofocus hunting over a plain board, and focus is ours.
 A side effect: since exposure is automatic everywhere, **QuickTime shows what
 the pipeline sees** and is a fine preview for framing and focus.
 
+## Which camera is which
+
+Commands find the webcam's video stream on their own (`--camera auto`, the
+default): the webcam zooms for a moment, and the stream that zooms with it is
+the one. An explicit `--camera N` is checked the same way and refused if it
+does not follow the webcam.
+
+This exists because it went wrong: on the MacBook the webcam was index 0 and
+the built-in camera index 1, and a whole afternoon of tuning ran on the
+laptop's camera while the settings went to the webcam. `uv run trashdrop
+cameras` prints which index the webcam is and saves a snapshot of each.
+
 ## Setup, once
 
 ```bash
@@ -77,7 +89,7 @@ gain and less noise on every crop. A desk lamp aimed at the board is enough.
 Then lay the sheet flat in view, lights as they will be during the shoot:
 
 ```bash
-uv run trashdrop camera tune --camera 1 --note "home rig, 70 cm"
+uv run trashdrop camera tune --note "home rig, 70 cm"
 ```
 
 About 30 seconds. It sets mains to 50 Hz (the camera shipped at 60 Hz, which
@@ -93,7 +105,7 @@ QuickTime that all four markers are in the picture.
 ## Check it
 
 ```bash
-uv run trashdrop camcheck --camera 1
+uv run trashdrop camcheck
 ```
 
 `focus swing` should now be near zero, and the first line should read

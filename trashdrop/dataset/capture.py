@@ -297,6 +297,12 @@ def run_capture(
 
         print(apply_saved_settings())
         reapply_at_frame = 30
+        if isinstance(config.source, int):
+            # Never shoot a dataset through the wrong camera: the laptop's own
+            # camera once passed for the webcam for a whole afternoon.
+            from ..__main__ import _require_same_camera, _webcam
+
+            _require_same_camera(capture, config.source, _webcam(), refuse=True)
     shutter = AutoShutter(None, clock=clock)
     if session.load_background() is not None:
         shutter.set_background(session.background)

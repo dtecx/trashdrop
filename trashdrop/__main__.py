@@ -95,6 +95,59 @@ def _source(value: str) -> str | int:
     return int(value) if value.isdigit() else value
 
 
+def _webcam():
+    """The UVC webcam, or None where it cannot be reached (other OS, a phone)."""
+
+    try:
+        from .camera import UvcCamera
+
+        return UvcCamera.find()
+    except Exception:
+        return None
+
+
+def _resolve_camera(value: str, width: int, height: int) -> str | int:
+    """Turn --camera into a stream source; "auto" finds the webcam's index.
+
+    An afternoon of tuning once ran on the laptop's built-in camera because
+    the webcam was index 0, not 1. "auto" asks the webcam itself: it zooms for
+    a moment, and the stream that zooms with it is the webcam.
+    """
+
+    if value != "auto":
+        return _source(value)
+    camera = _webcam()
+    if camera is None:
+        print("camera: cannot reach the webcam's controls to identify it; using index 0")
+        return 0
+    from .camera.identify import find_stream_index
+    from .dataset.capture import open_camera
+
+    print("finding the webcam's video stream (it zooms in and out for a moment)...")
+    return find_stream_index(camera, lambda index: open_camera(index, width, height))
+
+
+def _require_same_camera(capture, source, camera, *, refuse: bool) -> None:
+    """Check the stream really is the webcam whose settings we change."""
+
+    if camera is None or not isinstance(source, int):
+        return  # a phone URL, or no controls to wiggle
+    from .camera.identify import stream_follows_camera
+
+    verdict, detail = stream_follows_camera(capture, camera)
+    if verdict is False:
+        message = (
+            f"--camera {source} is NOT the webcam {camera.usb_id}: {detail}.\n"
+            "Leave --camera out and the webcam is found automatically."
+        )
+        if refuse:
+            capture.release()
+            raise RuntimeError(message)
+        print(f"WARNING: {message}")
+    elif verdict is None:
+        print(f"camera: could not confirm the stream is the webcam ({detail})")
+
+
 def _cmd_cameras(args: argparse.Namespace) -> int:
     from .dataset.cameras import device_names, list_cameras
 
@@ -116,9 +169,21 @@ def _cmd_cameras(args: argparse.Namespace) -> int:
             f"  index {info.index}: {info.resolution[0]}x{info.resolution[1]} "
             f"({info.backend})  snapshot -> {info.snapshot}"
         )
-    print()
-    print("open the snapshots: the webcam is the one looking down at the table.")
-    print("then use it with --camera <index>")
+    camera = _webcam()
+    if camera is not None:
+        from .camera.identify import find_stream_index
+        from .dataset.capture import open_camera
+
+        try:
+            index = find_stream_index(
+                camera, lambda i: open_camera(i, args.width, args.height), args.max_index, log=lambda *_: None
+            )
+            print(f"\nthe webcam {camera.usb_id} is index {index}. Commands find it on their own;")
+            print(f"pass --camera {index} only to force it.")
+            return 0
+        except RuntimeError as error:
+            print(f"\n{error}")
+    print("\nopen the snapshots: the webcam is the one looking down at the table.")
     return 0
 
 
@@ -159,7 +224,9 @@ def _cmd_camera_tune(args: argparse.Namespace) -> int:
     ranges = camera.ranges()
     print(f"{camera.describe()}: {len(ranges)} adjustable controls")
 
-    capture = open_camera(_source(args.camera), args.width, args.height)
+    source = _resolve_camera(args.camera, args.width, args.height)
+    capture = open_camera(source, args.width, args.height)
+    _require_same_camera(capture, source, camera, refuse=True)
     try:
         print("warming up...")
         until = time.time() + 2.0
@@ -183,7 +250,7 @@ def _cmd_camera_tune(args: argparse.Namespace) -> int:
         print(f"autofocus suggested {result.autofocus_guess}; chose {result.controls.get('focus')}")
     for note in result.notes:
         print(f"NOTE: {note}")
-    print(f"\nwrote {path}. It is applied now; check with: uv run trashdrop camcheck --camera {args.camera}")
+    print(f"\nwrote {path}. It is applied now; check with: uv run trashdrop camcheck")
     return 0
 
 
@@ -214,10 +281,11 @@ def _cmd_camera_markers(args: argparse.Namespace) -> int:
 def _cmd_capture(args: argparse.Namespace) -> int:
     from .dataset.capture import CaptureConfig, run_capture
 
+    source = _resolve_camera(args.camera, args.width, args.height)
     config = CaptureConfig(
         session=args.session,
         root=args.data,
-        source=_source(args.camera),
+        source=source,
         width=args.width,
         height=args.height,
         burst=args.burst,
@@ -232,7 +300,7 @@ def _cmd_camcheck(args: argparse.Namespace) -> int:
     from .dataset.camcheck import run_camcheck
 
     report = run_camcheck(
-        _source(args.camera),
+        _resolve_camera(args.camera, args.width, args.height),
         idle_seconds=args.seconds,
         interactive=not args.quick,
         width=args.width,
@@ -357,7 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser.set_defaults(func=_cmd_camera_apply)
 
     tune_parser = camera_sub.add_parser("tune", help="find settings for this rig and write camera.toml")
-    tune_parser.add_argument("--camera", default="0", help="OpenCV index of the same webcam")
+    tune_parser.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")
     tune_parser.add_argument("--width", type=int, default=1920)
     tune_parser.add_argument("--height", type=int, default=1080)
     tune_parser.add_argument("--mains", type=int, choices=(50, 60), default=50, help="Hz; Europe is 50")
@@ -377,7 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--session", required=True, help="e.g. 2026-09-23-home")
     capture.add_argument("--category", default="plastic", help="starting class; keys 1-5 switch")
     capture.add_argument("--object-id", default=None, help="default: next free <class>_NN")
-    capture.add_argument("--camera", default="0", help="device index or stream URL")
+    capture.add_argument("--camera", default="auto", help="auto finds the webcam; or an index, or a phone URL")
     capture.add_argument("--width", type=int, default=1920)
     capture.add_argument("--height", type=int, default=1080)
     capture.add_argument("--burst", type=int, default=3, help="frames per SPACE press")
@@ -386,7 +454,7 @@ def build_parser() -> argparse.ArgumentParser:
     capture.set_defaults(func=_cmd_capture)
 
     camcheck = sub.add_parser("camcheck", help="is this camera good enough to shoot through?")
-    camcheck.add_argument("--camera", default="0", help="device index or stream URL")
+    camcheck.add_argument("--camera", default="auto", help="auto finds the webcam; or an index, or a URL")
     camcheck.add_argument("--seconds", type=float, default=8.0, help="idle measurement window")
     camcheck.add_argument("--quick", action="store_true", help="skip the dark-item step")
     camcheck.add_argument("--width", type=int, default=1920)

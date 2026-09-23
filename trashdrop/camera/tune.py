@@ -217,9 +217,17 @@ def sweep_focus(
     span = known.maximum - known.minimum
     coarse = max(step, int(round(span / COARSE_POINTS / step)) * step)
 
+    last = {"position": camera.get("focus")}
+
     def measure(position: int) -> float:
+        # A long lens move needs longer to arrive: the fine pass starts with a
+        # jump back from the far end of the coarse pass, and on the real C920
+        # that first reading came out low because the motor was still moving.
+        jump = abs(position - last["position"])
+        extra = settle_frames * min(4, jump // max(1, 5 * coarse))
         camera.set("focus", position)
-        _drain(capture, settle_frames)
+        _drain(capture, settle_frames + extra)
+        last["position"] = position
         return roi_sharpness(average_frames(capture, average), roi)
 
     curve = {position: measure(position) for position in range(known.minimum, known.maximum + 1, coarse)}

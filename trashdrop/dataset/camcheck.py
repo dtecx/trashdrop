@@ -327,6 +327,18 @@ def run_camcheck(
     camera_status = apply_saved_settings()
     print(camera_status)
     report.notes.append(camera_status)
+    if isinstance(source, int):
+        from ..camera.identify import stream_follows_camera
+        from ..__main__ import _webcam
+
+        webcam = _webcam()
+        if webcam is not None:
+            verdict, detail = stream_follows_camera(capture, webcam)
+            if verdict is False:
+                report.warnings.append(
+                    f"this stream (index {source}) is NOT the webcam {webcam.usb_id}: {detail}. "
+                    "Everything below describes some other camera. Leave --camera out."
+                )
     try:
         report.backend = capture.getBackendName()
         report.controllable = probe_controls(capture)

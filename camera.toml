@@ -1,0 +1,45 @@
+# TrashDrop camera settings -- applied every time the camera is opened.
+#
+# Written by `trashdrop camera tune`. Edit any value by hand, then push it
+# to the camera with:
+#     uv run trashdrop camera apply
+# Capture and camcheck also push it every time they open the camera.
+#
+# Re-tune whenever the camera height, the lighting or the table changes --
+# on site that is the first thing to do after mounting the camera.
+
+[camera]
+backend = "uvc"
+device = "046d:08e5"
+tuned_at = "2026-09-23 18:52"
+note = "home rig, 70 cm, desk lamp"
+
+[controls]
+# 1 = 50 Hz (Europe, Poland), 2 = 60 Hz. The wrong one shows as rolling bands under LED light.
+# camera range 1..2, step 1, default 2
+power_line_frequency = 1
+
+# Digital zoom. Keep at the minimum: zooming crops the view and voids the calibration.
+# camera range 100..500, step 1, default 100
+zoom = 100
+
+# true on macOS: it runs its own auto-exposure while streaming and rewrites manual exposure within half a second (measured on the C920). Focus and white balance are left alone.
+exposure_auto = true
+
+# false = colours are fixed and do not drift with what is on the table.
+white_balance_auto = false
+
+# Colour temperature in kelvin. Frozen from what auto white balance chose.
+# camera range 2000..6500, step 1, default 4000
+white_balance = 4778
+
+# Autofocus hunts on a plain board, which blurs frames and shifts the image. Keep false.
+focus_auto = false
+
+# Lens position, found by sweeping the lens over a printed target on the table.
+# camera range 0..250, step 5, default 0
+focus = 25
+
+# Brightens the subject against a bright background; 0 keeps exposure predictable.
+# camera range 0..1, step 1, default 0
+backlight_compensation = 0

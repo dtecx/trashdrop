@@ -48,6 +48,20 @@ modules that consume them.
   overwriting it.
 - **A degrees/radians mix-up** put the second arm beside the first instead of
   facing it, and everything still compiled and ran. See invariant 1.
+- **Tuning the wrong camera.** On a MacBook the USB webcam was OpenCV index 0
+  and the built-in camera index 1. An afternoon of tuning ran with
+  `--camera 1`: settings went to the webcam over USB, frames came from the
+  laptop camera looking at the person at the keyboard. Every result was noise
+  -- focus 140, then 250, "0.3 ms exposure at median 142", "233 px of drift"
+  -- and each was debugged as if it were real. `--camera` now defaults to
+  `auto`, which zooms the webcam for a moment and takes the stream that zooms
+  with it; an explicit index that does not follow the webcam is refused.
+  **When camera results make no physical sense, check which camera the
+  frames come from before anything else** -- `out/cameras/*.jpg` shows it.
+- **macOS runs its own auto-exposure** over UVC webcams while a stream is
+  open, rewriting manual exposure and gain within half a second. Focus and
+  white balance are left alone. So `camera.toml` fixes those two and leaves
+  exposure automatic on macOS. See docs/CAMERA.md.
 - **A self-fulfilling score.** An earlier implementation teleported each item
   into its bin on release and then reported 5/5. If a metric cannot fail, it is
   not a metric. See invariant 4.
