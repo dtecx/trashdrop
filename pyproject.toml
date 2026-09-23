@@ -21,11 +21,12 @@ simulation = [
     "numpy>=1.26",
     "opencv-python>=4.9",
 ]
-# Direct USB control of the webcam (focus, exposure, white balance), because on
-# macOS OpenCV cannot set any of them. libusb comes as a wheel: nothing global.
+# Direct USB control of the webcam (focus, exposure, white balance). macOS uses
+# a small IOKit helper compiled on first use and needs no Python packages;
+# Linux goes through libusb, which comes as a wheel.
 camera = [
-    "pyusb>=1.2",
-    "libusb-package>=1.0",
+    "pyusb>=1.2; sys_platform == 'linux'",
+    "libusb-package>=1.0; sys_platform == 'linux'",
 ]
 # Everything the capture rig needs: the dataset tools plus camera control.
 rig = [

@@ -71,7 +71,10 @@ class CameraReport:
         if self.controllable:
             settable = [name for name, ok in self.controllable.items() if ok]
             ignored = [name for name, ok in self.controllable.items() if not ok]
-            lines.append(f"  controllable     {', '.join(settable) or 'nothing'}")
+            lines.append(
+                f"  OpenCV controls  {', '.join(settable) or 'nothing'}"
+                "   (on macOS always nothing; camera.toml does this instead)"
+            )
             if ignored:
                 lines.append(f"  ignored          {', '.join(ignored)}")
         lines += [

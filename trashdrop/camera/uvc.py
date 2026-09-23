@@ -4,23 +4,28 @@ Why this exists: on macOS, OpenCV reaches the camera through AVFoundation,
 which accepts and then silently ignores every property -- ``trashdrop
 camcheck`` reports "controllable: nothing" for a C920. The camera itself
 speaks UVC, the USB class standard every webcam implements, and UVC has
-requests for exactly these controls. Sending them needs libusb, which ships as
-a pip wheel (``libusb-package``), so nothing is installed system-wide.
+requests for exactly these controls.
 
-The catch, measured on this project's MacBook: macOS lets any process read the
-camera's descriptors but refuses its control requests -- as a normal user AND
-as root -- because macOS's own UVC driver holds the device. Two routes remain
-open in principle: the driver may only hold it while something is streaming,
-or root may detach the driver, write the settings and attach it again.
-``trashdrop camera probe`` tries both and says which one this machine allows.
+How the requests reach the camera depends on the OS:
+
+* **macOS** -- a small IOKit helper (``iokit.py``). Measured on this project's
+  MacBook with a C920: works as a normal user, no sudo, even while another app
+  is streaming. libusb was tried first and refused even as root; the reason is
+  in ``uvc_iokit.c``.
+* **Linux** -- libusb (``pip install pyusb libusb-package``), with the usual
+  udev permission on the device.
+
+Everything above the transport -- control names, ranges, the auto-exposure
+mapping -- is the same on both.
 """
 
 from __future__ import annotations
 
-import os
 import struct
-import time
+import sys
 from dataclasses import dataclass
+
+from .iokit import TransportError
 
 VIDEO_CLASS = 0x0E
 VIDEO_CONTROL_SUBCLASS = 0x01
@@ -85,25 +90,19 @@ class ControlRange:
 
 
 class CameraPermissionError(RuntimeError):
-    """The OS refused the control request. On macOS: not running as root."""
+    """The OS refused the control request."""
 
 
-def _is_root() -> bool:
-    return hasattr(os, "geteuid") and os.geteuid() == 0
-
-
-def permission_hint() -> str:
-    if _is_root():
+def permission_hint(error: Exception | None = None) -> str:
+    detail = f" ({error})" if error else ""
+    if sys.platform == "darwin":
         return (
-            "even root is refused: macOS's own camera driver holds the webcam.\n"
-            "Close every app using the camera (QuickTime, FaceTime, browsers), then find\n"
-            "out which route this Mac allows:\n"
-            "    sudo .venv/bin/python -B -m trashdrop camera probe"
+            f"macOS refused the camera request{detail}. Unplug and replug the camera, "
+            "then check with: uv run trashdrop camera probe"
         )
     return (
-        "macOS refuses camera settings from a normal user (its own driver holds the\n"
-        "webcam). Try as root, with every app using the camera closed:\n"
-        "    sudo .venv/bin/python -B -m trashdrop camera probe"
+        f"the OS refused the camera request{detail}. On Linux, give your user access "
+        "to the device (a udev rule for the camera's vendor id), or run as root."
     )
 
 
@@ -125,12 +124,61 @@ def parse_video_control(extra: bytes) -> tuple[int | None, int | None]:
     return camera_id, processing_id
 
 
+def parse_configuration(config: bytes) -> tuple[int, int, int] | None:
+    """(VideoControl interface number, camera id, processing id) from a whole
+    configuration descriptor, or None if there is no usable VideoControl."""
+
+    position = 0
+    while position + 2 <= len(config):
+        length, kind = config[position], config[position + 1]
+        if length < 2:
+            break
+        if kind == 0x04 and length >= 9 and position + 7 <= len(config):
+            number, klass, subclass = config[position + 2], config[position + 5], config[position + 6]
+            if klass == VIDEO_CLASS and subclass == VIDEO_CONTROL_SUBCLASS:
+                # The class-specific descriptors follow until the next interface.
+                start = end = position + length
+                while end + 2 <= len(config) and config[end] >= 2 and config[end + 1] != 0x04:
+                    end += config[end]
+                camera_id, processing_id = parse_video_control(config[start:end])
+                if camera_id is not None and processing_id is not None:
+                    return number, camera_id, processing_id
+        position += length
+    return None
+
+
 def _decode(data, size: int, signed: bool) -> int:
     return int.from_bytes(bytes(data[:size]), "little", signed=signed)
 
 
 def _encode(value: int, size: int, signed: bool) -> bytes:
     return int(value).to_bytes(size, "little", signed=signed)
+
+
+class _LibusbDevice:
+    """pyusb device with its errors translated to TransportError."""
+
+    def __init__(self, device) -> None:
+        self._device = device
+        self.idVendor, self.idProduct = device.idVendor, device.idProduct
+
+    def ctrl_transfer(self, *args):
+        import usb.core
+
+        try:
+            return self._device.ctrl_transfer(*args)
+        except usb.core.USBError as error:
+            number = getattr(error, "errno", None)
+            raise TransportError(
+                number or -1, permission=number == 13, stall=number == 32, detail=str(error)
+            ) from error
+
+
+def _parse_usb_id(usb_id: str | None) -> tuple[int, int] | None:
+    if not usb_id:
+        return None
+    vendor, product = (int(part, 16) for part in usb_id.split(":"))
+    return vendor, product
 
 
 class UvcCamera:
@@ -151,24 +199,40 @@ class UvcCamera:
 
     @classmethod
     def find(cls, usb_id: str | None = None) -> "UvcCamera":
-        """First UVC device on the bus, or the one matching ``vvvv:pppp``.
+        """The first UVC webcam, or the one matching ``vvvv:pppp``.
 
         On an Apple-silicon MacBook the built-in camera is not a USB device,
         so the first UVC device found is the external webcam.
         """
 
+        wanted = _parse_usb_id(usb_id)
+        if sys.platform == "darwin":
+            return cls._find_iokit(wanted)
+        return cls._find_libusb(wanted)
+
+    @classmethod
+    def _find_iokit(cls, wanted: tuple[int, int] | None) -> "UvcCamera":
+        from .iokit import IOKitDevice, list_devices
+
+        candidates = [wanted] if wanted else list_devices()
+        if not candidates:
+            raise RuntimeError("no UVC webcam found on USB -- is it plugged in?")
+        device = IOKitDevice(*candidates[0])
+        found = parse_configuration(device.configuration_descriptor())
+        if found is None:
+            device.close()
+            raise RuntimeError(f"{device.idVendor:04x}:{device.idProduct:04x} has no UVC VideoControl interface")
+        return cls(device, *found)
+
+    @classmethod
+    def _find_libusb(cls, wanted: tuple[int, int] | None) -> "UvcCamera":
         try:
             import libusb_package
             import usb.core
         except ImportError as error:  # pragma: no cover - optional dependency
-            raise RuntimeError("camera control needs the rig extra: uv sync --extra rig") from error
+            raise RuntimeError("camera control on this OS needs: uv sync --extra rig") from error
 
         backend = libusb_package.get_libusb1_backend()
-        wanted = None
-        if usb_id:
-            vendor, product = (int(part, 16) for part in usb_id.split(":"))
-            wanted = (vendor, product)
-
         for device in usb.core.find(find_all=True, backend=backend):
             if wanted and (device.idVendor, device.idProduct) != wanted:
                 continue
@@ -178,49 +242,40 @@ class UvcCamera:
                         interface.bInterfaceClass == VIDEO_CLASS
                         and interface.bInterfaceSubClass == VIDEO_CONTROL_SUBCLASS
                     ):
-                        camera_id, processing_id = parse_video_control(
-                            bytes(interface.extra_descriptors)
-                        )
+                        camera_id, processing_id = parse_video_control(bytes(interface.extra_descriptors))
                         if camera_id is not None and processing_id is not None:
-                            return cls(device, interface.bInterfaceNumber, camera_id, processing_id)
-        where = f" matching {usb_id}" if usb_id else ""
-        raise RuntimeError(f"no UVC webcam found on USB{where} -- is it plugged in?")
+                            return cls(_LibusbDevice(device), interface.bInterfaceNumber, camera_id, processing_id)
+        raise RuntimeError("no UVC webcam found on USB -- is it plugged in?")
 
     # --- raw requests ------------------------------------------------------
 
     def _request(self, request: int, control: UvcControl, payload=None):
-        import usb.core
-
         value = control.selector << 8
         index = (self.entities[control.unit] << 8) | self.interface
         try:
             if request == SET_CUR:
                 return self.device.ctrl_transfer(TO_INTERFACE, SET_CUR, value, index, payload, 1000)
             return self.device.ctrl_transfer(FROM_INTERFACE, request, value, index, control.size, 1000)
-        except usb.core.USBError as error:
-            if getattr(error, "errno", None) == 13 or "Access denied" in str(error):
-                raise CameraPermissionError(permission_hint()) from error
+        except TransportError as error:
+            if error.permission:
+                raise CameraPermissionError(permission_hint(error)) from error
             raise
 
-    def supports(self, name: str) -> bool:
-        import usb.core
+    def _read(self, request: int, control: UvcControl) -> int:
+        return _decode(self._request(request, control), control.size, control.signed)
 
+    def supports(self, name: str) -> bool:
         control = CONTROLS[name]
         try:
             info = self._request(GET_INFO, UvcControl(name, control.unit, control.selector, 1))
-        except usb.core.USBError:
+        except TransportError:
             return False
         return bool(info) and bool(info[0] & 0x01) and bool(info[0] & 0x02)
 
     # --- public ------------------------------------------------------------
 
-    def _read(self, request: int, control: UvcControl) -> int:
-        return _decode(self._request(request, control), control.size, control.signed)
-
     def ranges(self) -> dict[str, ControlRange]:
         """Every control this camera supports, with its limits."""
-
-        import usb.core
 
         if self._ranges is not None:
             return self._ranges
@@ -231,7 +286,7 @@ class UvcCamera:
                 continue
             try:
                 default = self._read(GET_DEF, control)
-            except usb.core.USBError:
+            except TransportError:
                 continue
 
             if name == "exposure_auto":
@@ -240,7 +295,7 @@ class UvcCamera:
                 # C920 calls automatic.
                 try:
                     modes = self._read(GET_RES, control)
-                except usb.core.USBError:
+                except TransportError:
                     modes = default
                 if modes & AE_APERTURE_PRIORITY:
                     self._ae_auto_mode = AE_APERTURE_PRIORITY
@@ -259,7 +314,7 @@ class UvcCamera:
                     step=max(1, self._read(GET_RES, control)),
                     default=default,
                 )
-            except usb.core.USBError:
+            except TransportError:
                 continue
 
         self._ranges = found
@@ -283,97 +338,23 @@ class UvcCamera:
         return f"UVC webcam {self.usb_id}"
 
 
-def probe_access(usb_id: str | None = None, log=print, settle_seconds: float = 4.0) -> str:
-    """Find out which route to the camera's controls this machine allows.
+def probe_access(usb_id: str | None = None, log=print) -> str:
+    """Can this machine read and write the camera's settings? "ok" or "blocked".
 
-    Returns "direct", "detach", "detach-volatile" or "blocked":
-
-    * direct          -- control requests just work (nothing is streaming).
-    * detach          -- root can detach macOS's driver, write, re-attach, and
-                         the camera keeps the setting through the re-attach.
-    * detach-volatile -- the detach works but the setting is lost when macOS
-                         takes the camera back, so it is no use.
-    * blocked         -- no route.
-
-    Only ``focus_auto`` is touched, and it is put back the way it was found.
+    Only ``focus_auto`` is touched, and it is written back unchanged.
     """
 
-    import usb.core
-    import usb.util
-
     camera = UvcCamera.find(usb_id)
-    control = CONTROLS["focus_auto"]
     log(
         f"found {camera.describe()}: VideoControl interface {camera.interface}, "
         f"camera terminal {camera.entities['camera']}, processing unit {camera.entities['processing']}"
     )
-    log(f"running as root: {'yes' if _is_root() else 'no'}")
-
-    def read(cam: "UvcCamera") -> int:
-        return _decode(cam._request(GET_CUR, control), 1, False)
-
-    def write(cam: "UvcCamera", value: int) -> None:
-        cam._request(SET_CUR, control, _encode(value, 1, False))
-
+    control = CONTROLS["focus_auto"]
     try:
-        value = read(camera)
-        write(camera, value)
-        log(f"direct: read and write both work (focus_auto = {value})")
-        return "direct"
-    except CameraPermissionError:
-        log("direct: refused")
-    except usb.core.USBError as error:
-        log(f"direct: failed ({error})")
-
-    if not _is_root():
-        log("the detach route needs root -- run this again with sudo")
+        value = _decode(camera._request(GET_CUR, control), 1, False)
+        camera._request(SET_CUR, control, _encode(value, 1, False))
+    except (TransportError, CameraPermissionError) as error:
+        log(f"read/write: failed -- {error}")
         return "blocked"
-
-    def captured(usb_filter: str) -> "UvcCamera":
-        cam = UvcCamera.find(usb_filter)
-        if cam.device.is_kernel_driver_active(cam.interface):
-            cam.device.detach_kernel_driver(cam.interface)
-        usb.util.claim_interface(cam.device, cam.interface)
-        return cam
-
-    def released(cam: "UvcCamera") -> None:
-        try:
-            usb.util.release_interface(cam.device, cam.interface)
-        finally:
-            try:
-                cam.device.attach_kernel_driver(cam.interface)
-            finally:
-                usb.util.dispose_resources(cam.device)
-
-    usb_filter = camera.usb_id
-    usb.util.dispose_resources(camera.device)
-    try:
-        cam = captured(usb_filter)
-    except (usb.core.USBError, NotImplementedError, RuntimeError) as error:
-        log(f"detach: failed ({error})")
-        return "blocked"
-    try:
-        original = read(cam)
-        write(cam, 0)
-        log(f"detach: read and write work (focus_auto was {original}, set to 0 to test)")
-    except Exception as error:
-        log(f"detach: detached, but control requests still fail ({error})")
-        released(cam)
-        return "blocked"
-    released(cam)
-
-    log(f"re-attached macOS's driver; waiting {settle_seconds:.0f} s for the camera to come back...")
-    time.sleep(settle_seconds)
-    try:
-        cam = captured(usb_filter)
-        survived = read(cam) == 0
-        write(cam, original)  # leave it the way it was found
-        released(cam)
-    except Exception as error:
-        log(f"could not check whether the setting survived ({error})")
-        return "detach-volatile"
-    if survived:
-        log("the setting SURVIVED macOS taking the camera back -- camera.toml can work this way")
-        return "detach"
-    log("the setting was LOST when macOS took the camera back")
-    return "detach-volatile"
+    log(f"read/write: ok (focus_auto = {value}, written back unchanged)")
+    return "ok"

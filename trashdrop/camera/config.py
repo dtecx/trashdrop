@@ -116,8 +116,8 @@ def render(settings: CameraSettings, ranges: dict[str, ControlRange] | None = No
         "#",
         "# Written by `trashdrop camera tune`. Edit any value by hand, then push it",
         "# to the camera with:",
-        "#     sudo .venv/bin/python -B -m trashdrop camera apply",
-        "# (macOS only lets root send settings to a webcam.)",
+        "#     uv run trashdrop camera apply",
+        "# Capture and camcheck also push it every time they open the camera.",
         "#",
         "# Re-tune whenever the camera height, the lighting or the table changes --",
         "# on site that is the first thing to do after mounting the camera.",
@@ -148,9 +148,10 @@ def render(settings: CameraSettings, ranges: dict[str, ControlRange] | None = No
 
 
 def hand_back(path: Path) -> None:
-    """Under sudo, give a written file back to the user who ran sudo.
+    """If run under sudo anyway, give written files back to the real user.
 
-    Otherwise camera.toml ends up owned by root and the next hand edit fails.
+    Camera control no longer needs root on macOS, but someone will still try
+    it with sudo, and a root-owned camera.toml or dataset breaks the next edit.
     """
 
     uid, gid = os.environ.get("SUDO_UID"), os.environ.get("SUDO_GID")

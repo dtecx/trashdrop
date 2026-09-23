@@ -35,3 +35,6 @@ __pycache__/
 
 # Previous camera.toml versions kept by `camera tune`; camera.toml itself is committed.
 camera.*.toml.bak
+
+# The macOS camera helper, compiled from uvc_iokit.c on first use.
+trashdrop/camera/_build/

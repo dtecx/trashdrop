@@ -153,8 +153,8 @@ def _cmd_camera_tune(args: argparse.Namespace) -> int:
     from .camera import CameraSettings, UvcCamera, config_path, focus_chart, save, tune
     from .dataset.capture import open_camera
 
-    # Talk to the camera first: if this needs sudo, say so before anything
-    # else happens.
+    # Talk to the camera first: if control is refused, say so before any
+    # video is opened.
     camera = UvcCamera.find(args.usb_id)
     ranges = camera.ranges()
     print(f"{camera.describe()}: {len(ranges)} adjustable controls")
@@ -189,15 +189,15 @@ def _cmd_camera_probe(args: argparse.Namespace) -> int:
     from .camera.uvc import probe_access
 
     verdict = probe_access(args.usb_id)
-    advice = {
-        "direct": "camera control works as is. Run: sudo .venv/bin/python -B -m trashdrop camera tune --camera 1",
-        "detach": "camera control works through detaching the driver. Send this output to Claude.",
-        "detach-volatile": "settings do not survive -- use the fallback in docs/CAMERA.md.",
-        "blocked": "no route on this Mac -- use the fallback in docs/CAMERA.md.",
-    }[verdict]
-    print(f"\nVERDICT: {verdict}\n{advice}")
-    print("If the camera vanished from apps, unplug and replug it.")
-    return 0 if verdict in ("direct", "detach") else 1
+    if verdict == "ok":
+        print()
+        print("VERDICT: camera settings can be read and written. Next:")
+        print("    uv run trashdrop camera tune --camera 1")
+        return 0
+    print()
+    print("VERDICT: blocked -- unplug and replug the camera and try again; if it persists,")
+    print("see the fallback in docs/CAMERA.md.")
+    return 1
 
 
 def _cmd_camera_markers(args: argparse.Namespace) -> int:

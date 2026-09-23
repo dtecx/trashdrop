@@ -1,9 +1,9 @@
 """Camera control: the UVC protocol, camera.toml, the tune, the marker sheet.
 
-The real webcam needs root on macOS, so the protocol layer is exercised against
-a fake USB device that answers the way a C920 does -- including stalling on
-GET_MIN/GET_MAX for on/off controls, which the UVC spec allows and a real C920
-does.
+The protocol layer is exercised against a fake USB device that answers the way
+a C920 does -- including stalling on GET_MIN/GET_MAX for on/off controls, which
+the UVC spec allows and a real C920 does. The same fake stands in for either
+transport (IOKit on macOS, libusb on Linux): both raise TransportError.
 """
 
 from __future__ import annotations
@@ -15,12 +15,12 @@ from pathlib import Path
 
 import pytest
 
-usb_core = pytest.importorskip("usb.core", reason="needs the camera extra")
 cv2 = pytest.importorskip("cv2", reason="needs the dataset extra")
 import numpy as np  # noqa: E402
 
 from trashdrop.camera import config as camera_config  # noqa: E402
 from trashdrop.camera.config import CameraSettings, apply, load, render, save  # noqa: E402
+from trashdrop.camera.iokit import TransportError  # noqa: E402
 from trashdrop.camera.markers import MARKER_WORLD, marker_page_positions, render_sheet, write_pdf  # noqa: E402
 from trashdrop.camera.tune import TuneError, focus_chart, sharpness, tune  # noqa: E402
 from trashdrop.camera.uvc import (  # noqa: E402
@@ -30,6 +30,7 @@ from trashdrop.camera.uvc import (  # noqa: E402
     CameraPermissionError,
     ControlRange,
     UvcCamera,
+    parse_configuration,
     parse_video_control,
 )
 from trashdrop.station import PICK_ZONE  # noqa: E402
@@ -77,10 +78,10 @@ class FakeC920:
 
     def ctrl_transfer(self, request_type, request, value, index, data, timeout=None):
         if self.deny:
-            raise usb_core.USBError("Access denied (insufficient permissions)", errno=13)
+            raise TransportError.from_ioreturn(0xE00002C1)  # not privileged
         control = self.by_key.get((index >> 8, value >> 8))
         if control is None:
-            raise usb_core.USBError("Pipe error", errno=32)
+            raise TransportError.from_ioreturn(0xE000404F)  # stall
         minimum, maximum, step, default = self.SPEC[control.name]
         if request == SET_CUR:
             number = int.from_bytes(bytes(data), "little", signed=control.signed)
@@ -96,7 +97,7 @@ class FakeC920:
             GET_RES: step,
         }[request]
         if answer is None:
-            raise usb_core.USBError("Pipe error", errno=32)  # a real C920 stalls here
+            raise TransportError.from_ioreturn(0xE000404F)  # a real C920 stalls here
         size = 1 if request == GET_INFO else control.size
         return list(int(answer).to_bytes(size, "little", signed=control.signed))
 
@@ -120,6 +121,29 @@ class DescriptorTests(unittest.TestCase):
         self.assertEqual(parse_video_control(b""), (None, None))
 
 
+def configuration_descriptor() -> bytes:
+    """A whole configuration: an audio interface first, then video control,
+    then video streaming -- the parser must pick the right one."""
+
+    config_header = bytes([9, 0x02, 0, 0, 3, 1, 0, 0x80, 250])
+    audio = bytes([9, 0x04, 2, 0, 0, 0x01, 0x01, 0, 0])
+    video_control = bytes([9, 0x04, 0, 0, 1, 0x0E, 0x01, 0, 0])
+    streaming = bytes([9, 0x04, 1, 0, 1, 0x0E, 0x02, 0, 0])
+    streaming_header = bytes([14, 0x24, 0x01, 1, 0, 0, 0x81, 0, 3, 0, 0, 0, 1, 0])
+    body = audio + video_control + video_control_descriptors() + streaming + streaming_header
+    total = len(config_header) + len(body)
+    return bytes([9, 0x02, total & 0xFF, total >> 8]) + config_header[4:] + body
+
+
+class ConfigurationDescriptorTests(unittest.TestCase):
+    def test_finds_the_video_control_interface_among_others(self) -> None:
+        self.assertEqual(parse_configuration(configuration_descriptor()), (0, 1, 3))
+
+    def test_a_device_without_video_control(self) -> None:
+        self.assertIsNone(parse_configuration(bytes([9, 0x02, 18, 0, 1, 1, 0, 0x80, 50,
+                                                     9, 0x04, 0, 0, 0, 0x03, 0, 0, 0])))
+
+
 class UvcTests(unittest.TestCase):
     def test_ranges_survive_stalls_on_boolean_controls(self) -> None:
         camera, _ = fake_camera()
@@ -137,11 +161,18 @@ class UvcTests(unittest.TestCase):
         self.assertEqual(device.current["exposure_auto"], AE_APERTURE_PRIORITY)
         self.assertEqual(camera.get("exposure_auto"), 1)
 
-    def test_permission_errors_explain_sudo(self) -> None:
+    def test_permission_errors_are_named_and_actionable(self) -> None:
         camera, _ = fake_camera(deny=True)
         with self.assertRaises(CameraPermissionError) as caught:
             camera.get("focus")
-        self.assertIn("sudo", str(caught.exception))
+        self.assertIn("refused", str(caught.exception))
+        self.assertNotIn("sudo", str(caught.exception))  # root does not help on macOS
+
+    def test_stalls_are_classified(self) -> None:
+        error = TransportError.from_ioreturn(0xE000404F)
+        self.assertTrue(error.stall)
+        self.assertFalse(error.permission)
+        self.assertIn("does not support", str(error))
 
 
 class ConfigTests(unittest.TestCase):

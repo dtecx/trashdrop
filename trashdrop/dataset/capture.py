@@ -373,8 +373,8 @@ def run_capture(
         capture.release()
         ui.close()
         session.manifest.close()
-        # When run under sudo (to push camera settings), hand the frames back
-        # to the real user rather than leaving a root-owned dataset.
+        # If someone ran capture under sudo anyway, hand the frames back to
+        # the real user rather than leaving a root-owned dataset.
         from ..camera.config import hand_back
 
         hand_back(session.raw_root)
