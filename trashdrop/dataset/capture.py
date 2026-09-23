@@ -287,13 +287,16 @@ def run_capture(
 
     session = _Session(config, category, _clean_id(object_id) if object_id else None, clock)
     ui = ui or _OpenCvUi()
+    reapply_at_frame = None
     if capture is None:
         capture = open_camera(config.source, config.width, config.height)
         # Push camera.toml (fixed focus, exposure, white balance) once the
-        # stream is open, in case opening it reset anything.
+        # stream is open -- and once more a second later, because starting a
+        # stream reset exposure and gain on the real C920.
         from ..camera import apply_saved_settings
 
         print(apply_saved_settings())
+        reapply_at_frame = 30
     shutter = AutoShutter(None, clock=clock)
     if session.load_background() is not None:
         shutter.set_background(session.background)
@@ -305,6 +308,7 @@ def run_capture(
     )
     print(f"  now shooting [{session.category}] {session.object_id}")
 
+    frames_seen = 0
     try:
         while True:
             ok, frame = capture.read()
@@ -312,6 +316,13 @@ def run_capture(
                 if ui.key() == ord("q"):
                     break
                 continue
+            frames_seen += 1
+            if reapply_at_frame is not None and frames_seen == reapply_at_frame:
+                from ..camera import apply_saved_settings
+
+                status = apply_saved_settings()
+                if "not pushed" in status:
+                    print(status)
 
             if session.auto:
                 view = shutter.update(frame)

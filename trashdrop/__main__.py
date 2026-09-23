@@ -177,10 +177,12 @@ def _cmd_camera_tune(args: argparse.Namespace) -> int:
         note=args.note,
     )
     path = save(settings, args.config or config_path(), ranges)
-    print("\nfocus sweep (sharpness of the target at each lens position):")
-    print(focus_chart(result.focus_curve))
+    print("\nfocus sweep (sharpness of the star at each lens position):")
+    print(focus_chart(result.focus_curve, chosen=result.controls.get("focus")))
+    if result.autofocus_guess is not None:
+        print(f"autofocus suggested {result.autofocus_guess}; chose {result.controls.get('focus')}")
     for note in result.notes:
-        print(f"note: {note}")
+        print(f"NOTE: {note}")
     print(f"\nwrote {path}. It is applied now; check with: uv run trashdrop camcheck --camera {args.camera}")
     return 0
 

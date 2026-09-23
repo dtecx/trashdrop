@@ -22,7 +22,7 @@ from trashdrop.camera import config as camera_config  # noqa: E402
 from trashdrop.camera.config import CameraSettings, apply, load, render, save  # noqa: E402
 from trashdrop.camera.iokit import TransportError  # noqa: E402
 from trashdrop.camera.markers import MARKER_WORLD, marker_page_positions, render_sheet, write_pdf  # noqa: E402
-from trashdrop.camera.tune import TuneError, focus_chart, sharpness, tune  # noqa: E402
+from trashdrop.camera.tune import focus_chart, locate_sheet, sharpness, tune  # noqa: E402
 from trashdrop.camera.uvc import (  # noqa: E402
     AE_APERTURE_PRIORITY,
     AE_MANUAL,
@@ -232,56 +232,107 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(len(list(Path(directory).glob("camera.*.toml.bak"))), 1)
 
 
-class FocusScene:
-    """A camera whose image is sharpest at one lens position, like a real one."""
+class RigScene:
+    """A webcam over the marker sheet that reacts like the real rig did.
 
-    def __init__(self, camera: UvcCamera, device: FakeC920, true_focus: int = 45, textured: bool = True):
-        self.camera, self.device, self.true_focus = camera, device, true_focus
-        rng = np.random.default_rng(3)
-        if textured:
-            tile = (rng.random((45, 80)) > 0.5).astype(np.uint8) * 255
-            self.base = cv2.resize(tile, (640, 360), interpolation=cv2.INTER_NEAREST)
-        else:
-            self.base = np.full((360, 640), 170, np.uint8)
-        self.base = cv2.cvtColor(self.base, cv2.COLOR_GRAY2BGR)
+    Heavy sensor noise (the real tune ran at gain 159), blur that grows with
+    focus error, a colour cast that depends on the white-balance setting, and
+    a C920-like autofocus that parks the lens at its own guess. White balance
+    is deliberately NOT updated by the fake's "auto" mode -- the real C920 did
+    not report it either.
+    """
+
+    def __init__(self, device: FakeC920, *, true_focus: int = 35, neutral_wb: int = 4600,
+                 noise: float = 9.0, af_guess: int | None = None, with_sheet: bool = True):
+        self.device, self.true_focus, self.neutral_wb, self.noise = device, true_focus, neutral_wb, noise
+        self.af_guess = true_focus if af_guess is None else af_guess
+        self.rng = np.random.default_rng(7)
+        canvas = np.full((360, 640), 150.0, np.float32)  # the board
+        if with_sheet:
+            page = render_sheet().astype(np.float32) * 0.82  # paper not clipped
+            page = cv2.resize(page, (340, 240), interpolation=cv2.INTER_AREA)
+            canvas[60:300, 150:490] = page
+        self.base = cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)
 
     def read(self):
-        error = abs(self.device.current["focus"] - self.true_focus)
-        radius = 1 + error // 10
-        frame = cv2.GaussianBlur(self.base, (2 * radius + 1, 2 * radius + 1), 0) if error else self.base.copy()
-        return True, frame
+        state = self.device.current
+        if state["focus_auto"]:
+            state["focus"] = self.af_guess
+        frame = self.base.copy()
+        error = abs(state["focus"] - self.true_focus)
+        if error:
+            frame = cv2.GaussianBlur(frame, (0, 0), error / 10.0)
+        tint = (state["white_balance"] - self.neutral_wb) * 0.00012
+        frame[..., 2] *= 1.0 + tint
+        frame[..., 0] *= 1.0 - tint
+        frame += self.rng.normal(0.0, self.noise, frame.shape)
+        return True, np.clip(frame, 0, 255).astype(np.uint8)
+
+
+def quick_tune(scene: RigScene, camera: UvcCamera):
+    return tune(scene, camera, converge_frames=3, settle_frames=1, average=2, log=lambda *_: None)
 
 
 class TuneTests(unittest.TestCase):
-    def test_the_sweep_finds_the_sharp_position(self) -> None:
+    def test_focus_is_found_through_heavy_noise(self) -> None:
+        # The first real tune chose 140 for a scene in focus near 35: a
+        # whole-frame metric at high gain measures noise. This is that scene.
         camera, device = fake_camera()
-        result = tune(FocusScene(camera, device, true_focus=45), camera,
-                      converge_frames=3, settle_frames=1, log=lambda *_: None)
-        self.assertEqual(result.controls["focus"], 45)
+        result = quick_tune(RigScene(device, true_focus=35, noise=9.0), camera)
+        self.assertLessEqual(abs(result.controls["focus"] - 35), 5, result.focus_curve)
         self.assertEqual(result.controls["focus_auto"], 0)
-        self.assertEqual(device.current["focus"], 45, "the camera must be left at the chosen focus")
+        self.assertEqual(device.current["focus"], result.controls["focus"])
+
+    def test_a_wrong_autofocus_guess_is_corrected_by_the_sweep(self) -> None:
+        camera, device = fake_camera()
+        result = quick_tune(RigScene(device, true_focus=35, af_guess=60), camera)
+        self.assertEqual(result.autofocus_guess, 60)
+        self.assertLessEqual(abs(result.controls["focus"] - 35), 5, result.focus_curve)
+
+    def test_white_balance_is_measured_not_read_back(self) -> None:
+        camera, device = fake_camera()
+        device.current["white_balance"] = 4200  # a stale value, like the real camera held
+        result = quick_tune(RigScene(device, neutral_wb=4600), camera)
+        self.assertLessEqual(abs(result.controls["white_balance"] - 4600), 150)
+        self.assertEqual(result.controls["white_balance_auto"], 0)
 
     def test_auto_exposure_choice_is_frozen_not_invented(self) -> None:
         camera, device = fake_camera()
         device.current["exposure"] = 312  # what "auto" converged to
-        device.current["white_balance"] = 3900
-        result = tune(FocusScene(camera, device), camera,
-                      converge_frames=3, settle_frames=1, log=lambda *_: None)
+        device.current["gain"] = 40
+        result = quick_tune(RigScene(device), camera)
         self.assertEqual(result.controls["exposure"], 312)
-        self.assertEqual(result.controls["white_balance"], 3900)
+        self.assertEqual(result.controls["gain"], 40)
         self.assertEqual(result.controls["exposure_auto"], 0)
-        self.assertEqual(result.controls["white_balance_auto"], 0)
         self.assertEqual(result.controls["power_line_frequency"], 1)  # 50 Hz, Europe
 
-    def test_a_blank_scene_is_refused(self) -> None:
+    def test_a_dark_scene_is_called_out(self) -> None:
         camera, device = fake_camera()
-        with self.assertRaises(TuneError) as caught:
-            tune(FocusScene(camera, device, textured=False), camera,
-                 converge_frames=1, settle_frames=1, log=lambda *_: None)
-        self.assertIn("printed page", str(caught.exception))
+        device.current["gain"] = 159  # what the real rig ran at
+        result = quick_tune(RigScene(device), camera)
+        self.assertTrue(any("too dark" in note for note in result.notes), result.notes)
+
+    def test_without_the_sheet_it_says_so_and_falls_back(self) -> None:
+        camera, device = fake_camera()
+        scene = RigScene(device, with_sheet=False, noise=2.0)
+        # A bare board has nothing to focus on; the tune must not invent a peak.
+        result = quick_tune(scene, camera)
+        self.assertTrue(any("marker sheet not found" in note for note in result.notes), result.notes)
+
+    def test_the_sheet_is_located_by_its_markers(self) -> None:
+        camera, device = fake_camera()
+        _, frame = RigScene(device, noise=2.0).read()
+        sheet = locate_sheet(frame)
+        self.assertIsNotNone(sheet)
+        self.assertGreaterEqual(sheet.markers, 3)
+        x0, y0, x1, y1 = sheet.focus_roi
+        self.assertLess(abs((x0 + x1) / 2 - 320), 12)  # the star is at the centre
+        self.assertLess(abs((y0 + y1) / 2 - 180), 12)
 
     def test_chart_marks_the_choice(self) -> None:
         self.assertIn("<- chosen", focus_chart({0: 1.0, 5: 3.0, 10: 2.0}))
+        chart = focus_chart({0: 1.0, 5: 3.0, 10: 2.0}, chosen=10)
+        self.assertTrue(chart.splitlines()[2].endswith("<- chosen"))
 
 
 class MarkerSheetTests(unittest.TestCase):

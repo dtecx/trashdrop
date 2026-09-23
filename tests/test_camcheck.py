@@ -116,7 +116,35 @@ class BadCameraTests(unittest.TestCase):
         self.assertTrue(any("auto-framing" in w for w in report.warnings), report.warnings)
 
 
+class BlurryViewTests(unittest.TestCase):
+    def test_a_featureless_noisy_view_reports_no_drift_rather_than_a_number(self) -> None:
+        # What the first real run saw: lens far out of focus, gain maxed out.
+        # Phase correlation on that is noise, and it once reported 233 px.
+        rng = np.random.default_rng(4)
+        base = cv2.GaussianBlur(scene(), (0, 0), 12)
+        frames = [
+            np.clip(base.astype(np.float32) + rng.normal(0, 10, base.shape), 0, 255).astype(np.uint8)
+            for _ in range(10)
+        ]
+        measured = analyse_idle(frames)
+        self.assertIsNone(measured["geometric_drift_px"])
+        report = report_from(frames)
+        self.assertFalse(any("the view moved" in w for w in report.warnings), report.warnings)
+        self.assertTrue(any("could not be measured" in n for n in report.notes), report.notes)
+
+
 class ResponseTests(unittest.TestCase):
+    def test_taking_a_white_sheet_away_is_not_an_exposure_change(self) -> None:
+        # The first real run: the sheet was lifted and a dark item put down,
+        # and the frame mean read as "re-exposed by 8 levels" though the
+        # exposure was locked.
+        reference = scene()
+        cv2.rectangle(reference, (40, 60), (180, 170), (250, 250, 250), -1)  # the sheet
+        occupied = scene()
+        cv2.rectangle(occupied, (220, 150), (270, 190), (20, 20, 20), -1)  # a dark item elsewhere
+        response = analyse_response(reference, occupied)
+        self.assertLess(response["exposure_shift"], 3.0)
+
     def test_an_item_plus_re_exposure_is_still_recoverable(self) -> None:
         reference = scene()
         occupied = reference.copy()

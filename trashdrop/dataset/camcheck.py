@@ -47,7 +47,7 @@ class CameraReport:
 
     idle_brightness_drift: float = 0.0
     focus_swing_ratio: float = 0.0
-    geometric_drift_px: float = 0.0
+    geometric_drift_px: float | None = 0.0
 
     exposure_shift: float | None = None
     compensation_recovers: bool | None = None
@@ -83,8 +83,11 @@ class CameraReport:
             f"(limit {MAX_IDLE_BRIGHTNESS_DRIFT})",
             f"  focus swing      {self.focus_swing_ratio:5.2f} "
             f"(limit {MAX_FOCUS_SWING_RATIO})",
-            f"  camera drift     {self.geometric_drift_px:5.2f} px "
-            f"(limit {MAX_GEOMETRIC_DRIFT_PX})",
+            (
+                f"  camera drift     {self.geometric_drift_px:5.2f} px (limit {MAX_GEOMETRIC_DRIFT_PX})"
+                if self.geometric_drift_px is not None
+                else "  camera drift     not measurable (view too blurry or featureless)"
+            ),
         ]
         if self.exposure_shift is not None:
             lines.append(f"  exposure step    {self.exposure_shift:5.1f} levels when an item appeared")
@@ -110,13 +113,35 @@ def _sharpness(frame) -> float:
     return float(cv2.Laplacian(grey, cv2.CV_64F).var())
 
 
-def _shift_px(first, second) -> float:
+# Below this peak value phase correlation found no real match and the shift it
+# reports is noise. Measured on synthetic footage: sharp views, steady or
+# moving, score 0.85-0.93; a badly defocused view at high gain -- what the first
+# real camcheck saw, when it reported "233 px of drift" -- scores 0.01-0.02.
+MIN_CORRELATION = 0.3
+ANALYSIS_WIDTH = 640
+
+
+def _shift_px(first, second) -> tuple[float, float]:
+    """Shift between two frames in full-resolution pixels, and its confidence."""
+
     import cv2
 
-    a = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    b = cv2.cvtColor(second, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    (dx, dy), _ = cv2.phaseCorrelate(a, b)
-    return float(np.hypot(dx, dy))
+    scale = min(1.0, ANALYSIS_WIDTH / first.shape[1])
+
+    def prepare(frame):
+        grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if scale < 1.0:
+            grey = cv2.resize(grey, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        return cv2.GaussianBlur(grey, (3, 3), 0).astype(np.float32)
+
+    a, b = prepare(first), prepare(second)
+    window = cv2.createHanningWindow((a.shape[1], a.shape[0]), cv2.CV_32F)
+    (dx, dy), response = cv2.phaseCorrelate(a, b, window)
+    return float(np.hypot(dx, dy)) / scale, float(response)
+
+
+def _average(frames: list) -> np.ndarray:
+    return np.clip(np.mean([np.asarray(f, np.float32) for f in frames], axis=0), 0, 255).astype(np.uint8)
 
 
 def analyse_idle(frames: list) -> dict:
@@ -125,20 +150,32 @@ def analyse_idle(frames: list) -> dict:
     if len(frames) < 2:
         raise ValueError("need at least two frames to measure stability")
 
+    from ..camera.tune import centre_roi, locate_sheet, roi_sharpness
+
     brightness = [float(np.asarray(f).mean()) for f in frames]
-    sharpness = [_sharpness(f) for f in frames]
-    drift = [_shift_px(frames[0], f) for f in frames[1:]]
+    # Judge sharpness on the marker sheet's star when it is in view, the same
+    # way the tune does: a whole noisy frame measures the sensor, not focus.
+    sheet = locate_sheet(frames[0])
+    roi = sheet.focus_roi if sheet else centre_roi(frames[0])
+    sharpness = [roi_sharpness(f, roi) for f in frames]
+    # Compare the average of the first third with the average of the last:
+    # averaging cuts the sensor noise that inflated frame-by-frame shifts
+    # (2.2 px of false drift on a moderately blurred view, 0.7 px this way).
+    third = max(1, len(frames) // 3)
+    shift, response = _shift_px(_average(frames[:third]), _average(frames[-third:]))
 
     median_sharpness = float(np.median(sharpness))
     swing = (
-        float((max(sharpness) - min(sharpness)) / median_sharpness)
+        float((np.percentile(sharpness, 90) - np.percentile(sharpness, 10)) / median_sharpness)
         if median_sharpness > 1e-6
         else 0.0
     )
     return {
         "brightness_drift": float(np.std(brightness)),
         "focus_swing_ratio": swing,
-        "geometric_drift_px": float(max(drift)),
+        # None when the view gave nothing to measure against.
+        "geometric_drift_px": shift if response >= MIN_CORRELATION else None,
+        "sheet_found": sheet is not None,
     }
 
 
@@ -146,7 +183,13 @@ def analyse_response(reference, occupied) -> dict:
     """Measure what the camera did when an item entered the scene."""
 
     fit = estimate_photometric_fit(occupied, reference)
-    shift = float(np.abs(np.asarray(occupied, dtype=np.float32).mean() - np.asarray(reference, dtype=np.float32).mean()))
+    if fit.trusted:
+        # How far a mid-grey BACKGROUND pixel moved: the camera's exposure
+        # change alone. The frame mean would also count the item itself, or a
+        # sheet taken away -- which is how the first real run read "8 levels".
+        shift = float(np.max(np.abs(fit.gain * 128.0 + fit.offset - 128.0)))
+    else:
+        shift = float(np.abs(np.asarray(occupied, np.float32).mean() - np.asarray(reference, np.float32).mean()))
     return {
         "exposure_shift": shift,
         "compensation_recovers": bool(fit.trusted),
@@ -166,10 +209,15 @@ def judge(report: CameraReport) -> CameraReport:
     if report.focus_swing_ratio > MAX_FOCUS_SWING_RATIO:
         report.warnings.append(
             f"focus is hunting (sharpness swings by {report.focus_swing_ratio:.0%}). "
-            "Disable autofocus -- on a C920 that is a checkbox in Logitech's "
-            "software, or cv2.CAP_PROP_AUTOFOCUS=0 if the backend allows it."
+            "Run `uv run trashdrop camera tune` with the marker sheet in view: it "
+            "switches autofocus off and fixes the lens position in camera.toml."
         )
-    if report.geometric_drift_px > MAX_GEOMETRIC_DRIFT_PX:
+    if report.geometric_drift_px is None:
+        report.notes.append(
+            "drift could not be measured: the view is too blurry or featureless. "
+            "Fix focus first (camera tune), with the marker sheet in view."
+        )
+    elif report.geometric_drift_px > MAX_GEOMETRIC_DRIFT_PX:
         report.warnings.append(
             f"the view moved {report.geometric_drift_px:.1f} px while nothing "
             "was happening. Tighten the mount, and make sure no 'auto-framing' "
@@ -264,6 +312,12 @@ def run_camcheck(
         warm_until = time.time() + WARMUP_SECONDS
         while time.time() < warm_until:
             capture.read()
+        # Push camera.toml once more now the stream is running: starting a
+        # stream reset exposure and gain on the real C920 (focus survived).
+        apply_saved_settings()
+        settle_until = time.time() + 1.0
+        while time.time() < settle_until:
+            capture.read()
 
         print(
             "\nPhase 1: put a printed page (the marker sheet) flat in the middle, then"
@@ -286,10 +340,15 @@ def run_camcheck(
         report.idle_brightness_drift = idle["brightness_drift"]
         report.focus_swing_ratio = idle["focus_swing_ratio"]
         report.geometric_drift_px = idle["geometric_drift_px"]
+        if not idle["sheet_found"]:
+            report.notes.append("marker sheet not in view: focus was judged on the frame centre")
         reference = frames[-1]
 
         if interactive:
-            input("\nPhase 2: put a DARK item in the middle of the view, then press ENTER...")
+            input(
+                "\nPhase 2: leave the sheet where it is and put a DARK item NEXT to it"
+                "\n         (not on it), step back, then press ENTER..."
+            )
             for _ in range(15):  # let auto-exposure settle on the new scene
                 capture.read()
             ok, occupied = capture.read()
