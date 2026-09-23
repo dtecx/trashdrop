@@ -19,12 +19,12 @@ ever be added to system Python.
 ```bash
 uv run trashdrop probe            # layout reachability check, ~2 s
 uv run trashdrop sim              # full two-arm sort, ~7 s, writes out/
-uv run python -m pytest tests/ -q # 50 tests, ~7 s
+uv run python -m pytest tests/ -q # ~195 tests, ~30 s
 ```
 
 The full simulation takes seven seconds. **Run it** before reporting anything
 about motion, geometry or grasping, and quote the real
-`sorted correctly: N/4` line rather than describing the change.
+`sorted correctly: N/3` line rather than describing the change.
 
 `uv run trashdrop sim --viewer` needs `mjpython` on macOS:
 `uv run mjpython -m trashdrop sim --viewer`. Plain `python` fails with a main

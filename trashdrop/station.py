@@ -160,11 +160,38 @@ def owner_of(category: str, arm_hint: str | None = None) -> str:
 # SO-101 payload falls off sharply at extension, and the jaws open a limited
 # amount. An item outside these limits is routed to the mixed bin rather than
 # attempted: a dropped item mid-transfer is the one failure the demo cannot
-# recover from. Measure MAX_GRASP_WIDTH on the real gripper before the event.
+# recover from.
 MAX_PAYLOAD_KG = 0.25
-MAX_GRASP_WIDTH = 0.035
-# An empty 0.5 L aluminium can is ~15 g and ~66 mm across: light enough, but it
-# must be grasped across the body, not the diameter. A 0.5 L glass bottle is
+
+# Jaw widths were measured on the finger surfaces of the official SO-101 model
+# (TheRobotStudio/SO-ARM100, Simulation/SO101); the SO-ARM100 model used here
+# agrees within a few millimetres. They are CAD numbers -- check them on the
+# real gripper.
+#
+# The moving finger swings on a hinge, so the fingers are parallel at one
+# width only. A wider item sits in a V that squeezes it out of the jaws, and
+# only friction between pad and item holds it:
+#
+#   item width        27 mm (neck)  32 mm  46 mm  60 mm  66 mm (0.5 L can)  74 mm
+#   angle between      -5 deg        0      ~5    ~15    ~28                ~38
+#   friction needed     -            -      0.05   0.13   0.25               0.34
+#
+# (A negative angle means the fingertips meet first, which traps the item.)
+#
+# Bare PLA on aluminium is roughly 0.3, so a can is marginal without grip tape
+# on the pads. MAX_GRASP_WIDTH assumes the tape is there.
+PARALLEL_GRASP_WIDTH = 0.032
+MAX_GRASP_WIDTH = 0.070
+# The TCP sits on the FIXED finger's inner face. That finger comes down this
+# far outside one edge of the item and the moving finger sweeps the item onto
+# it. Aiming the TCP at the item's centre instead lands the fixed finger on top
+# of anything wider than a centimetre.
+FIXED_JAW_CLEARANCE = 0.008
+# How much wider than the item the jaw opens before it comes down.
+JAW_OPEN_MARGIN = 0.015
+# How much of the item's length the fingers cover: the thickness of the jaw.
+JAW_SPAN = 0.02
+# An empty 0.5 L aluminium can is ~15 g: light enough. A 0.5 L glass bottle is
 # ~300-400 g empty and is deliberately out of scope -- it goes to mixed.
 GLASS_IS_OUT_OF_SCOPE = True
 

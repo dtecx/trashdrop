@@ -67,7 +67,8 @@ simulator.py  probe.py
 - `perception/` — two-stage: class-agnostic detector, then crop classifier.
   `photometric.py` cancels exposure drift before any background subtraction;
   without it a camera that re-exposes when an item arrives makes the whole
-  frame read as foreground.
+  frame read as foreground. `grasp.py` turns the detector's mask into where
+  the jaw closes; see `docs/GRASPING.md`.
 - `dataset/` — capture on the rig, autolabel, review; plus indexers for the
   public datasets.
 - `simulator.py` — the cell, stepping, grasp, scoring.
