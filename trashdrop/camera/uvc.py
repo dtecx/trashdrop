@@ -8,14 +8,18 @@ requests for exactly these controls. Sending them needs libusb, which ships as
 a pip wheel (``libusb-package``), so nothing is installed system-wide.
 
 The catch, measured on this project's MacBook: macOS lets any process read the
-camera's descriptors, but refuses control requests unless the process runs as
-root, because its own UVC driver holds the device. So applying and tuning run
-under ``sudo``; see docs/CAMERA.md for the exact commands.
+camera's descriptors but refuses its control requests -- as a normal user AND
+as root -- because macOS's own UVC driver holds the device. Two routes remain
+open in principle: the driver may only hold it while something is streaming,
+or root may detach the driver, write the settings and attach it again.
+``trashdrop camera probe`` tries both and says which one this machine allows.
 """
 
 from __future__ import annotations
 
+import os
 import struct
+import time
 from dataclasses import dataclass
 
 VIDEO_CLASS = 0x0E
@@ -84,12 +88,22 @@ class CameraPermissionError(RuntimeError):
     """The OS refused the control request. On macOS: not running as root."""
 
 
+def _is_root() -> bool:
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
 def permission_hint() -> str:
+    if _is_root():
+        return (
+            "even root is refused: macOS's own camera driver holds the webcam.\n"
+            "Close every app using the camera (QuickTime, FaceTime, browsers), then find\n"
+            "out which route this Mac allows:\n"
+            "    sudo .venv/bin/python -B -m trashdrop camera probe"
+        )
     return (
-        "macOS only lets root send settings to a webcam (its own driver holds the\n"
-        "device). Run this one command with sudo, from the project folder:\n"
-        "    sudo .venv/bin/python -B -m trashdrop camera apply\n"
-        "It only talks to the camera; -B stops it leaving root-owned files behind."
+        "macOS refuses camera settings from a normal user (its own driver holds the\n"
+        "webcam). Try as root, with every app using the camera closed:\n"
+        "    sudo .venv/bin/python -B -m trashdrop camera probe"
     )
 
 
@@ -267,3 +281,99 @@ class UvcCamera:
 
     def describe(self) -> str:
         return f"UVC webcam {self.usb_id}"
+
+
+def probe_access(usb_id: str | None = None, log=print, settle_seconds: float = 4.0) -> str:
+    """Find out which route to the camera's controls this machine allows.
+
+    Returns "direct", "detach", "detach-volatile" or "blocked":
+
+    * direct          -- control requests just work (nothing is streaming).
+    * detach          -- root can detach macOS's driver, write, re-attach, and
+                         the camera keeps the setting through the re-attach.
+    * detach-volatile -- the detach works but the setting is lost when macOS
+                         takes the camera back, so it is no use.
+    * blocked         -- no route.
+
+    Only ``focus_auto`` is touched, and it is put back the way it was found.
+    """
+
+    import usb.core
+    import usb.util
+
+    camera = UvcCamera.find(usb_id)
+    control = CONTROLS["focus_auto"]
+    log(
+        f"found {camera.describe()}: VideoControl interface {camera.interface}, "
+        f"camera terminal {camera.entities['camera']}, processing unit {camera.entities['processing']}"
+    )
+    log(f"running as root: {'yes' if _is_root() else 'no'}")
+
+    def read(cam: "UvcCamera") -> int:
+        return _decode(cam._request(GET_CUR, control), 1, False)
+
+    def write(cam: "UvcCamera", value: int) -> None:
+        cam._request(SET_CUR, control, _encode(value, 1, False))
+
+    try:
+        value = read(camera)
+        write(camera, value)
+        log(f"direct: read and write both work (focus_auto = {value})")
+        return "direct"
+    except CameraPermissionError:
+        log("direct: refused")
+    except usb.core.USBError as error:
+        log(f"direct: failed ({error})")
+
+    if not _is_root():
+        log("the detach route needs root -- run this again with sudo")
+        return "blocked"
+
+    def captured(usb_filter: str) -> "UvcCamera":
+        cam = UvcCamera.find(usb_filter)
+        if cam.device.is_kernel_driver_active(cam.interface):
+            cam.device.detach_kernel_driver(cam.interface)
+        usb.util.claim_interface(cam.device, cam.interface)
+        return cam
+
+    def released(cam: "UvcCamera") -> None:
+        try:
+            usb.util.release_interface(cam.device, cam.interface)
+        finally:
+            try:
+                cam.device.attach_kernel_driver(cam.interface)
+            finally:
+                usb.util.dispose_resources(cam.device)
+
+    usb_filter = camera.usb_id
+    usb.util.dispose_resources(camera.device)
+    try:
+        cam = captured(usb_filter)
+    except (usb.core.USBError, NotImplementedError, RuntimeError) as error:
+        log(f"detach: failed ({error})")
+        return "blocked"
+    try:
+        original = read(cam)
+        write(cam, 0)
+        log(f"detach: read and write work (focus_auto was {original}, set to 0 to test)")
+    except Exception as error:
+        log(f"detach: detached, but control requests still fail ({error})")
+        released(cam)
+        return "blocked"
+    released(cam)
+
+    log(f"re-attached macOS's driver; waiting {settle_seconds:.0f} s for the camera to come back...")
+    time.sleep(settle_seconds)
+    try:
+        cam = captured(usb_filter)
+        survived = read(cam) == 0
+        write(cam, original)  # leave it the way it was found
+        released(cam)
+    except Exception as error:
+        log(f"could not check whether the setting survived ({error})")
+        return "detach-volatile"
+    if survived:
+        log("the setting SURVIVED macOS taking the camera back -- camera.toml can work this way")
+        return "detach"
+    log("the setting was LOST when macOS took the camera back")
+    return "detach-volatile"

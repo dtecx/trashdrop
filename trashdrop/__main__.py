@@ -185,6 +185,21 @@ def _cmd_camera_tune(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_camera_probe(args: argparse.Namespace) -> int:
+    from .camera.uvc import probe_access
+
+    verdict = probe_access(args.usb_id)
+    advice = {
+        "direct": "camera control works as is. Run: sudo .venv/bin/python -B -m trashdrop camera tune --camera 1",
+        "detach": "camera control works through detaching the driver. Send this output to Claude.",
+        "detach-volatile": "settings do not survive -- use the fallback in docs/CAMERA.md.",
+        "blocked": "no route on this Mac -- use the fallback in docs/CAMERA.md.",
+    }[verdict]
+    print(f"\nVERDICT: {verdict}\n{advice}")
+    print("If the camera vanished from apps, unplug and replug it.")
+    return 0 if verdict in ("direct", "detach") else 1
+
+
 def _cmd_camera_markers(args: argparse.Namespace) -> int:
     from .camera.markers import write_sheet
 
@@ -348,6 +363,10 @@ def build_parser() -> argparse.ArgumentParser:
     tune_parser.add_argument("--config", type=Path, default=None)
     tune_parser.add_argument("--usb-id", default=None)
     tune_parser.set_defaults(func=_cmd_camera_tune)
+
+    probe = camera_sub.add_parser("probe", help="which route to the camera's settings does this Mac allow?")
+    probe.add_argument("--usb-id", default=None)
+    probe.set_defaults(func=_cmd_camera_probe)
 
     markers = camera_sub.add_parser("markers", help="printable A4: focus target + pick-zone ArUco markers")
     markers.set_defaults(func=_cmd_camera_markers)
