@@ -113,7 +113,12 @@ this list fails, fix the code, not the test.
    `test_photometric.py`, which asserts that a naive difference floods and the
    compensated one does not.
 
-8. **Anything uncertain goes to `mixed`.** Low classifier confidence, unknown
+8. **Camera settings go through `camera.toml`, over UVC, never through
+   OpenCV properties on macOS.** AVFoundation accepts and ignores them, so code
+   that "sets autofocus off" via `cv2.CAP_PROP_*` there silently does nothing.
+   Control requests need root on macOS; see docs/CAMERA.md.
+
+9. **Anything uncertain goes to `mixed`.** Low classifier confidence, unknown
    category, too wide for the jaws, too heavy. The pitch promises the cell
    flags what it cannot handle instead of guessing; that promise lives in
    `TwoArmDispatcher.dispatch` and `station.is_graspable`.

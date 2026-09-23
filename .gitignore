@@ -32,3 +32,6 @@ vendor/mujoco_menagerie/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# Previous camera.toml versions kept by `camera tune`; camera.toml itself is committed.
+camera.*.toml.bak

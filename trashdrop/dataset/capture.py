@@ -287,7 +287,13 @@ def run_capture(
 
     session = _Session(config, category, _clean_id(object_id) if object_id else None, clock)
     ui = ui or _OpenCvUi()
-    capture = capture or open_camera(config.source, config.width, config.height)
+    if capture is None:
+        capture = open_camera(config.source, config.width, config.height)
+        # Push camera.toml (fixed focus, exposure, white balance) once the
+        # stream is open, in case opening it reset anything.
+        from ..camera import apply_saved_settings
+
+        print(apply_saved_settings())
     shutter = AutoShutter(None, clock=clock)
     if session.load_background() is not None:
         shutter.set_background(session.background)
@@ -367,6 +373,12 @@ def run_capture(
         capture.release()
         ui.close()
         session.manifest.close()
+        # When run under sudo (to push camera settings), hand the frames back
+        # to the real user rather than leaving a root-owned dataset.
+        from ..camera.config import hand_back
+
+        hand_back(session.raw_root)
+        hand_back(session.bg_root)
 
     print(f"\n{session.total} frames this run -> {session.raw_root}")
     print(f"manifest: {session.manifest.path}")

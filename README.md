@@ -68,6 +68,8 @@ uv run trashdrop review --session 2026-09-20-kitchen
   whose robot wants to deliver trash to us.
 - [docs/DATASET.md](docs/DATASET.md) — how to shoot the dataset so that nobody
   draws a bounding box.
+- [docs/CAMERA.md](docs/CAMERA.md) — locking focus, exposure and white balance
+  in `camera.toml`, and why that needs sudo on macOS.
 - [docs/APPROACH.md](docs/APPROACH.md) — why classic CV + IK rather than a
   learned policy, and where a policy would still help.
 - [docs/CALIBRATION.md](docs/CALIBRATION.md) — the real table, ArUco, and using

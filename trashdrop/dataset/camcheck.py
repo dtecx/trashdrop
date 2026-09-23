@@ -247,6 +247,12 @@ def run_camcheck(
 
     capture = open_camera(source, width, height)
     report = CameraReport()
+
+    from ..camera import apply_saved_settings
+
+    camera_status = apply_saved_settings()
+    print(camera_status)
+    report.notes.append(camera_status)
     try:
         report.backend = capture.getBackendName()
         report.controllable = probe_controls(capture)
@@ -256,7 +262,11 @@ def run_camcheck(
         while time.time() < warm_until:
             capture.read()
 
-        print("\nPhase 1: leave the view EMPTY and still for a few seconds...")
+        print(
+            "\nPhase 1: put a printed page (the marker sheet) flat in the middle, then"
+            "\n         touch nothing for a few seconds. A plain board gives focus and"
+            "\n         drift nothing to measure, and makes autofocus hunt by itself..."
+        )
         frames = []
         started = time.time()
         while time.time() - started < idle_seconds:

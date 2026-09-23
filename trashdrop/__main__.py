@@ -122,6 +122,78 @@ def _cmd_cameras(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_camera_show(args: argparse.Namespace) -> int:
+    from .camera import UvcCamera
+
+    camera = UvcCamera.find(args.usb_id)
+    print(f"{camera.describe()}\n")
+    print(f"  {'control':24s} {'now':>7} {'min':>7} {'max':>7} {'step':>5} {'default':>8}")
+    for name, known in camera.ranges().items():
+        print(
+            f"  {name:24s} {camera.get(name):>7} {known.minimum:>7} {known.maximum:>7} "
+            f"{known.step:>5} {known.default:>8}"
+        )
+    return 0
+
+
+def _cmd_camera_apply(args: argparse.Namespace) -> int:
+    from .camera import UvcCamera, apply, config_path, format_applied, load
+
+    path = args.config or config_path()
+    settings = load(path)
+    camera = UvcCamera.find(args.usb_id or (settings.device if ":" in settings.device else None))
+    results = apply(camera, settings)
+    print(f"applied {path} to {camera.describe()}\n{format_applied(results)}")
+    return 0 if all(result.ok for result in results) else 1
+
+
+def _cmd_camera_tune(args: argparse.Namespace) -> int:
+    import time
+
+    from .camera import CameraSettings, UvcCamera, config_path, focus_chart, save, tune
+    from .dataset.capture import open_camera
+
+    # Talk to the camera first: if this needs sudo, say so before anything
+    # else happens.
+    camera = UvcCamera.find(args.usb_id)
+    ranges = camera.ranges()
+    print(f"{camera.describe()}: {len(ranges)} adjustable controls")
+
+    capture = open_camera(_source(args.camera), args.width, args.height)
+    try:
+        print("warming up...")
+        until = time.time() + 2.0
+        while time.time() < until:
+            capture.read()
+        result = tune(capture, camera, power_line_frequency=1 if args.mains == 50 else 2)
+    finally:
+        capture.release()
+
+    settings = CameraSettings(
+        backend="uvc",
+        device=camera.usb_id,
+        controls=result.controls,
+        tuned_at=time.strftime("%Y-%m-%d %H:%M"),
+        note=args.note,
+    )
+    path = save(settings, args.config or config_path(), ranges)
+    print("\nfocus sweep (sharpness of the target at each lens position):")
+    print(focus_chart(result.focus_curve))
+    for note in result.notes:
+        print(f"note: {note}")
+    print(f"\nwrote {path}. It is applied now; check with: uv run trashdrop camcheck --camera {args.camera}")
+    return 0
+
+
+def _cmd_camera_markers(args: argparse.Namespace) -> int:
+    from .camera.markers import write_sheet
+
+    pdf, png = write_sheet(args.out)
+    print(f"wrote {pdf}\n      {png}")
+    print("print the PDF at ACTUAL SIZE (100 %, no 'fit to page'); the scale bar must measure 100 mm")
+    return 0
+
+
 def _cmd_capture(args: argparse.Namespace) -> int:
     from .dataset.capture import CaptureConfig, run_capture
 
@@ -254,6 +326,31 @@ def build_parser() -> argparse.ArgumentParser:
     cameras.add_argument("--width", type=int, default=1920)
     cameras.add_argument("--height", type=int, default=1080)
     cameras.set_defaults(func=_cmd_cameras)
+
+    camera = sub.add_parser("camera", help="lock focus/exposure/white balance via camera.toml")
+    camera_sub = camera.add_subparsers(dest="camera_command", required=True)
+
+    show = camera_sub.add_parser("show", help="every control the webcam offers, with current values")
+    show.add_argument("--usb-id", default=None, help="vvvv:pppp, if several webcams are plugged in")
+    show.set_defaults(func=_cmd_camera_show)
+
+    apply_parser = camera_sub.add_parser("apply", help="push camera.toml to the webcam")
+    apply_parser.add_argument("--config", type=Path, default=None)
+    apply_parser.add_argument("--usb-id", default=None)
+    apply_parser.set_defaults(func=_cmd_camera_apply)
+
+    tune_parser = camera_sub.add_parser("tune", help="find settings for this rig and write camera.toml")
+    tune_parser.add_argument("--camera", default="0", help="OpenCV index of the same webcam")
+    tune_parser.add_argument("--width", type=int, default=1920)
+    tune_parser.add_argument("--height", type=int, default=1080)
+    tune_parser.add_argument("--mains", type=int, choices=(50, 60), default=50, help="Hz; Europe is 50")
+    tune_parser.add_argument("--note", default="", help="e.g. 'home rig, 70 cm'")
+    tune_parser.add_argument("--config", type=Path, default=None)
+    tune_parser.add_argument("--usb-id", default=None)
+    tune_parser.set_defaults(func=_cmd_camera_tune)
+
+    markers = camera_sub.add_parser("markers", help="printable A4: focus target + pick-zone ArUco markers")
+    markers.set_defaults(func=_cmd_camera_markers)
 
     capture = sub.add_parser("capture", help="shoot a dataset session on the rig")
     capture.add_argument("--session", required=True, help="e.g. 2026-09-23-home")

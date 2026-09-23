@@ -3,7 +3,7 @@ name = "trashdrop"
 version = "0.3.0"
 description = "Two-arm SO-101 virtual trash-sorting cell: simulation, perception and dataset tooling"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 # Nothing by default: planning and station are pure Python, so a teammate who
 # only reads the layout or runs the dispatcher installs nothing at all.
 dependencies = []
@@ -20,6 +20,16 @@ simulation = [
     "mujoco>=3.3",
     "numpy>=1.26",
     "opencv-python>=4.9",
+]
+# Direct USB control of the webcam (focus, exposure, white balance), because on
+# macOS OpenCV cannot set any of them. libusb comes as a wheel: nothing global.
+camera = [
+    "pyusb>=1.2",
+    "libusb-package>=1.0",
+]
+# Everything the capture rig needs: the dataset tools plus camera control.
+rig = [
+    "trashdrop[dataset,camera]",
 ]
 # Run an exported crop classifier without installing a training stack.
 classifier = [
