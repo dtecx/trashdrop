@@ -1,0 +1,17 @@
+[project]
+name = "trashdrop-training"
+version = "0.1.0"
+description = "Classifier experiments for TrashDrop. Kept apart from the cell so the cell never installs a training stack."
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.4",
+    "open-clip-torch>=2.26",
+    "scikit-learn>=1.5",
+    "numpy>=1.26",
+    "pillow>=10",
+    "onnx>=1.16",
+    "onnxruntime>=1.18",
+]
+
+[tool.uv]
+package = false
