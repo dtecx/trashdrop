@@ -91,18 +91,49 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 # --- dataset ---------------------------------------------------------------
 
 
+def _source(value: str) -> str | int:
+    return int(value) if value.isdigit() else value
+
+
+def _cmd_cameras(args: argparse.Namespace) -> int:
+    from .dataset.cameras import device_names, list_cameras
+
+    names = device_names()
+    if names:
+        print("devices the OS knows about:")
+        for name in names:
+            print(f"  - {name}")
+        print()
+    found = list_cameras(args.max_index, args.width, args.height, args.out / "cameras")
+    if not found:
+        print(
+            "no camera opened. On macOS the first run only ASKS for permission -- "
+            "click Allow, then run this again."
+        )
+        return 1
+    for info in found:
+        print(
+            f"  index {info.index}: {info.resolution[0]}x{info.resolution[1]} "
+            f"({info.backend})  snapshot -> {info.snapshot}"
+        )
+    print()
+    print("open the snapshots: the webcam is the one looking down at the table.")
+    print("then use it with --camera <index>")
+    return 0
+
+
 def _cmd_capture(args: argparse.Namespace) -> int:
     from .dataset.capture import CaptureConfig, run_capture
 
-    source: str | int = args.camera
-    if isinstance(source, str) and source.isdigit():
-        source = int(source)
     config = CaptureConfig(
         session=args.session,
         root=args.data,
-        source=source,
+        source=_source(args.camera),
+        width=args.width,
+        height=args.height,
         burst=args.burst,
         lighting=args.lighting,
+        auto=not args.no_auto,
     )
     run_capture(config, category=args.category, object_id=args.object_id)
     return 0
@@ -111,10 +142,13 @@ def _cmd_capture(args: argparse.Namespace) -> int:
 def _cmd_camcheck(args: argparse.Namespace) -> int:
     from .dataset.camcheck import run_camcheck
 
-    source: str | int = args.camera
-    if isinstance(source, str) and source.isdigit():
-        source = int(source)
-    report = run_camcheck(source, idle_seconds=args.seconds, interactive=not args.quick)
+    report = run_camcheck(
+        _source(args.camera),
+        idle_seconds=args.seconds,
+        interactive=not args.quick,
+        width=args.width,
+        height=args.height,
+    )
     return 0 if report.usable else 1
 
 
@@ -215,19 +249,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve_parser.set_defaults(func=_cmd_serve)
 
+    cameras = sub.add_parser("cameras", help="which camera index is which? saves a snapshot of each")
+    cameras.add_argument("--max-index", type=int, default=5)
+    cameras.add_argument("--width", type=int, default=1920)
+    cameras.add_argument("--height", type=int, default=1080)
+    cameras.set_defaults(func=_cmd_cameras)
+
     capture = sub.add_parser("capture", help="shoot a dataset session on the rig")
-    capture.add_argument("--session", required=True, help="e.g. 2026-09-20-kitchen")
-    capture.add_argument("--category", required=True, help="bio|paper|plastic|metal|mixed")
-    capture.add_argument("--object-id", required=True, help="e.g. cola_can_01")
+    capture.add_argument("--session", required=True, help="e.g. 2026-09-23-home")
+    capture.add_argument("--category", default="plastic", help="starting class; keys 1-5 switch")
+    capture.add_argument("--object-id", default=None, help="default: next free <class>_NN")
     capture.add_argument("--camera", default="0", help="device index or stream URL")
-    capture.add_argument("--burst", type=int, default=25)
+    capture.add_argument("--width", type=int, default=1920)
+    capture.add_argument("--height", type=int, default=1080)
+    capture.add_argument("--burst", type=int, default=3, help="frames per SPACE press")
     capture.add_argument("--lighting", default="default")
+    capture.add_argument("--no-auto", action="store_true", help="start with the auto-shutter off")
     capture.set_defaults(func=_cmd_capture)
 
     camcheck = sub.add_parser("camcheck", help="is this camera good enough to shoot through?")
     camcheck.add_argument("--camera", default="0", help="device index or stream URL")
     camcheck.add_argument("--seconds", type=float, default=8.0, help="idle measurement window")
     camcheck.add_argument("--quick", action="store_true", help="skip the dark-item step")
+    camcheck.add_argument("--width", type=int, default=1920)
+    camcheck.add_argument("--height", type=int, default=1080)
     camcheck.set_defaults(func=_cmd_camcheck)
 
     autolabel = sub.add_parser("autolabel", help="derive masks and crops from a session")

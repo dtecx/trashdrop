@@ -45,18 +45,40 @@ working minimum.
 
 ```bash
 uv sync --extra dataset
-uv run trashdrop capture --session 2026-09-20-kitchen \
-    --category plastic --object-id cola_bottle_01
+uv run trashdrop cameras                       # which index is the webcam?
+uv run trashdrop camcheck --camera 1           # 60 s verdict
+uv run trashdrop capture --session 2026-09-23-home --camera 1
 ```
 
-Keys: `SPACE` burst · `b` background · `n` next object · `c` class ·
-`l` lighting · `q` quit.
+Run these from your own Terminal, not through an agent: the capture window needs
+the keyboard, and macOS grants camera access per application.
 
-For each physical item: **drop it** on the table — do not place it neatly —
-then take a burst while nudging it between frames. About 25 frames per pose,
-two or three poses per item.
+1. **Clear the table and press `b`** — the empty-table reference.
+2. **Press `1`–`5` for the class**: 1 bio, 2 paper, 3 plastic, 4 metal,
+   5 mixed. The object gets the next free id (`plastic_01`, `plastic_02`, ...)
+   so nobody types names.
+3. **Drop the item in the zone and step back.** The auto-shutter takes the
+   frame by itself once your hand is out and nothing has moved for about half
+   a second — the preview flashes white.
+4. **Reposition** — rotate, flip, crush a bit — **step back**, wait for the
+   flash. About **12 poses per item**.
+5. **`n` for the next item** of the same class, or a digit for another class.
+
+The status line says why it is not shooting: `moving`, `hand or item at the
+frame edge`, `more than one object`, `empty table`. A box around the item turns
+green when it is ready. `SPACE` still shoots a burst of three by hand, and `a`
+turns the auto-shutter off.
+
+One frame per pose, deliberately. Frames of a pose that has not changed are
+near-duplicates and add nothing; the shutter refuses them and asks for a new
+pose instead.
 
 ## What actually matters
+
+**Transparent bottles work.** Background subtraction only sees the cap, the
+label and a few highlights of a clear bottle, as separate blobs. Those are
+grouped back into one item by proximity, so do not avoid clear PET — it is
+exactly what the pitch promises to handle.
 
 **Variety of objects beats number of frames.** Fifteen to twenty-five *different
 physical items* per class is worth far more than two hundred photos of one

@@ -6,10 +6,13 @@ lighting; the largest resulting region is the item; its class is the folder it
 was shot into. What comes out is a crop per frame, ready to train a classifier
 on, plus a box and mask if a detector is wanted later.
 
-It also refuses frames it cannot label confidently -- more than one large
-region, or a region touching the frame edge, or one far from the median size
-of its burst. Those are usually a hand still in shot or the item rolling out of
-view. Rejecting them is cheaper than training on them.
+It also refuses frames it cannot label confidently -- a second object, a
+region touching the frame edge, or a region too large to be an item. Those are
+usually a hand still in shot or the item rolling out of view. Rejecting them is
+cheaper than training on them.
+
+Fragments of one item are grouped before any of that is judged; see
+``perception/regions.py`` for why transparent bottles need it.
 """
 
 from __future__ import annotations
@@ -21,10 +24,9 @@ from pathlib import Path
 import numpy as np
 
 from ..perception.photometric import compensated_reference
+from ..perception.regions import find_item_region
 from .manifest import ManifestRow, read_manifest, split_by_object
 
-MIN_AREA_FRACTION = 0.0008
-MAX_AREA_FRACTION = 0.35
 EDGE_MARGIN_PX = 4
 CROP_PADDING_PX = 10
 
@@ -80,25 +82,6 @@ def _foreground(frame, background, threshold: int = 28):
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2), fit
-
-
-def _largest_region(mask, frame_area: int):
-    """Return (contour, area) for the single item, or (None, reason)."""
-
-    import cv2
-
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    sizeable = [c for c in contours if cv2.contourArea(c) > frame_area * MIN_AREA_FRACTION]
-    if not sizeable:
-        return None, "nothing_changed"
-    sizeable.sort(key=cv2.contourArea, reverse=True)
-    largest = sizeable[0]
-    area = cv2.contourArea(largest)
-    if area > frame_area * MAX_AREA_FRACTION:
-        return None, "region_too_large"
-    if len(sizeable) > 1 and cv2.contourArea(sizeable[1]) > area * 0.35:
-        return None, "more_than_one_object"
-    return largest, area
 
 
 def autolabel_session(
@@ -163,23 +146,14 @@ def autolabel_session(
             continue
         if fit.drifted:
             drifted_frames += 1
-        contour, info = _largest_region(mask, height * width)
-        if contour is None:
-            reasons[info] = reasons.get(info, 0) + 1
+        region, reason = find_item_region(mask, edge_margin_px=EDGE_MARGIN_PX)
+        if region is None:
+            reasons[reason] = reasons.get(reason, 0) + 1
             continue
 
-        x, y, w, h = cv2.boundingRect(contour)
-        if (
-            x <= EDGE_MARGIN_PX
-            or y <= EDGE_MARGIN_PX
-            or x + w >= width - EDGE_MARGIN_PX
-            or y + h >= height - EDGE_MARGIN_PX
-        ):
-            reasons["touches_frame_edge"] = reasons.get("touches_frame_edge", 0) + 1
-            continue
-
-        (_, _), (_, _), angle = cv2.minAreaRect(contour)
-        rotated = np.intp(cv2.boxPoints(cv2.minAreaRect(contour)))
+        x, y, w, h = region.box
+        (_, _), (_, _), angle = cv2.minAreaRect(region.hull)
+        rotated = np.intp(cv2.boxPoints(cv2.minAreaRect(region.hull)))
 
         x0 = max(x - CROP_PADDING_PX, 0)
         y0 = max(y - CROP_PADDING_PX, 0)
@@ -207,7 +181,7 @@ def autolabel_session(
                 session=row.session,
                 split=split.get(key, "train"),
                 bbox_xywh=(int(x), int(y), int(w), int(h)),
-                area_px=int(info),
+                area_px=int(region.area),
                 rotated_box=[[int(a), int(b)] for a, b in rotated],
                 angle_degrees=float(angle),
             )

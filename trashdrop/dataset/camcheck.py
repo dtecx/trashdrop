@@ -195,10 +195,13 @@ def judge(report: CameraReport) -> CameraReport:
 
 
 def probe_controls(capture) -> dict[str, bool]:
-    """Try to set properties and read them back.
+    """Try to set properties and read them back, then put them back.
 
     macOS routes OpenCV through AVFoundation, where most of these are accepted
-    and then ignored, so asking is the only way to find out.
+    and then ignored, so asking is the only way to find out. Every probe is
+    undone afterwards: on a backend that DOES honour them, leaving exposure in
+    manual mode with no exposure value set can turn the image black and ruin
+    the measurements that follow.
     """
 
     import cv2
@@ -215,12 +218,25 @@ def probe_controls(capture) -> dict[str, bool]:
             accepted = bool(capture.set(prop, value))
             after = capture.get(prop)
             results[name] = bool(accepted and after != before)
+            capture.set(prop, before)
         except Exception:
             results[name] = False
     return results
 
 
-def run_camcheck(source: str | int = 0, idle_seconds: float = 8.0, interactive: bool = True):
+# Discard this long at the start: a webcam's first seconds are the sensor and
+# auto-exposure starting up, and measuring them reports "brightness wanders"
+# about a camera that is merely waking.
+WARMUP_SECONDS = 2.5
+
+
+def run_camcheck(
+    source: str | int = 0,
+    idle_seconds: float = 8.0,
+    interactive: bool = True,
+    width: int = 1920,
+    height: int = 1080,
+):
     """Open the camera, measure it, and print a verdict."""
 
     import time
@@ -229,11 +245,16 @@ def run_camcheck(source: str | int = 0, idle_seconds: float = 8.0, interactive: 
 
     from .capture import open_camera
 
-    capture = open_camera(source, 1280, 720)
+    capture = open_camera(source, width, height)
     report = CameraReport()
     try:
         report.backend = capture.getBackendName()
         report.controllable = probe_controls(capture)
+
+        print(f"warming up for {WARMUP_SECONDS:.0f} s...")
+        warm_until = time.time() + WARMUP_SECONDS
+        while time.time() < warm_until:
+            capture.read()
 
         print("\nPhase 1: leave the view EMPTY and still for a few seconds...")
         frames = []
