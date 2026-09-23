@@ -10,6 +10,7 @@ and a model that memorised twenty photos of the same bottle.
 from __future__ import annotations
 
 import csv
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +47,25 @@ class ManifestWriter:
         # Flush every row: a capture session that crashes should not lose the
         # record of frames that are already on disk.
         self._handle.flush()
+
+    def pop_last(self, expected_image: str) -> None:
+        """Remove only the most recent capture, preserving all older rows."""
+
+        rows = read_manifest(self.path)
+        if not rows or rows[-1].image != expected_image:
+            raise ValueError("The last manifest row is not the photo being undone")
+        temporary = self.path.with_suffix(".csv.tmp")
+        with temporary.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=FIELDS)
+            writer.writeheader()
+            for row in rows[:-1]:
+                writer.writerow(vars(row))
+            handle.flush()
+            os.fsync(handle.fileno())
+        self._handle.close()
+        os.replace(temporary, self.path)
+        self._handle = self.path.open("a", newline="", encoding="utf-8")
+        self._writer = csv.DictWriter(self._handle, fieldnames=FIELDS)
 
     def close(self) -> None:
         self._handle.close()

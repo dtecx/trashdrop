@@ -99,6 +99,20 @@ lens, judging sharpness on the star only; and bisects the colour temperature
 until the paper is neutral. It prints the sweep as a bar chart — one hump is
 what you want — and writes `camera.toml`, keeping the previous one as `.bak`.
 
+With all four markers visible, tuning also reads the dimensions in
+`capture_zone.toml` (20 x 15 cm by default) and writes `camera_zone.json`.
+The physical centre of this zone maps to the camera image centre. If camera
+settings are already good, recalibrate only the zone with:
+
+```bash
+uv run trashdrop camera zone --camera 0
+```
+
+The 10 cm ruler verifies the sheet was printed at actual size; the four marker
+centres supply the horizontal and vertical measurements. All four must be
+visible. Capture copies the polygon into each new session and refuses to save
+if the camera resolution no longer matches it.
+
 **"marker sheet NOT found"** means the sheet is not wholly in view: check in
 QuickTime that all four markers are in the picture.
 

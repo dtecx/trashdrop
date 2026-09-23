@@ -1,0 +1,7 @@
+# Physical detection area. Print the ArUco sheet at 100% and check its 10 cm ruler.
+# Run `uv run trashdrop camera tune` with all four markers visible after changing
+# this file or moving the camera. The calculated pixel zone is saved separately.
+[zone]
+width_cm = 45.0
+height_cm = 45.0
+center = "camera"

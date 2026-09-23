@@ -21,7 +21,6 @@ from .calibration import PinholeTopDown, PlaneCalibration
 
 # Hue/saturation/value windows matching the spawn colours in station.py.
 CLASS_HSV = {
-    "bio": ((40, 120, 60), (80, 255, 255)),
     "paper": ((100, 120, 60), (130, 255, 255)),
     "plastic": ((20, 120, 60), (35, 255, 255)),
     "metal": ((0, 120, 60), (10, 255, 255)),

@@ -1,14 +1,14 @@
 # CLAUDE.md
 
 **Read [AGENTS.md](AGENTS.md) first** — it holds the architecture, the module
-layers, and the seven invariants that must not break. This file adds only what
+layers, and the invariants that must not break. This file adds only what
 is specific to working here with Claude Code.
 
 ## Quick orientation
 
 Two SO-101 arms facing each other across a shared pick zone, sorting waste into
-five bins (`bio`, `paper`, `plastic`, `metal`, `mixed`). Hackathon is around
-2026-09-25; the team's stated success criterion is **zero sorting errors**.
+three material bins (`plastic`, `paper`, `metal`) plus a `mixed` fallback.
+Hackathon starts 2026-09-25; the team's stated success criterion is **zero sorting errors**.
 This repository is the virtual model plus dataset tooling. No hardware yet.
 
 ## Running things
@@ -69,7 +69,7 @@ modules that consume them.
 ## Reporting results
 
 The colour detector in `perception/color.py` is told the answer by
-construction. When the simulation sorts 4/4, that is a result about *motion*,
+construction. When the simulation sorts 3/3, that is a result about *motion*,
 not about perception, and saying otherwise overstates what exists. The grasp is
 kinematic too, so nothing here predicts whether the real gripper holds a
 crushed can.

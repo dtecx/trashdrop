@@ -33,6 +33,10 @@ import numpy as np
 MIN_BACKGROUND_FRACTION = 0.25
 # Gains outside this range mean something other than exposure drift happened.
 GAIN_LIMITS = (0.4, 2.5)
+# A changed light direction can flatten the table's gradient so strongly that
+# a linear gain fit is implausible. If an offset alone still matches most of
+# the view, it is enough to locate the object without hiding the stale light.
+MIN_OFFSET_MATCH_FRACTION = 0.65
 # Sample at most this many pixels per channel; a full 1080p fit is wasteful.
 MAX_SAMPLES = 40_000
 # Below this spread (8-bit levels) in the reference patch, gain and offset are
@@ -127,8 +131,10 @@ def estimate_photometric_fit(
 
     indices = np.flatnonzero(background.ravel())
     if indices.size > MAX_SAMPLES:
-        step = indices.size // MAX_SAMPLES
-        indices = indices[::step][:MAX_SAMPLES]
+        # Ceil is essential: floor can be 1 for 40k-80k pixels, selecting
+        # only the top half of a vertically lit table and biasing the offset.
+        step = (indices.size + MAX_SAMPLES - 1) // MAX_SAMPLES
+        indices = indices[::step]
 
     gains = np.ones(3, np.float32)
     offsets = np.zeros(3, np.float32)
@@ -139,6 +145,23 @@ def estimate_photometric_fit(
         gains[channel], offsets[channel] = gain, offset
 
     if np.any(gains < GAIN_LIMITS[0]) or np.any(gains > GAIN_LIMITS[1]):
+        # The reference can be lit from another direction while the camera and
+        # table remain in place. A median offset survives that change better
+        # than trusting an extreme gain fitted to the broad light gradient.
+        offset_only = np.median(
+            live.reshape(-1, 3)[indices].astype(np.int16)
+            - reference.reshape(-1, 3)[indices].astype(np.int16),
+            axis=0,
+        ).astype(np.float32)
+        corrected = np.clip(reference.astype(np.float32) + offset_only, 0, 255)
+        residual = np.abs(live.astype(np.float32) - corrected).max(axis=2)
+        match_fraction = float((residual <= 28).mean())
+        if match_fraction >= MIN_OFFSET_MATCH_FRACTION:
+            return PhotometricFit(
+                gain=np.ones(3, np.float32), offset=offset_only,
+                background_fraction=match_fraction, trusted=True,
+                reason="lighting changed; offset-only comparison",
+            )
         return PhotometricFit(
             gain=np.ones(3, np.float32),
             offset=np.zeros(3, np.float32),

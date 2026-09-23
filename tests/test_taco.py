@@ -14,6 +14,7 @@ class TacoIndexTests(unittest.TestCase):
         self.assertEqual(route_taco_label("drink_can"), "metal")
         self.assertEqual(route_taco_label("corrugated_carton"), "paper")
         self.assertEqual(route_taco_label("food_container"), "mixed")
+        self.assertEqual(route_taco_label("food_waste"), "mixed")
         self.assertEqual(route_taco_label("unlabeled_litter"), "mixed")
 
     def test_coco_records_keep_box_and_route(self) -> None:

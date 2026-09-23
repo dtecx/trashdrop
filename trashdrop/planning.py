@@ -74,15 +74,10 @@ class TwoArmDispatcher:
         assignments: list[ArmAssignment] = []
 
         for item in items:
-            if item.category not in ALL_CATEGORIES:
-                raise ValueError(
-                    f"{item.item_id!r} has unknown category {item.category!r}; "
-                    "do not route it to a bin"
-                )
-
             rerouted = (
-                item.category != MIXED_CATEGORY
-                and item.confidence < self.confidence_floor
+                item.category not in ALL_CATEGORIES
+                or (item.category != MIXED_CATEGORY
+                    and item.confidence < self.confidence_floor)
             )
             category = MIXED_CATEGORY if rerouted else item.category
 

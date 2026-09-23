@@ -84,7 +84,10 @@ CORS is open, so a browser page can call it directly.
 
 ## What we promise
 
-We sort into `bio`, `paper`, `plastic`, `metal` and `mixed`.
+We sort plastic, paper, and metal waste into their material bins. `mixed` is a
+shared fallback for unsupported or uncertain items. Bottles, cups, and cans
+are examples of what the partner team expects to deliver, not the only accepted
+shapes.
 
 **Anything we are not sure about goes to `mixed`, and we say so.** A low
 classifier score, an unknown material, an item too wide for the jaws or too

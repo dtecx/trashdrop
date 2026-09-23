@@ -31,7 +31,8 @@ white_balance_auto = false
 
 # Colour temperature in kelvin. Frozen from what auto white balance chose.
 # camera range 2000..6500, step 1, default 4000
-white_balance = 4778
+#white_balance = 4778
+white_balance = 4100
 
 # Autofocus hunts on a plain board, which blurs frames and shifts the image. Keep false.
 focus_auto = false

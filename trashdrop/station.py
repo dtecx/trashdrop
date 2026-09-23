@@ -54,13 +54,12 @@ ARMS_BY_NAME = {mount.name: mount for mount in ARMS}
 # treats colour as meaning, and it exists to exercise the motion stack before
 # a trained classifier is available. See trashdrop/perception/.
 CATEGORY_COLORS = {
-    "bio": "0.15 0.65 0.20 1",
     "paper": "0.20 0.35 0.85 1",
     "plastic": "0.95 0.80 0.10 1",
     "metal": "0.85 0.15 0.15 1",
     "mixed": "0.45 0.45 0.48 1",
 }
-SORT_CATEGORIES: tuple[str, ...] = ("bio", "paper", "plastic", "metal")
+SORT_CATEGORIES: tuple[str, ...] = ("plastic", "paper", "metal")
 # Everything the cell will not commit to a material bin: an unrecognised item,
 # a low-confidence classification, or one the arm physically cannot handle.
 MIXED_CATEGORY = "mixed"
@@ -69,7 +68,6 @@ ALL_CATEGORIES: tuple[str, ...] = SORT_CATEGORIES + (MIXED_CATEGORY,)
 # Which arm owns which material. Both arms reach every item, so this split is
 # purely about keeping each transfer short and each bin on its owner's side.
 CATEGORY_OWNER = {
-    "bio": "front",
     "paper": "front",
     "plastic": "back",
     "metal": "back",
@@ -81,7 +79,6 @@ CATEGORY_OWNER = {
 # between the base and the pick zone's near edge (-0.14), and |x| >= 0.20 keeps
 # them clear of the zone's x span of +/-0.10. Both were verified by probe.
 _BIN_LOCAL = {
-    "bio": (0.20, -0.12),
     "paper": (-0.20, -0.12),
     "plastic": (0.20, -0.12),
     "metal": (-0.20, -0.12),

@@ -7,7 +7,8 @@ agent in this repository; `CLAUDE.md` adds only Claude Code specifics.
 
 A cell that sorts household waste with **two SO-101 arms**, built for the Alien
 Bazaar 2026 hackathon. Another team's robot delivers trash into a shared pick
-zone; these two arms sort it into five bins.
+zone; these two arms sort plastic, paper, and metal into three material bins,
+with a shared `mixed` fallback for uncertain or unsupported items.
 
 The repository contains the *virtual* model of that cell plus the tooling to
 build a real dataset. Hardware is not connected yet.
@@ -20,12 +21,12 @@ build a real dataset. Hardware is not connected yet.
 | Judged on | creativity, **proactive collaboration with other teams**, and effort during the event |
 | Hardware | issued at the venue. Nothing can be bring-upped in advance |
 | Success criterion the team set | **zero sorting errors**, not speed |
-| Bins | `bio`, `paper`, `plastic`, `metal`, `mixed` |
+| Bins | `plastic`, `paper`, `metal`, plus fallback `mixed` |
 | Compute on site | one MacBook, arms plugged into it |
 | Camera | **not decided** — possibly an Android phone as a webcam |
 | Team | one person on macOS, everyone else on **Windows** |
 | Leader arm | at least one available, so teleop recording is possible |
-| Trash | food packaging, drink cans, bottles — unknown exact mix |
+| Trash | partner team expects plastic bottles, paper cups, and empty cans; all plastic, paper, and metal waste is in scope |
 
 ## Layout: the arms face each other
 
@@ -164,5 +165,5 @@ uv run trashdrop review --session 2026-09-20-kitchen
 
 Run `uv run trashdrop probe` and `uv run python -m pytest tests/ -q`. For a
 change touching motion or geometry, also run `uv run trashdrop sim` and quote
-the actual `sorted correctly: N/4` line. The simulation is fast (about 7
+the actual `sorted correctly: N/3` line. The simulation is fast (about 7
 seconds); there is no excuse for reporting a motion change unverified.

@@ -13,8 +13,54 @@ from pathlib import Path
 
 import numpy as np
 
+from .manifest import read_manifest
+
 THUMBNAIL = 128
 COLUMNS = 10
+
+
+def rejected_frames_path(root: Path, session: str) -> Path:
+    return root / "raw" / session / "rejected_frames.txt"
+
+
+def read_rejected_frames(root: Path, session: str) -> set[str]:
+    path = rejected_frames_path(root, session)
+    if not path.is_file():
+        return set()
+    return {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+
+
+def reject_frames(session: str, images: list[str], root: Path = Path("data")) -> int:
+    """Persistently exclude individual mistakes without changing raw photos."""
+
+    root = Path(root).expanduser().resolve()
+    known = {row.image for row in read_manifest(root / "raw" / session / "manifest.csv")}
+    selected = set()
+    for image in images:
+        normalized = image.replace("\\", "/")
+        selected.add(normalized if normalized.startswith("raw/") else f"raw/{session}/{normalized}")
+    unknown = selected - known
+    if unknown:
+        raise ValueError(f"Frames not in session {session!r}: {', '.join(sorted(unknown))}")
+
+    rejected = read_rejected_frames(root, session)
+    added = selected - rejected
+    rejected.update(selected)
+    path = rejected_frames_path(root, session)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(sorted(rejected)) + "\n", encoding="utf-8")
+
+    labels_path = root / "labels" / f"{session}.jsonl"
+    if labels_path.is_file():
+        kept = [
+            line for line in labels_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and json.loads(line)["image"] not in selected
+        ]
+        labels_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+    for image in selected:
+        crop = root / image.replace("raw/", "crops/", 1)
+        crop.unlink(missing_ok=True)
+    return len(added)
 
 
 def contact_sheets(session: str, root: Path = Path("data"), out_dir: Path | None = None) -> list[Path]:

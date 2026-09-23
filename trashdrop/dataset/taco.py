@@ -18,13 +18,13 @@ def route_taco_label(label: str) -> str:
     """Map a TACO taxonomy label to a station route, failing closed to mixed.
 
     TACO's detailed labels are consolidated only where the material is clear.
-    Food *containers* are not bio-waste, and ambiguous litter goes to the
-    mixed bin rather than being guessed into a material bin.
+    Organic waste and ambiguous litter go to the mixed bin because they are
+    outside the three supported material categories.
     """
 
     normalized = label.casefold().replace("_", " ").replace("-", " ")
     if any(token in normalized for token in ("food waste", "organic", "vegetation")):
-        return "bio"
+        return "mixed"
     if any(token in normalized for token in ("paper", "carton", "cardboard", "corrugated", "tissue")):
         return "paper"
     if any(token in normalized for token in ("aluminium", "aluminum", "metal", "drink can", "pop tab")):

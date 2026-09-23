@@ -1,4 +1,4 @@
-"""End-to-end regression: two arms sort four items, scored from physics.
+"""End-to-end regression: two arms sort three target items, scored from physics.
 
 Slow (a few seconds) but it is the test that matters -- it is the only one
 that would catch a broken IK seed, a stow pose that occludes the camera, or a

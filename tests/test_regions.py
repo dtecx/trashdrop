@@ -47,6 +47,17 @@ class FragmentTests(unittest.TestCase):
         self.assertLessEqual(x, 220)
         self.assertGreaterEqual(x + w, 370)
 
+    def test_a_long_transparent_bottle_keeps_distant_cap_and_base(self) -> None:
+        mask = blank()
+        cv2.rectangle(mask, (100, 160), (120, 190), 255, -1)
+        cv2.rectangle(mask, (165, 155), (200, 195), 255, -1)
+        cv2.rectangle(mask, (245, 160), (270, 190), 255, -1)
+        region, reason = find_item_region(mask)
+        self.assertEqual(reason, "ok")
+        self.assertEqual(region.fragments, 3)
+        self.assertLessEqual(region.box[0], 100)
+        self.assertGreaterEqual(region.box[0] + region.box[2], 271)
+
     def test_an_opaque_item_is_a_single_fragment(self) -> None:
         mask = blank()
         cv2.rectangle(mask, (250, 150), (330, 210), 255, -1)
@@ -71,6 +82,22 @@ class FragmentTests(unittest.TestCase):
 
 
 class RefusalTests(unittest.TestCase):
+    def test_live_view_can_show_a_box_for_an_item_at_the_border(self) -> None:
+        mask = blank()
+        cv2.rectangle(mask, (0, 120), (100, 200), 255, -1)
+        region, reason = find_item_region(mask, allow_edge=True)
+        self.assertEqual(reason, "touches_frame_edge")
+        self.assertIsNotNone(region)
+
+    def test_polygon_border_rejects_a_truncated_item(self) -> None:
+        mask = blank()
+        cv2.rectangle(mask, (170, 120), (220, 180), 255, -1)
+        valid = np.zeros_like(mask)
+        valid[:, :222] = 255
+        region, reason = find_item_region(mask, valid_mask=valid)
+        self.assertIsNone(region)
+        self.assertEqual(reason, "touches_frame_edge")
+
     def test_empty_mask(self) -> None:
         self.assertEqual(find_item_region(blank())[1], "nothing_changed")
 

@@ -217,6 +217,7 @@ def _cmd_camera_tune(args: argparse.Namespace) -> int:
 
     from .camera import CameraSettings, UvcCamera, config_path, focus_chart, save, tune
     from .dataset.capture import open_camera
+    from .dataset.zone import DEFAULT_CALIBRATION, DEFAULT_ZONE_CONFIG, calibrate_zone, save_zone, zone_size
 
     # Talk to the camera first: if control is refused, say so before any
     # video is opened.
@@ -227,12 +228,22 @@ def _cmd_camera_tune(args: argparse.Namespace) -> int:
     source = _resolve_camera(args.camera, args.width, args.height)
     capture = open_camera(source, args.width, args.height)
     _require_same_camera(capture, source, camera, refuse=True)
+    zone = None
+    zone_error = None
     try:
         print("warming up...")
         until = time.time() + 2.0
         while time.time() < until:
             capture.read()
         result = tune(capture, camera, power_line_frequency=1 if args.mains == 50 else 2)
+        try:
+            width_cm, height_cm = zone_size(DEFAULT_ZONE_CONFIG)
+            ok, zone_frame = capture.read()
+            if not ok or zone_frame is None:
+                raise ValueError("Camera stopped delivering frames before zone calibration")
+            zone = calibrate_zone(zone_frame, width_cm, height_cm)
+        except (ValueError, TypeError, KeyError, FileNotFoundError) as error:
+            zone_error = str(error)
     finally:
         capture.release()
 
@@ -244,6 +255,15 @@ def _cmd_camera_tune(args: argparse.Namespace) -> int:
         note=args.note,
     )
     path = save(settings, args.config or config_path(), ranges)
+    if zone is not None:
+        save_zone(DEFAULT_CALIBRATION, zone)
+        print(f"calibrated {width_cm:g} x {height_cm:g} cm zone -> {DEFAULT_CALIBRATION}")
+    elif zone_error:
+        if DEFAULT_CALIBRATION.is_file():
+            stale = DEFAULT_CALIBRATION.with_name(f"camera_zone.stale-{int(time.time())}.json")
+            DEFAULT_CALIBRATION.rename(stale)
+            print(f"previous calibration moved to {stale}")
+        print(f"ZONE NOT CALIBRATED: {zone_error}; leave all four markers in view and tune again")
     print("\nfocus sweep (sharpness of the star at each lens position):")
     print(focus_chart(result.focus_curve, chosen=result.controls.get("focus")))
     if result.autofocus_guess is not None:
@@ -254,6 +274,29 @@ def _cmd_camera_tune(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_camera_zone(args: argparse.Namespace) -> int:
+    """Recalibrate the pick area without sweeping focus or changing controls."""
+
+    from .dataset.capture import open_camera
+    from .dataset.zone import DEFAULT_CALIBRATION, DEFAULT_ZONE_CONFIG, calibrate_zone, save_zone, zone_size
+
+    source = _resolve_camera(args.camera, args.width, args.height)
+    capture = open_camera(source, args.width, args.height)
+    try:
+        for _ in range(20):
+            ok, frame = capture.read()
+        if not ok or frame is None:
+            raise RuntimeError("Camera stopped delivering frames")
+        width_cm, height_cm = zone_size(args.config)
+        zone = calibrate_zone(frame, width_cm, height_cm)
+    finally:
+        capture.release()
+    save_zone(args.output, zone)
+    print(f"calibrated {width_cm:g} x {height_cm:g} cm camera-centred zone -> {args.output}")
+    print(f"image box: x={zone.x} y={zone.y} width={zone.width} height={zone.height}")
+    return 0
+
+
 def _cmd_camera_probe(args: argparse.Namespace) -> int:
     from .camera.uvc import probe_access
 
@@ -261,7 +304,7 @@ def _cmd_camera_probe(args: argparse.Namespace) -> int:
     if verdict == "ok":
         print()
         print("VERDICT: camera settings can be read and written. Next:")
-        print("    uv run trashdrop camera tune --camera 1")
+        print("    uv run trashdrop camera tune --camera auto")
         return 0
     print()
     print("VERDICT: blocked -- unplug and replug the camera and try again; if it persists,")
@@ -288,9 +331,7 @@ def _cmd_capture(args: argparse.Namespace) -> int:
         source=source,
         width=args.width,
         height=args.height,
-        burst=args.burst,
         lighting=args.lighting,
-        auto=not args.no_auto,
     )
     run_capture(config, category=args.category, object_id=args.object_id)
     return 0
@@ -331,8 +372,12 @@ def _cmd_autolabel(args: argparse.Namespace) -> int:
 
 
 def _cmd_review(args: argparse.Namespace) -> int:
-    from .dataset.review import contact_sheets, drop_objects
+    from .dataset.review import contact_sheets, drop_objects, reject_frames
 
+    if args.reject_frame:
+        added = reject_frames(args.session, args.reject_frame, root=args.data)
+        print(f"excluded {added} frame(s) from future autolabel runs")
+        return 0
     if args.drop:
         removed = drop_objects(args.session, args.drop, root=args.data)
         print(f"removed {removed} crops for {', '.join(args.drop)}")
@@ -374,6 +419,8 @@ def _cmd_taco_index(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from .station import SORT_CATEGORIES
+
     parser = argparse.ArgumentParser(
         prog="trashdrop", description="Two-arm SO-101 trash sorting cell"
     )
@@ -434,6 +481,14 @@ def build_parser() -> argparse.ArgumentParser:
     tune_parser.add_argument("--usb-id", default=None)
     tune_parser.set_defaults(func=_cmd_camera_tune)
 
+    zone_parser = camera_sub.add_parser("zone", help="calibrate the capture zone from the ArUco sheet")
+    zone_parser.add_argument("--camera", default="auto")
+    zone_parser.add_argument("--width", type=int, default=1920)
+    zone_parser.add_argument("--height", type=int, default=1080)
+    zone_parser.add_argument("--config", type=Path, default=Path("capture_zone.toml"))
+    zone_parser.add_argument("--output", type=Path, default=Path("camera_zone.json"))
+    zone_parser.set_defaults(func=_cmd_camera_zone)
+
     probe = camera_sub.add_parser("probe", help="which route to the camera's settings does this Mac allow?")
     probe.add_argument("--usb-id", default=None)
     probe.set_defaults(func=_cmd_camera_probe)
@@ -443,14 +498,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     capture = sub.add_parser("capture", help="shoot a dataset session on the rig")
     capture.add_argument("--session", required=True, help="e.g. 2026-09-23-home")
-    capture.add_argument("--category", default="plastic", help="starting class; keys 1-5 switch")
-    capture.add_argument("--object-id", default=None, help="default: next free <class>_NN")
+    capture.add_argument("--category", default="plastic", choices=SORT_CATEGORIES,
+                         help="starting material; keys 1-3 switch")
+    capture.add_argument("--object-id", default=None, help="default: next free <material>_NN")
     capture.add_argument("--camera", default="auto", help="auto finds the webcam; or an index, or a phone URL")
     capture.add_argument("--width", type=int, default=1920)
     capture.add_argument("--height", type=int, default=1080)
-    capture.add_argument("--burst", type=int, default=3, help="frames per SPACE press")
+    capture.add_argument("--burst", type=int, default=1, help=argparse.SUPPRESS)
     capture.add_argument("--lighting", default="default")
-    capture.add_argument("--no-auto", action="store_true", help="start with the auto-shutter off")
+    capture.add_argument("--no-auto", action="store_true", help=argparse.SUPPRESS)
     capture.set_defaults(func=_cmd_capture)
 
     camcheck = sub.add_parser("camcheck", help="is this camera good enough to shoot through?")
@@ -467,9 +523,11 @@ def build_parser() -> argparse.ArgumentParser:
     autolabel.add_argument("--holdout", type=float, default=0.25)
     autolabel.set_defaults(func=_cmd_autolabel)
 
-    review = sub.add_parser("review", help="contact sheets, or drop bad objects")
+    review = sub.add_parser("review", help="contact sheets, or reject bad captures")
     review.add_argument("--session", required=True)
-    review.add_argument("--drop", nargs="*", help="object ids to remove")
+    review_actions = review.add_mutually_exclusive_group()
+    review_actions.add_argument("--drop", nargs="*", help="object ids to remove")
+    review_actions.add_argument("--reject-frame", nargs="+", help="CATEGORY/OBJECT/FILE to permanently exclude from autolabel")
     review.set_defaults(func=_cmd_review)
 
     summary = sub.add_parser("summary", help="counts for a capture session")

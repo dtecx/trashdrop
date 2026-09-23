@@ -36,6 +36,7 @@ from .station import (
     MAX_PAYLOAD_KG,
     MIXED_CATEGORY,
     PICK_ZONE,
+    SORT_CATEGORIES,
 )
 
 DEFAULT_PORT = 8742
@@ -166,7 +167,8 @@ def capabilities() -> dict:
     min_x, max_x, min_y, max_y = PICK_ZONE.bounds
     return {
         "service": "TrashDrop",
-        "summary": "Two SO-101 arms sorting household waste into five bins.",
+        "summary": "Two SO-101 arms sorting plastic, paper, and metal waste, with a mixed fallback.",
+        "target_categories": list(SORT_CATEGORIES),
         "sorts_into": list(ALL_CATEGORIES),
         "fallback_bin": MIXED_CATEGORY,
         "fallback_policy": (
@@ -382,7 +384,7 @@ def mock_sorter(log: SortingLog, seconds_per_item: float = 2.5):
             for index in range(delivery.announced_items):
                 time.sleep(seconds_per_item)
                 confidence = random.uniform(0.35, 0.99)
-                category = random.choice(["paper", "plastic", "metal", "bio"])
+                category = random.choice(SORT_CATEGORIES)
                 # Same rule as the real dispatcher: unsure goes to mixed.
                 routed = category if confidence >= 0.55 else MIXED_CATEGORY
                 log.record(

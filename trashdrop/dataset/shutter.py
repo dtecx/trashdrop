@@ -22,7 +22,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..perception.photometric import compensated_reference
-from ..perception.regions import find_item_region
+from ..perception.regions import ANALYSIS_WIDTH, find_item_region
+from ..perception.shadows import recover_object_edges, suppress_cast_shadows
 
 # What the operator sees for each reason an item region was not found.
 REASON_TEXT = {
@@ -41,6 +42,7 @@ class ShutterView:
     status: str
     tone: str  # idle | wait | ready | problem
     box: tuple[int, int, int, int] | None = None  # full-resolution pixels
+    empty: bool = False  # confirmed empty against the current background
 
 
 class AutoShutter:
@@ -50,7 +52,7 @@ class AutoShutter:
         self,
         background: np.ndarray | None = None,
         *,
-        analysis_width: int = 320,
+        analysis_width: int = ANALYSIS_WIDTH,
         settle_seconds: float = 0.6,
         motion_threshold: float = 2.0,
         diff_threshold: int = 28,
@@ -120,19 +122,26 @@ class AutoShutter:
 
     # --- the decision ------------------------------------------------------
 
-    def update(self, frame: np.ndarray) -> ShutterView:
+    def update(self, frame: np.ndarray, valid_mask: np.ndarray | None = None) -> ShutterView:
         import cv2
 
         small, scale = self._small(frame)
+        scaled_mask = None
+        if valid_mask is not None:
+            scaled_mask = cv2.resize(valid_mask, (small.shape[1], small.shape[0]),
+                                     interpolation=cv2.INTER_NEAREST) > 0
+            if not scaled_mask.any():
+                raise ValueError("Detection zone has no valid pixels")
         grey = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        grey -= grey.mean()
+        grey -= grey[scaled_mask].mean() if scaled_mask is not None else grey.mean()
         now = self.clock()
 
         if self._prev is None or self._prev.shape != grey.shape:
             self._prev = grey
             self._stable_since = None
             return ShutterView(False, "starting", "wait")
-        motion = float(np.abs(grey - self._prev).mean())
+        delta = np.abs(grey - self._prev)
+        motion = float(delta[scaled_mask].mean() if scaled_mask is not None else delta.mean())
         self._prev = grey
         if motion > self.motion_threshold:
             self._stable_since = None
@@ -158,13 +167,22 @@ class AutoShutter:
         kernel = np.ones((3, 3), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        if scaled_mask is not None:
+            mask[~scaled_mask] = 0
+        shadow_free = suppress_cast_shadows(blurred, corrected, mask)
+        shadow_free = cv2.morphologyEx(shadow_free, cv2.MORPH_OPEN, kernel)
+        mask = recover_object_edges(blurred, corrected, mask, shadow_free, scaled_mask)
 
-        region, reason = find_item_region(mask, edge_margin_px=2)
+        region, reason = find_item_region(mask, edge_margin_px=4,
+                                          valid_mask=scaled_mask, allow_edge=True)
         if region is None:
             text, tone = REASON_TEXT.get(reason, (reason, "problem"))
-            return ShutterView(False, text, tone)
+            return ShutterView(False, text, tone, empty=reason == "nothing_changed")
 
         box = tuple(int(round(value / scale)) for value in region.box)
+        if reason == "touches_frame_edge":
+            return ShutterView(False, "item touches zone edge - move it toward the center",
+                               "problem", box)
         if now - self._stable_since < self.settle_seconds:
             return ShutterView(False, "hold still...", "wait", box)
         if now - self._last_capture_time < self.min_interval_seconds:

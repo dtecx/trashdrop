@@ -55,12 +55,11 @@ class SceneObject:
     yaw_degrees: float = 0.0
 
 
-# Four items inside the shared pick zone, at the spawn poses the single-arm
-# baseline was verified against.
+# The partner team's likely first deliveries: a plastic bottle, paper cup,
+# and empty can. The real categories also cover other waste of those materials.
 DEFAULT_OBJECTS: tuple[SceneObject, ...] = (
     SceneObject("bottle", "plastic", 0.010, -0.272, 20.0),
-    SceneObject("peel", "bio", -0.060, -0.200, 0.0),
-    SceneObject("carton", "paper", 0.060, -0.222, 60.0),
+    SceneObject("paper_cup", "paper", 0.060, -0.222, 60.0),
     SceneObject("can", "metal", -0.020, -0.160, -30.0),
 )
 

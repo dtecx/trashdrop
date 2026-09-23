@@ -15,7 +15,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 
 from trashdrop.api import SortedItem, SortingLog, _Handler, capabilities
-from trashdrop.station import ALL_CATEGORIES, MIXED_CATEGORY
+from trashdrop.station import ALL_CATEGORIES, MIXED_CATEGORY, SORT_CATEGORIES
 
 
 class ApiTestCase(unittest.TestCase):
@@ -86,6 +86,7 @@ class CapabilitiesTests(ApiTestCase):
     def test_declares_every_bin_and_the_fallback(self) -> None:
         payload = capabilities()
         self.assertEqual(set(payload["sorts_into"]), set(ALL_CATEGORIES))
+        self.assertEqual(payload["target_categories"], list(SORT_CATEGORIES))
         self.assertEqual(payload["fallback_bin"], MIXED_CATEGORY)
 
     def test_drop_zone_is_a_real_rectangle(self) -> None:

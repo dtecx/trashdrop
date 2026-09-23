@@ -31,11 +31,12 @@ class BinTests(unittest.TestCase):
     def test_mixed_bin_is_shared(self) -> None:
         self.assertEqual(BINS[MIXED_CATEGORY].arm, "any")
 
-    def test_work_is_split_evenly_between_the_arms(self) -> None:
+    def test_both_arms_own_target_materials(self) -> None:
         counts = {mount.name: 0 for mount in ARMS}
         for category in SORT_CATEGORIES:
             counts[owner_of(category)] += 1
-        self.assertEqual(set(counts.values()), {2})
+        self.assertEqual(sorted(counts.values()), [1, 2])
+        self.assertEqual(set(SORT_CATEGORIES), {"plastic", "paper", "metal"})
 
     def test_no_bin_overlaps_the_pick_zone(self) -> None:
         min_x, max_x, min_y, max_y = PICK_ZONE.bounds

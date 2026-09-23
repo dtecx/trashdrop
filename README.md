@@ -1,8 +1,8 @@
 # TrashDrop
 
-Two SO-101 arms facing each other across a shared pick zone, sorting household
-waste into five bins. Built for Alien Bazaar 2026, where another team's robot
-delivers the trash and these two arms sort it.
+Two SO-101 arms facing each other across a shared pick zone, sorting plastic,
+paper, and metal waste into three material bins with a shared `mixed` fallback.
+Built for Alien Bazaar 2026, where another team's robot delivers the trash.
 
 This repository holds the virtual model of the cell and the tooling to build a
 real dataset. Everything stays inside this folder: dependencies live in a
@@ -12,13 +12,13 @@ deleting the folder removes all of it.
 ```
 uv run trashdrop sim
 ...
-cycle 0: 4 item(s) in the pick zone
-  bio      at (-0.062, -0.199) -> front -> bin bio
+cycle 0: 3 item(s) in the pick zone
+  paper    at (+0.062, -0.222) -> front -> bin paper
     above bin, tcp error 2 mm
-cycle 1: 3 item(s) in the pick zone
+cycle 1: 2 item(s) in the pick zone
   plastic  at (+0.010, -0.274) -> back  -> bin plastic
 ...
-sorted correctly: 4/4  (picks 4, misses 0)
+sorted correctly: 3/3  (picks 3, misses 0)
 ```
 
 ## Quick start
@@ -29,7 +29,7 @@ uv sync --extra simulation --group dev
 
 uv run trashdrop probe                   # is every bin and pick-zone corner reachable?
 uv run trashdrop sim                     # full two-arm sort, ~7 s, writes out/
-uv run python -m pytest tests/ -q        # 50 tests, ~7 s
+uv run python -m pytest tests/ -q        # full test suite
 ```
 
 Live viewer (macOS needs `mjpython`, which the `mujoco` wheel installs):

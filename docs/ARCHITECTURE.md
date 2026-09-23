@@ -4,8 +4,8 @@
 
 ```
                               +y
-        [paper]                                    [bio]
-       (-0.20,-0.12)                          (+0.20,-0.12)
+        [paper]
+       (-0.20,-0.12)
                     +-------------------+
                     |   FRONT  (0, 0)   |   yaw 0
                     +-------------------+
@@ -27,7 +27,7 @@ Overhead camera at 0.60 m above the pick zone centre, 45° vertical FOV.
 **Bases 43 cm apart, facing each other.** Each arm's own frame then sees the
 pick zone at local y in [-0.14, -0.29], inside the envelope the single-arm
 baseline was verified against. Both arms reach every point of the zone and
-every one of the five bins, which `trashdrop probe` asserts.
+every material bin and the shared `mixed` bin, which `trashdrop probe` asserts.
 
 Two consequences follow from this, and most of the design is downstream of them:
 

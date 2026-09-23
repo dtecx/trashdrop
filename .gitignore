@@ -2,7 +2,6 @@
 .venv/
 .uv-cache/
 .python-version
-.serena/
 
 # Generated simulation outputs and MuJoCo runtime files
 out/

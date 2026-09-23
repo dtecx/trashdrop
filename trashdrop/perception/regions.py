@@ -30,11 +30,11 @@ MAX_AREA_FRACTION = 0.35
 # A leftover region larger than this fraction of the grouped item is a second
 # object rather than noise.
 SECOND_OBJECT_RATIO = 0.35
-# Default grouping distance as a fraction of the frame width. At 60 cm a C920
-# frame is ~85 cm wide, so 5 % is roughly 4 cm: enough to bridge the clear body
-# between a bottle's cap and its label, not enough to swallow a second item
-# lying elsewhere in the zone.
-DEFAULT_GAP_FRACTION = 0.05
+# A clear bottle can have a gap between its cap, label and base even after
+# novel edges are recovered. 7.5% of the analysis width bridges those gaps on
+# the rig without joining items on opposite sides of the calibrated zone.
+DEFAULT_GAP_FRACTION = 0.075
+ANALYSIS_WIDTH = 320
 
 
 @dataclass
@@ -68,6 +68,8 @@ def find_item_region(
     *,
     gap_px: float | None = None,
     edge_margin_px: int = 4,
+    valid_mask: np.ndarray | None = None,
+    allow_edge: bool = False,
 ) -> tuple[ItemRegion | None, str]:
     """Return the single item in ``mask``, or ``None`` and the reason why not.
 
@@ -78,6 +80,8 @@ def find_item_region(
     import cv2
 
     height, width = mask.shape[:2]
+    if valid_mask is not None and valid_mask.shape != mask.shape:
+        raise ValueError("Valid mask does not match the foreground mask")
     frame_area = float(height * width)
     gap = gap_px if gap_px is not None else DEFAULT_GAP_FRACTION * width
 
@@ -118,15 +122,26 @@ def find_item_region(
         return None, "region_too_large"
 
     x, y, w, h = group_box
-    if (
+    points = np.vstack([sizeable[i] for i in group])
+    hull = cv2.convexHull(points)
+    region = ItemRegion(hull=hull, box=group_box, area=group_area, fragments=len(group))
+    touches_edge = (
         x <= edge_margin_px
         or y <= edge_margin_px
         or x + w >= width - edge_margin_px
         or y + h >= height - edge_margin_px
-    ):
+    )
+    if valid_mask is not None and not touches_edge:
+        # The calibrated area can be a slanted polygon inside its enclosing
+        # crop. A truncated item may touch that polygon without touching the
+        # rectangular image edge.
+        margin = 2 * edge_margin_px + 1
+        interior = cv2.erode((valid_mask != 0).astype(np.uint8),
+                             np.ones((margin, margin), np.uint8))
+        vertices = hull.reshape(-1, 2)
+        touches_edge = bool(np.any(interior[vertices[:, 1], vertices[:, 0]] == 0))
+    if touches_edge:
         # Usually a hand still in shot, or the item rolled out of view.
-        return None, "touches_frame_edge"
+        return (region if allow_edge else None), "touches_frame_edge"
 
-    points = np.vstack([sizeable[i] for i in group])
-    hull = cv2.convexHull(points)
-    return ItemRegion(hull=hull, box=group_box, area=group_area, fragments=len(group)), "ok"
+    return region, "ok"

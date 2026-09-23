@@ -67,7 +67,7 @@ Worth stating plainly, because it is easy to overclaim:
 | Grasping | **Not proved.** The grasp is kinematic: contacts are disabled and the item tracks the tool. Frictional grasping in simulation does not predict a real gripper on a crushed can |
 | Perception | **Not proved at all.** `perception/color.py` reads back the colour the simulator assigned. It is a wiring test |
 
-So `sorted correctly: 4/4` is a statement about motion. Perception performance
+So `sorted correctly: 3/3` is a statement about motion. Perception performance
 can only come from real crops, and grasp reliability only from hardware.
 
 ## Sequence for the remaining days

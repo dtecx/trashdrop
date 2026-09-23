@@ -83,6 +83,21 @@ class RecoveryTests(unittest.TestCase):
         self.assertTrue(fit.trusted)
         self.assertFalse(fit.drifted, fit.describe())
 
+    def test_changed_lighting_uses_the_whole_table_for_offset_fallback(self) -> None:
+        height, width = 318, 320
+        gradient = np.linspace(140, 200, height, dtype=np.float32)[:, None, None]
+        reference = np.broadcast_to(gradient, (height, width, 3)).astype(np.uint8).copy()
+        live = expose(reference, gain=0.2, offset=140)
+        live[100:150, 120:190] = 25
+
+        fit = estimate_photometric_fit(live, reference)
+        self.assertTrue(fit.trusted, fit.reason)
+        self.assertIn("offset-only", fit.reason)
+        self.assertTrue(np.allclose(fit.gain, 1.0))
+        # The old floor-stride sampler used only the first 40k of ~100k
+        # background pixels and returned an offset biased toward the top.
+        self.assertTrue(np.allclose(fit.offset, 3.0, atol=2.0), fit.describe())
+
 
 class DetectionSurvivesExposureTests(unittest.TestCase):
     """The point of the module, stated as a pair of tests."""

@@ -60,6 +60,40 @@ class ShutterTestCase(unittest.TestCase):
 
 
 class DecisionTests(ShutterTestCase):
+    def test_smooth_grey_item_uses_its_rim_to_complete_the_box(self) -> None:
+        reference = np.full((HEIGHT, WIDTH, 3), (160, 170, 165), np.uint8)
+        live = reference.copy()
+        # The body looks like a shadow; only the bright label is a strong
+        # foreground seed. The rim and printed bands reveal the whole item.
+        cv2.rectangle(live, (245, 110), (355, 245), (124, 132, 128), -1)
+        cv2.rectangle(live, (280, 150), (320, 190), (235, 238, 235), -1)
+        for y in (130, 210, 235):
+            cv2.line(live, (260, y), (340, y), (90, 100, 95), 2)
+        shutter = AutoShutter(reference, clock=self.clock)
+        shutter.update(live)
+        view = shutter.update(live)
+        self.assertIsNotNone(view.box, view.status)
+        x, y, w, h = view.box
+        self.assertLessEqual(x, 245)
+        self.assertLessEqual(y, 110)
+        self.assertGreaterEqual(x + w, 355)
+        self.assertGreaterEqual(y + h, 245)
+
+    def test_motion_outside_polygon_does_not_delay_inside_item(self) -> None:
+        valid = np.zeros((HEIGHT, WIDTH), np.uint8)
+        valid[70:290, 200:470] = 255
+        views = []
+        for seed in range(25):
+            frame = with_item(seed)
+            cv2.rectangle(frame, (10 + seed * 4, 90), (100 + seed * 4, 170),
+                          (30, 180, 60), -1)
+            view = self.shutter.update(frame, valid)
+            if view.capture:
+                self.shutter.mark_captured()
+            views.append(view)
+            self.clock.now += FRAME_DT
+        self.assertEqual(sum(view.capture for view in views), 1)
+
     def test_an_empty_table_is_never_captured(self) -> None:
         views = self.feed(table, 20)
         self.assertFalse(any(v.capture for v in views))
@@ -97,8 +131,34 @@ class DecisionTests(ShutterTestCase):
         self.assertAlmostEqual(w, 70, delta=10)
         self.assertAlmostEqual(h, 45, delta=10)
 
+    def test_shadow_does_not_expand_the_live_box(self) -> None:
+        def shadowed_item(seed: int) -> np.ndarray:
+            image = table(seed)
+            shadow = np.zeros((HEIGHT, WIDTH), np.uint8)
+            cv2.fillPoly(shadow, [np.array([[80, 95], [285, 130],
+                                             [285, 235], [100, 245]])], 255)
+            image[shadow != 0] = (image[shadow != 0].astype(np.float32) * 0.72).astype(np.uint8)
+            cv2.rectangle(image, (280, 150), (350, 215), (35, 40, 45), -1)
+            return image
+
+        views = self.feed(shadowed_item, 25)
+        box = next(v.box for v in views if v.capture)
+        self.assertAlmostEqual(box[0], 280, delta=12)
+        self.assertAlmostEqual(box[2], 71, delta=15)
+
 
 class ExposureTests(ShutterTestCase):
+    def test_changed_lighting_still_draws_the_item_box(self) -> None:
+        gradient = np.linspace(140, 200, HEIGHT, dtype=np.float32)[:, None, None]
+        reference = np.broadcast_to(gradient, (HEIGHT, WIDTH, 3)).astype(np.uint8).copy()
+        live = np.clip(reference.astype(np.float32) * 0.2 + 140, 0, 255).astype(np.uint8)
+        cv2.rectangle(live, (280, 150), (350, 215), (25, 25, 25), -1)
+        shutter = AutoShutter(reference, clock=self.clock)
+        shutter.update(live)
+        view = shutter.update(live)
+        self.assertIsNotNone(view.box, view.status)
+        self.assertAlmostEqual(view.box[0], 280, delta=12)
+
     def test_re_exposure_is_not_motion_and_not_a_new_pose(self) -> None:
         self.feed(with_item, 20)  # captured once, now holding
 

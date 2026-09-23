@@ -15,13 +15,11 @@ from pathlib import Path
 
 IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 
-# TrashNet has six visual classes and the station has five bins. Cardboard is
+# TrashNet has six visual classes and the station has three material bins. Cardboard is
 # paper. Glass goes to mixed on purpose and not only because it is ambiguous:
 # a 0.5 L glass bottle is heavier than this arm should lift, so it must never
 # be routed to a material bin. Unknown "trash" goes to mixed as well.
 #
-# TrashNet contains no bio class at all, so a model trained on it alone cannot
-# route bio-waste -- that class has to come from our own captures.
 TRASHNET_TO_STATION: dict[str, str] = {
     "cardboard": "paper",
     "glass": "mixed",
