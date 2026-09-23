@@ -3,12 +3,17 @@
 Three settings, three strategies -- each chosen after watching a simpler one
 fail on the real C920:
 
-* **Exposure and gain** -- measured from the image, not read back. The second
-  real tune froze what auto-exposure reported, 9.9 ms at gain 222, under a new
-  desk lamp: a short, noisy exposure. Now the exposure is chosen from 30, 20
-  and 10 ms -- multiples of the 10 ms mains period, so LED light cannot band --
-  as the longest that does not clip the brightest paper at the lowest gain,
-  and gain is raised only if that is still too dark.
+* **Exposure and gain** -- on macOS, left alone. Measured on the C920 while
+  QuickTime streamed: a manual exposure written over USB was replaced within
+  half a second, with the camera still reporting manual mode. macOS runs its
+  own auto-exposure for UVC cameras while a stream is open and rewrites both
+  values. Fighting it is what produced every strange reading so far -- a tune
+  that walked down to 0.3 ms while the picture stayed at median 142, a white
+  QuickTime preview, "brightness wandering" in camcheck. Focus and white
+  balance, tested the same way, are left untouched by macOS and stay ours.
+  Elsewhere exposure is measured from the image, from 30, 20 and 10 ms --
+  whole mains periods, so LED light cannot band -- after checking that the
+  image actually responds to it.
 * **Focus** -- autofocus gives a starting point, a sweep over the printed
   target decides. The first version measured sharpness over the whole frame
   and chose position 140, which is badly out of focus at 70 cm. At gain 159 the
@@ -289,6 +294,11 @@ def balance_white(
 # that paper keeps its colour for white balance and items keep contrast.
 TARGET_BRIGHT = 215.0
 CLIP_LIMIT = 240.0
+# A tenfold exposure change must move the brightest paper at least this much,
+# or exposure is not ours to set. Checked after this many frames, which gives
+# a controller like macOS's time to undo the change.
+MIN_EXPOSURE_RESPONSE = 40.0
+RESPONSE_SETTLE_FRAMES = 30
 # Exposure times that are whole multiples of the 10 ms period of 50 Hz light,
 # in the camera's units of 100 microseconds; 333 is the ceiling at 30 fps.
 FLICKER_SAFE = (300, 200, 100)
@@ -344,6 +354,27 @@ def tune_exposure(
 
     ceiling = min(exposure_range.maximum, FRAME_TIME_LIMIT)
     candidates = [value for value in FLICKER_SAFE if exposure_range.minimum <= value <= ceiling]
+
+    # Does the picture follow our exposure at all? If something else runs the
+    # exposure -- as macOS does -- it undoes each change within a moment, and
+    # a search would walk to a meaningless extreme. Give it time to fight back.
+    long_value = candidates[0] if candidates else ceiling
+    short_value = max(exposure_range.minimum, long_value // 10)
+    bright_long = bright_at(exposure=long_value)
+    _drain(capture, RESPONSE_SETTLE_FRAMES)
+    bright_long = bright_at(exposure=long_value)
+    bright_short = bright_at(exposure=short_value)
+    _drain(capture, RESPONSE_SETTLE_FRAMES)
+    bright_short = bright_at(exposure=short_value)
+    if bright_long - bright_short < MIN_EXPOSURE_RESPONSE:
+        camera.set("exposure_auto", 1)
+        notes.append(
+            f"the picture did not respond to exposure ({bright_long:.0f} at "
+            f"{long_value / 10:.0f} ms vs {bright_short:.0f} at {short_value / 10:.1f} ms): "
+            "something else controls it, so exposure stays automatic."
+        )
+        return None, None, brightness(average_frames(capture, average)), notes
+
     exposure = None
     for value in candidates:  # longest first: least gain needed, least noise
         if bright_at(exposure=value) <= CLIP_LIMIT:
@@ -391,10 +422,19 @@ def tune(
     converge_frames: int = 90,
     settle_frames: int = FOCUS_SETTLE_FRAMES,
     average: int = AVERAGE_FRAMES,
+    host_auto_exposure: bool | None = None,
     log=print,
 ) -> TuneResult:
-    """Run the whole tune. Leaves the camera in the tuned state."""
+    """Run the whole tune. Leaves the camera in the tuned state.
 
+    ``host_auto_exposure`` says the OS runs its own auto-exposure over this
+    camera (None: assume so on macOS, where it was measured).
+    """
+
+    import sys
+
+    if host_auto_exposure is None:
+        host_auto_exposure = sys.platform == "darwin"
     ranges = camera.ranges()
     result = TuneResult()
 
@@ -418,14 +458,26 @@ def tune(
         result.autofocus_guess = camera.get("focus")
 
     if "exposure" in ranges and "exposure_auto" in ranges:
-        exposure, gain, stats, notes = tune_exposure(
-            capture, camera, settle_frames=settle_frames, average=average, log=log
-        )
-        result.controls["exposure_auto"] = 0
-        result.controls["exposure"] = camera.get("exposure")
-        if gain is not None:
-            result.controls["gain"] = camera.get("gain")
-        result.notes.extend(notes)
+        if host_auto_exposure:
+            camera.set("exposure_auto", 1)
+            result.controls["exposure_auto"] = 1
+            stats = brightness(average_frames(capture, average))
+            log(
+                "  exposure: left to macOS (it rewrites manual exposure while streaming); "
+                f"brightest paper {stats['p99']:.0f}/255, median {stats['median']:.0f}"
+            )
+        else:
+            exposure, gain, stats, notes = tune_exposure(
+                capture, camera, settle_frames=settle_frames, average=average, log=log
+            )
+            result.notes.extend(notes)
+            if exposure is None:
+                result.controls["exposure_auto"] = 1
+            else:
+                result.controls["exposure_auto"] = 0
+                result.controls["exposure"] = camera.get("exposure")
+                if gain is not None:
+                    result.controls["gain"] = camera.get("gain")
     if "exposure_priority" in ranges:
         camera.set("exposure_priority", 0)
         result.controls["exposure_priority"] = 0

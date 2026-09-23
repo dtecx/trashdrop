@@ -30,6 +30,32 @@ camera driver is attached. That driver only claims the video *interfaces*,
 not the device, so a plain IOKit open succeeds. The approach is the one
 [camtint](https://github.com/bornaware/camtint) documents working on macOS 26.
 
+## What macOS lets us set, and what it does not
+
+Tested on the C920 by writing a value over USB while QuickTime streamed and
+reading it back every half second:
+
+| | who controls it on macOS | what the tune does |
+|---|---|---|
+| **focus** | us -- held | fixed in `camera.toml` |
+| **white balance** | us -- held | measured on the sheet's paper, fixed |
+| **exposure and gain** | **macOS** -- rewritten within 0.5 s | left automatic |
+
+macOS runs its own auto-exposure for UVC cameras while a stream is open: it
+keeps the camera in manual mode and writes exposure and gain itself. Values
+we never wrote kept appearing (77 at gain 255, 312 at gain 222), and fighting
+it produced every strange reading -- a tune that walked exposure down to 0.3 ms
+while the picture stayed at median 142, a white QuickTime preview, "brightness
+wandering" in camcheck.
+
+It is not a problem worth solving. On a still scene macOS's exposure is stable
+-- nothing moved in eight seconds of reading -- and the small step when an item
+arrives is compensated by background subtraction. The real problem was
+autofocus hunting over a plain board, and focus is ours.
+
+A side effect: since exposure is automatic everywhere, **QuickTime shows what
+the pipeline sees** and is a fine preview for framing and focus.
+
 ## Setup, once
 
 ```bash
@@ -45,25 +71,24 @@ pick zone, so at the venue the same sheet is the calibration.
 
 ## Tune
 
-**Light first.** On the first reading the camera was running at its longest
-exposure for 30 fps (33 ms) with gain 159 of 255 — it was starved of light and
-amplifying noise. More light on the board before tuning means a cleaner freeze.
+**Light first.** Even with exposure left to macOS, more light means lower
+gain and less noise on every crop. A desk lamp aimed at the board is enough.
 
-Then lay the sheet flat in the middle of the board, lights as they will be
-during the shoot:
+Then lay the sheet flat in view, lights as they will be during the shoot:
 
 ```bash
 uv run trashdrop camera tune --camera 1 --note "home rig, 70 cm"
 ```
 
-About 20 seconds. It sets mains to 50 Hz (the camera shipped at 60 Hz, which
-flickers under European LED light), lets auto-exposure and auto white balance
-settle and freezes what they chose, then turns autofocus **off**, sweeps the
-lens across its whole range and keeps the position where the star is sharpest.
-It prints the sweep as a bar chart — you want one clear peak — and writes
-`camera.toml`. The previous file is kept as a `.bak`.
+About 30 seconds. It sets mains to 50 Hz (the camera shipped at 60 Hz, which
+flickers under European LED light); lets autofocus find a first guess on the
+star; finds the sheet by its markers; turns autofocus **off** and sweeps the
+lens, judging sharpness on the star only; and bisects the colour temperature
+until the paper is neutral. It prints the sweep as a bar chart — one hump is
+what you want — and writes `camera.toml`, keeping the previous one as `.bak`.
 
-**No clear focus peak** means the sheet is not in view or not flat.
+**"marker sheet NOT found"** means the sheet is not wholly in view: check in
+QuickTime that all four markers are in the picture.
 
 ## Check it
 

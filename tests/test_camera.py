@@ -245,9 +245,9 @@ class RigScene:
 
     def __init__(self, device: FakeC920, *, true_focus: int = 35, neutral_wb: int = 4600,
                  noise: float = 9.0, af_guess: int | None = None, with_sheet: bool = True,
-                 light: float = 1.0):
+                 light: float = 1.0, exposure_matters: bool = True):
         self.device, self.true_focus, self.neutral_wb = device, true_focus, neutral_wb
-        self.noise, self.light = noise, light
+        self.noise, self.light, self.exposure_matters = noise, light, exposure_matters
         self.af_guess = true_focus if af_guess is None else af_guess
         self.rng = np.random.default_rng(7)
         canvas = np.full((360, 640), 150.0, np.float32)  # the board
@@ -265,7 +265,12 @@ class RigScene:
         error = abs(state["focus"] - self.true_focus)
         if error:
             frame = cv2.GaussianBlur(frame, (0, 0), error / 10.0)
-        frame *= self.light * (state["exposure"] / 300.0) * (1.0 + state["gain"] / 64.0)
+        if self.exposure_matters:
+            frame *= self.light * (state["exposure"] / 300.0) * (1.0 + state["gain"] / 64.0)
+        else:
+            # Something else runs the exposure (macOS does): whatever we
+            # write, the picture comes back to the same brightness.
+            frame *= self.light
         tint = (state["white_balance"] - self.neutral_wb) * 0.00012
         frame[..., 2] *= 1.0 + tint
         frame[..., 0] *= 1.0 - tint
@@ -273,8 +278,9 @@ class RigScene:
         return True, np.clip(frame, 0, 255).astype(np.uint8)
 
 
-def quick_tune(scene: RigScene, camera: UvcCamera):
-    return tune(scene, camera, converge_frames=3, settle_frames=1, average=2, log=lambda *_: None)
+def quick_tune(scene: RigScene, camera: UvcCamera, *, host_auto_exposure: bool = False):
+    return tune(scene, camera, converge_frames=3, settle_frames=1, average=2,
+                host_auto_exposure=host_auto_exposure, log=lambda *_: None)
 
 
 class TuneFocusTests(unittest.TestCase):
@@ -369,6 +375,29 @@ class TuneExposureTests(unittest.TestCase):
         result = quick_tune(RigScene(device, neutral_wb=4600), camera)
         self.assertLessEqual(abs(result.controls["white_balance"] - 4600), 150)
         self.assertEqual(result.controls["white_balance_auto"], 0)
+
+    def test_on_macos_exposure_is_left_to_the_os(self) -> None:
+        # Measured on the C920: macOS rewrote a manual exposure within half a
+        # second while QuickTime streamed. Focus and white balance held.
+        camera, device = fake_camera()
+        device.current["exposure"], device.current["gain"] = 77, 109
+        result = quick_tune(RigScene(device, exposure_matters=False), camera, host_auto_exposure=True)
+        self.assertEqual(result.controls["exposure_auto"], 1)
+        self.assertNotIn("exposure", result.controls)
+        self.assertNotIn("gain", result.controls)
+        self.assertEqual(device.current["exposure_auto"], AE_APERTURE_PRIORITY)  # auto, for real
+        self.assertEqual(result.controls["focus_auto"], 0)  # focus is still ours
+        self.assertEqual(result.controls["white_balance_auto"], 0)  # and so is white balance
+
+    def test_an_exposure_that_does_nothing_is_detected_and_left_alone(self) -> None:
+        # Without being told, the tune must notice that exposure changes do
+        # not change the picture -- the second real tune did not, and walked
+        # down to 0.3 ms while the picture stayed at median 142.
+        camera, device = fake_camera()
+        result = quick_tune(RigScene(device, exposure_matters=False), camera)
+        self.assertEqual(result.controls["exposure_auto"], 1)
+        self.assertNotIn("exposure", result.controls)
+        self.assertTrue(any("did not respond" in note for note in result.notes), result.notes)
 
     def test_mains_is_set_to_50_hz(self) -> None:
         camera, device = fake_camera()

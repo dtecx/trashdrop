@@ -40,7 +40,7 @@ APPLY_ORDER = (
 EXPLAIN = {
     "power_line_frequency": "1 = 50 Hz (Europe, Poland), 2 = 60 Hz. The wrong one shows as rolling bands under LED light.",
     "zoom": "Digital zoom. Keep at the minimum: zooming crops the view and voids the calibration.",
-    "exposure_auto": "false = exposure is fixed at the value below and does not chase each item.",
+    "exposure_auto": "true on macOS: it runs its own auto-exposure while streaming and rewrites manual exposure within half a second (measured on the C920). Focus and white balance are left alone.",
     "exposure_priority": "false = keep the frame rate constant instead of slowing down in dim light.",
     "exposure": "Exposure time in units of 100 microseconds (156 = 15.6 ms). Frozen from what auto-exposure chose.",
     "gain": "Sensor gain. Lower means less noise. Frozen from what auto-exposure chose.",
