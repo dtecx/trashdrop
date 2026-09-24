@@ -100,7 +100,7 @@ until the paper is neutral. It prints the sweep as a bar chart — one hump is
 what you want — and writes `camera.toml`, keeping the previous one as `.bak`.
 
 With all four markers visible, tuning also reads the dimensions in
-`capture_zone.toml` (20 x 15 cm by default) and writes `camera_zone.json`.
+`capture_zone.toml` (45 x 45 cm on the home rig) and writes `camera_zone.json`.
 The physical centre of this zone maps to the camera image centre. If camera
 settings are already good, recalibrate only the zone with:
 

@@ -36,12 +36,15 @@ working minimum.
 2. **Fix the camera and do not touch it again.** Tape it down. If it moves, the
    calibration is void and every frame shot before the move belongs to a
    different geometry. Re-shoot the homography if it happens.
-3. **Calibrate the 20 x 15 cm pick area.** Print the sheet from
+3. **Calibrate the capture area.** Print the sheet from
    `uv run trashdrop camera markers` at actual size. Verify its ruler measures
    10 cm. Place the sheet flat with all four ArUco markers in view, then run
    `uv run trashdrop camera tune` (settings and zone) or
    `uv run trashdrop camera zone` (zone only). `capture_zone.toml` holds the
-   physical dimensions and `camera_zone.json` holds the measured camera pixels.
+   physical dimensions -- 45 x 45 cm on the home rig -- and `camera_zone.json`
+   holds the measured camera pixels. This is not the robot's pick zone, which
+   is 20 x 15 cm in `station.py` and is what the markers outline; the capture
+   area only has to hold one item comfortably.
    The projected polygon is centred on the **camera image centre**, including
    when the printed sheet is slightly off-centre. Remove the sheet before shooting.
    A new session copies the calibration to `data/raw/<session>/zone.json` so

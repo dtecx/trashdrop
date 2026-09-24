@@ -2,6 +2,7 @@
 .venv/
 .uv-cache/
 .python-version
+.DS_Store
 
 # Generated simulation outputs and MuJoCo runtime files
 out/

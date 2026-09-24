@@ -58,7 +58,6 @@ uv run trashdrop review --session 2026-09-20-kitchen
 | `trashdrop/dataset/` | Capture on the rig, autolabel, review; TACO and TrashNet indexers |
 | `trashdrop/simulator.py` | The cell: stepping, grasp, scoring |
 | `trashdrop/api.py` | Open intake API other teams' robots call. Standard library only |
-| `reference/sim_sort.py` | The verified single-arm baseline this grew from, kept unchanged |
 
 ## Reading order
 
