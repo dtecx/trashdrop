@@ -86,7 +86,9 @@ def _try_wiggle(capture, camera, name: str, original: int, target: int, settle_f
     residual = float(np.abs(after - before).mean())
     if change < MIN_CHANGE:
         return False, f"changing {name} on {camera.usb_id} changed this picture by only {change:.1f} levels"
-    if residual > MAX_RESIDUAL:
+    # Someone moving in view leaves a little residue; what matters is that the
+    # picture came most of the way back, not that it came back exactly.
+    if residual > max(MAX_RESIDUAL, 0.25 * change):
         return None, (
             f"the picture changed with {name} ({change:.1f}) but did not settle back "
             f"({residual:.1f}) -- is something moving in front of the camera?"

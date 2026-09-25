@@ -467,6 +467,93 @@ def _cmd_camera_sheet(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_pick(args: argparse.Namespace) -> int:
+    """Camera finds an item, an arm takes it and drops it on its own side."""
+
+    import cv2
+
+    from .arm import connect, load_poses
+    from .dataset.capture import open_camera
+    from .kinematics import Kinematics
+    from .perception.calibration import HomographyCalibration
+    from .placement import Placement
+    from .rig import load_rig
+    from .sorter import execute_pick, find_item, plan_pick, reach_mask
+    from .station import repository_root
+
+    rig = load_rig()
+    placements = {name: Placement(*devices.sheet) for name, devices in rig.arms.items() if devices.sheet}
+    if not placements:
+        print("no arm has touched the sheet yet: run `uv run trashdrop rig touch left` first")
+        return 1
+    sheet_file = repository_root() / "camera_sheet.json"
+    if not sheet_file.is_file():
+        print("the camera has not found the sheet yet: run `uv run trashdrop camera sheet` first")
+        return 1
+    homography = HomographyCalibration.load(sheet_file)
+    poses = load_poses()
+    kinematics = Kinematics()
+    arms = {name: connect(name, rig) for name in placements}
+    capture = None
+    try:
+        limits = {name: arm.limits_degrees() for name, arm in arms.items()}
+        capture = open_camera(_resolve_camera(args.camera, 1920, 1080), 1920, 1080)
+
+        def grab():
+            frame = None
+            for _ in range(8):  # drop what was buffered while the arm moved
+                ok, latest = capture.read()
+                frame = latest if ok else frame
+            return frame
+
+        input(f"{', '.join(arms)} go to neutral (straight up). Keep clear and press Enter...")
+        for name, arm in arms.items():
+            if not arm.torque_is_on():
+                arm.torque_on()
+            arm.move(poses[name]["neutral"])
+        input("Clear the table where the arms reach, press Enter to photograph it empty...")
+        background = grab()
+        small_shape = (round(background.shape[0] * 320 / background.shape[1]), 320)
+        valid = reach_mask(small_shape, background.shape[1] / 320, homography, placements)
+        print("ready. The camera looks only where an arm can reach, fingers down.")
+
+        while True:
+            if input("\nPut an item within reach, then Enter (q = quit): ").strip().lower() == "q":
+                break
+            frame = grab()
+            item, detail = find_item(frame, background, valid)
+            if item is None:
+                print(f"  {detail}")
+                continue
+            plan, reason = plan_pick(item, detail, homography, placements, kinematics, limits)
+            preview = frame.copy()
+            contours, _ = cv2.findContours((item * 255).astype("uint8"), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(preview, [c * detail for c in contours], -1, (255, 255, 0), 3)
+            if plan is None:
+                cv2.imwrite(str(args.out / "pick_plan.jpg"), preview)
+                print(f"  cannot pick it: {reason}")
+                continue
+            cv2.circle(preview, tuple(int(v) for v in plan.pixel), 12, (0, 0, 255), -1)
+            cv2.imwrite(str(args.out / "pick_plan.jpg"), preview)
+            print(
+                f"  the {plan.arm} arm takes it: {plan.grasp_plan.width_m * 100:.1f} cm across, jaws open "
+                f"{plan.open_percent:.0f} %, fixed finger to ({plan.target_cm[0]:.1f}, {plan.target_cm[1]:.1f}) cm "
+                f"in its frame (red dot in out/pick_plan.jpg)"
+            )
+            if input("  Enter = go, s = skip: ").strip().lower() == "s":
+                continue
+            execute_pick(arms[plan.arm], plan, poses[plan.arm]["neutral"], dry_run=args.dry_run)
+    except KeyboardInterrupt:
+        print("\nstopped; the arms hold where they are")
+        return 130
+    finally:
+        if capture is not None:
+            capture.release()
+        for arm in arms.values():
+            arm.bus.close()
+    return 0
+
+
 def _open_arm(name: str):
     from .arm import connect
 
@@ -1017,6 +1104,11 @@ def build_parser() -> argparse.ArgumentParser:
     rig_touch = rig_sub.add_parser("touch", help="touch the sheet's markers with a fingertip; where the arm stands")
     rig_touch.add_argument("arm")
     rig_touch.set_defaults(func=_cmd_rig_touch)
+
+    pick = sub.add_parser("pick", help="the overhead camera finds an item; an arm picks it and drops it aside")
+    pick.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")
+    pick.add_argument("--dry-run", action="store_true", help="only hover over the item, never grasp")
+    pick.set_defaults(func=_cmd_pick)
 
     arm = sub.add_parser("arm", help="the real arms: status, named poses, slow moves (left / right / F01 / F02)")
     arm_sub = arm.add_subparsers(dest="arm_command", required=True)
