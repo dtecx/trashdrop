@@ -22,6 +22,7 @@ from trashdrop.placement import Placement  # noqa: E402
 from trashdrop.sorter import (  # noqa: E402
     GRASP_HEIGHT_CM,
     base_on_sheet,
+    draw_plan,
     drop_pose,
     execute_pick,
     gripper_percent_for,
@@ -85,6 +86,18 @@ class PlanTests(unittest.TestCase):
         self.assertGreater(plan.lean_deg, 0.0)
         reached = self.kinematics.tcp(plan.grasp) * 100
         self.assertLess(np.hypot(reached[0] - plan.target_cm[0], reached[1] - plan.target_cm[1]), 0.3)
+
+    def test_the_plan_is_drawn_on_the_full_size_frame(self) -> None:
+        # The venue crash: the item's outline, found at analysis size, scaled
+        # by a float into coordinates OpenCV refuses to draw.
+        frame = np.full((1080, 1920, 3), 200, np.uint8)
+        item = item_at(self.homography, (-10.0, -8.0), (3.0, 12.0))
+        self.assertEqual(draw_plan(frame, item, SCALE, None).shape, frame.shape)
+        plan, reason = plan_pick(item, SCALE, self.homography, {"left": LEFT}, self.kinematics, {})
+        self.assertIsNotNone(plan, reason)
+        drawn = draw_plan(frame, item, SCALE, plan)
+        u, v = (int(round(value)) for value in plan.pixel)
+        self.assertTrue((drawn[v, u] == (0, 0, 255)).all(), "the fixed finger's dot is where the plan says")
 
     def test_an_item_out_of_reach_is_refused_with_a_reason(self) -> None:
         item = item_at(self.homography, (30.0, 20.0), (3.0, 8.0))

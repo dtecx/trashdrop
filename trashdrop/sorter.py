@@ -63,6 +63,7 @@ class PickPlan:
     target_cm: tuple[float, float]  # TCP in the arm's frame
     pixel: tuple[float, float]  # where the fixed finger goes, full-resolution pixels
     lean_deg: float = 0.0  # how far the fingers lean away from the base
+    moving_pixel: tuple[float, float] | None = None  # where the moving finger comes down
 
 
 def sheet_points(homography, us, vs) -> np.ndarray:
@@ -148,6 +149,7 @@ def plan_pick(item_small, scale: float, homography, placements: dict[str, Placem
             reasons.append(f"{name}: {grasp.reason}")
             continue
         fixed_px = np.array(grasp.fixed_finger(m_per_px_small)) * scale
+        moving_px = np.array(grasp.moving_finger(m_per_px_small)) * scale
         across_px = np.array(grasp.across)
         ends = sheet_points(homography, np.array([fixed_px[0], fixed_px[0] + across_px[0] * 20]),
                             np.array([fixed_px[1], fixed_px[1] + across_px[1] * 20]))
@@ -175,7 +177,8 @@ def plan_pick(item_small, scale: float, homography, placements: dict[str, Placem
             continue
         above, down, lean = found
         return PickPlan(name, above.degrees, down.degrees, gripper_percent_for(grasp.opening_m), grasp,
-                        (float(x), float(y)), (float(fixed_px[0]), float(fixed_px[1])), lean), None
+                        (float(x), float(y)), (float(fixed_px[0]), float(fixed_px[1])), lean,
+                        (float(moving_px[0]), float(moving_px[1]))), None
     return None, "; ".join(reasons) or "no calibrated arm"
 
 
@@ -186,6 +189,27 @@ def sheet_to_pixel_direction(homography, pixel, sheet_direction) -> np.ndarray:
     target = here + 5.0 * np.asarray(sheet_direction) / max(np.linalg.norm(sheet_direction), 1e-9)
     u, v = homography.world_to_pixel(target[0] / 100.0, target[1] / 100.0)
     return np.array([u - pixel[0], v - pixel[1]])
+
+
+def draw_plan(frame, item_small, scale: float, plan: PickPlan | None) -> np.ndarray:
+    """The camera frame with the item's outline and, if there is a plan, where each finger goes."""
+
+    import cv2
+
+    preview = frame.copy()
+    contours, _ = cv2.findContours(item_small.astype(np.uint8) * 255, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # OpenCV draws integer contours only; the item was found at a smaller scale.
+    cv2.drawContours(preview, [np.rint(c * scale).astype(np.int32) for c in contours], -1, (255, 255, 0), 3)
+    if plan is not None:
+        fixed = tuple(int(round(v)) for v in plan.pixel)
+        if plan.moving_pixel is not None:
+            moving = tuple(int(round(v)) for v in plan.moving_pixel)
+            cv2.line(preview, fixed, moving, (0, 200, 255), 3)
+            cv2.circle(preview, moving, 12, (255, 120, 0), 3)
+        cv2.circle(preview, fixed, 12, (0, 0, 255), -1)
+        cv2.putText(preview, f"{plan.arm} arm, lean {plan.lean_deg:.0f} deg", (fixed[0] + 18, fixed[1] - 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+    return preview
 
 
 def drop_pose(arm: str) -> dict[str, float]:

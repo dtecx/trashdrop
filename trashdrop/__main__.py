@@ -478,7 +478,7 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     from .perception.calibration import HomographyCalibration
     from .placement import Placement
     from .rig import load_rig
-    from .sorter import execute_pick, find_item, plan_pick, reach_mask
+    from .sorter import draw_plan, execute_pick, find_item, plan_pick, reach_mask
     from .station import repository_root
 
     rig = load_rig()
@@ -526,15 +526,11 @@ def _cmd_pick(args: argparse.Namespace) -> int:
                 print(f"  {detail}")
                 continue
             plan, reason = plan_pick(item, detail, homography, placements, kinematics, limits)
-            preview = frame.copy()
-            contours, _ = cv2.findContours((item * 255).astype("uint8"), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(preview, [c * detail for c in contours], -1, (255, 255, 0), 3)
+            args.out.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(args.out / "pick_plan.jpg"), draw_plan(frame, item, detail, plan))
             if plan is None:
-                cv2.imwrite(str(args.out / "pick_plan.jpg"), preview)
                 print(f"  cannot pick it: {reason}")
                 continue
-            cv2.circle(preview, tuple(int(v) for v in plan.pixel), 12, (0, 0, 255), -1)
-            cv2.imwrite(str(args.out / "pick_plan.jpg"), preview)
             print(
                 f"  the {plan.arm} arm takes it: {plan.grasp_plan.width_m * 100:.1f} cm across, jaws open "
                 f"{plan.open_percent:.0f} %, fixed finger to ({plan.target_cm[0]:.1f}, {plan.target_cm[1]:.1f}) cm "
