@@ -159,6 +159,41 @@ class Arm:
         return self.pose()
 
 
+# A first test on a real arm: from the joint that can do least harm to the one
+# that swings the whole arm.
+TEST_ORDER = ("gripper", "wrist_roll", "wrist_flex", "elbow_flex", "shoulder_lift", "shoulder_pan")
+GRIPPER_TEST = 15.0  # percent the gripper opens in the test
+
+
+def nudge_joints(arm: Arm, degrees: float, speed: float, *, ask=input, log=print) -> list[str]:
+    """Nudge each joint +degrees and -degrees around where it is, back in between.
+
+    ``ask(prompt)`` answers "" to go ahead, "s" to skip that joint, "q" to
+    stop. Every joint ends where it started. Returns the joints moved.
+    """
+
+    # Unrounded, so that "back to the start" is the very tick it started at.
+    start = {joint: arm.from_ticks(joint, ticks) for joint, ticks in arm.bus.positions().items()}
+    moved = []
+    for joint in TEST_ORDER:
+        amount = GRIPPER_TEST if joint == GRIPPER else degrees
+        unit = "%" if joint == GRIPPER else " deg"
+        answer = ask(f"  {joint:13s} Enter = move it +-{amount:g}{unit}, s = skip, q = stop: ").strip().lower()
+        if answer == "q":
+            break
+        if answer == "s":
+            continue
+        # The gripper only opens a little and closes again: it may already be shut.
+        offsets = (amount, 0.0) if joint == GRIPPER else (amount, 0.0, -amount, 0.0)
+        report = []
+        for offset in offsets:
+            reached = arm.move({joint: start[joint] + offset}, speed=speed)
+            report.append(f"{start[joint] + offset:+.1f}->{reached[joint]:+.1f}")
+        log(f"    wanted->reached: {', '.join(report)}")
+        moved.append(joint)
+    return moved
+
+
 def connect(name: str, rig=None) -> Arm:
     """The arm called ``name`` in rig.toml -- "left", "right", or its label."""
 

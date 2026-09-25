@@ -13,11 +13,13 @@ from pathlib import Path
 
 from trashdrop.arm import (
     DEG_PER_TICK,
+    TEST_ORDER,
     LIMIT_MARGIN,
     RATE_HZ,
     Arm,
     load_poses,
     resolve_arm,
+    nudge_joints,
     save_pose,
 )
 from trashdrop.rig import Rig
@@ -31,7 +33,7 @@ class FakeBus:
     """Six ideal servos: with torque on, each sits at its goal minus any sag."""
 
     def __init__(self, positions: dict[str, int] | None = None, sag: dict[str, int] | None = None) -> None:
-        positions = positions or {joint: 2000 + 10 * motor for joint, motor in MOTORS.items()}
+        positions = positions or {joint: 2100 + 10 * motor for joint, motor in MOTORS.items()}
         self.regs = {
             motor: {
                 "position": positions[joint],
@@ -156,6 +158,30 @@ class MoveTests(unittest.TestCase):
         present = bus.positions()
         self.assertEqual(last, {MOTORS[joint]: ticks for joint, ticks in present.items()})
         self.assertTrue(all(regs["torque_enable"] for regs in bus.regs.values()), "still holding, not limp")
+
+
+class NudgeTests(unittest.TestCase):
+    def test_every_joint_is_nudged_a_little_and_ends_where_it_started(self) -> None:
+        bus = FakeBus()
+        arm = make_arm(bus)
+        arm.torque_on()
+        start = bus.positions()
+        moved = nudge_joints(arm, 6.0, 15.0, ask=lambda _: "", log=lambda *_: None)
+        self.assertEqual(moved, list(TEST_ORDER))
+        self.assertEqual(bus.positions(), start)
+        for joint, motor in MOTORS.items():
+            path = [goals[motor] for goals in bus.goals_streamed()]
+            farthest = max(abs(ticks - start[joint]) for ticks in path)
+            limit = 0.15 * (LIMITS[motor][1] - LIMITS[motor][0]) if joint == "gripper" else 6.0 / DEG_PER_TICK
+            self.assertLessEqual(farthest, limit + 2, joint)
+
+    def test_skip_and_stop_are_honoured(self) -> None:
+        bus = FakeBus()
+        arm = make_arm(bus)
+        arm.torque_on()
+        answers = iter(["s", "", "q"])
+        moved = nudge_joints(arm, 6.0, 15.0, ask=lambda _: next(answers), log=lambda *_: None)
+        self.assertEqual(moved, ["wrist_roll"])
 
 
 class UnitTests(unittest.TestCase):

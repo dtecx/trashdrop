@@ -457,6 +457,39 @@ def _cmd_arm_gripper(args: argparse.Namespace) -> int:
         arm.bus.close()
 
 
+def _cmd_arm_test(args: argparse.Namespace) -> int:
+    from .arm import nudge_joints, save_pose
+
+    degrees = min(args.degrees, 15.0)
+    arm = _open_arm(args.arm)
+    holding = False
+    try:
+        print(
+            f"{arm.name}: small test moves, one joint at a time: +-{degrees:g} deg (gripper opens 15 %),\n"
+            f"at {args.speed:g} deg/s, back to where it started after each. Ctrl+C stops the arm; it keeps holding."
+        )
+        holding = arm.torque_is_on()
+        if not holding:
+            input("Hold the arm clear of the table (or leave it where every joint can move freely), "
+                  "then press Enter: torque goes on...")
+            arm.torque_on()
+            holding = True
+            input("It holds itself now. Let go, keep a hand near the power switch, press Enter...")
+        save_pose(arm.name, "before_test", arm.pose())
+        moved = nudge_joints(arm, degrees, args.speed)
+    except KeyboardInterrupt:
+        print("\nstopped" + (f"; holding where it is. Back to the start: uv run trashdrop arm go {arm.name} before_test"
+                              if holding else "; torque was never switched on"))
+        return 130
+    finally:
+        arm.bus.close()
+    print(
+        f"done: {', '.join(moved) or 'nothing'} moved. Holding where it started; "
+        f"`uv run trashdrop arm relax {arm.name}` lets it go limp."
+    )
+    return 0
+
+
 def _cmd_arm_save(args: argparse.Namespace) -> int:
     from .arm import POSES_FILE, save_pose
 
@@ -843,6 +876,11 @@ def build_parser() -> argparse.ArgumentParser:
     arm_gripper.add_argument("value", help="open, close, or 0..100")
     arm_gripper.add_argument("--speed", type=float, default=None)
     arm_gripper.set_defaults(func=_cmd_arm_gripper)
+    arm_test = arm_sub.add_parser("test", help="small back-and-forth moves of each joint, asking before each")
+    arm_test.add_argument("arm")
+    arm_test.add_argument("--degrees", type=float, default=6.0, help="per joint, at most 15")
+    arm_test.add_argument("--speed", type=float, default=15.0, help="deg/s")
+    arm_test.set_defaults(func=_cmd_arm_test)
     arm_hold = arm_sub.add_parser("hold", help="torque on where the arm is; moves nothing")
     arm_hold.add_argument("arm")
     arm_hold.set_defaults(func=_cmd_arm_hold)
