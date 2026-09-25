@@ -1,7 +1,33 @@
 # Named poses, per arm, in LeRobot's units: degrees from the middle of each
-# joint's calibrated range, the gripper 0..100 (0 closed). Edit freely. To record one, pose the limp
-# arm by hand and run:   uv run trashdrop arm save left rest
-# and to play it back:   uv run trashdrop arm go left rest
+# joint's calibrated range, the gripper 0..100 (0 = closed). Edit freely.
+# To record one, pose the limp arm by hand and run:
+#     uv run trashdrop arm save left rest
+# and to play it back:
+#     uv run trashdrop arm go left rest
+
+[left.before_test]
+shoulder_pan = 9.2
+shoulder_lift = 102.0
+elbow_flex = -82.5
+wrist_flex = -2.5
+wrist_roll = 2.9
+gripper = 11.3
+
+[left.neutral]
+shoulder_pan = 0.0
+shoulder_lift = 0.0
+elbow_flex = -90.0
+wrist_flex = 0.0
+wrist_roll = 0.0
+gripper = 0.0
+
+[right.neutral]
+shoulder_pan = 0.0
+shoulder_lift = 0.0
+elbow_flex = -90.0
+wrist_flex = 0.0
+wrist_roll = -90.0
+gripper = 0.0
 
 [right.rest]
 shoulder_pan = -31.9
