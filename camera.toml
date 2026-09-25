@@ -11,8 +11,8 @@
 [camera]
 backend = "uvc"
 device = "046d:08e5"
-tuned_at = "2026-09-23 18:52"
-note = "home rig, 70 cm, desk lamp"
+tuned_at = "2026-09-25 12:44"
+note = ""
 
 [controls]
 # 1 = 50 Hz (Europe, Poland), 2 = 60 Hz. The wrong one shows as rolling bands under LED light.
@@ -31,15 +31,14 @@ white_balance_auto = false
 
 # Colour temperature in kelvin. Frozen from what auto white balance chose.
 # camera range 2000..6500, step 1, default 4000
-#white_balance = 4778
-white_balance = 4100
+white_balance = 5047
 
 # Autofocus hunts on a plain board, which blurs frames and shifts the image. Keep false.
 focus_auto = false
 
 # Lens position, found by sweeping the lens over a printed target on the table.
 # camera range 0..250, step 5, default 0
-focus = 25
+focus = 10
 
 # Brightens the subject against a bright background; 0 keeps exposure predictable.
 # camera range 0..1, step 1, default 0

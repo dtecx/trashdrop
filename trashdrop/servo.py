@@ -5,7 +5,9 @@ USB adapter that shows up as a serial port. The port's name depends on the USB
 socket -- /dev/cu.usbmodem... on a Mac, COM5 on Windows -- but the adapter's
 serial number does not, so that is how an arm is found.
 
-Everything here only reads. Nothing enables torque or moves a joint.
+This is the raw bus: registers in, registers out. Nothing here decides whether
+a write is safe -- that is trashdrop/arm.py's job, and nothing else should
+write to a servo.
 """
 
 from __future__ import annotations
@@ -29,6 +31,9 @@ REGISTERS = {
     "max_limit": (11, 2),
     "homing_offset": (31, 2),
     "torque_enable": (40, 1),
+    "acceleration": (41, 1),
+    "goal_position": (42, 2),
+    "goal_speed": (46, 2),
     "position": (56, 2),
     "voltage": (62, 1),
     "temperature": (63, 1),
@@ -112,6 +117,27 @@ class ServoBus:
         if result != COMM_SUCCESS:
             raise RuntimeError(f"{self.port}: motor {motor} did not answer when reading {register}")
         return value
+
+    def write(self, motor: int, register: str, value: int) -> None:
+        from scservo_sdk import COMM_SUCCESS
+
+        address, size = REGISTERS[register]
+        writer = self._packet.write1ByteTxRx if size == 1 else self._packet.write2ByteTxRx
+        result, _ = writer(self._port, motor, address, int(value))
+        if result != COMM_SUCCESS:
+            raise RuntimeError(f"{self.port}: motor {motor} did not acknowledge writing {register}")
+
+    def write_goals(self, goals: dict[int, int]) -> None:
+        """Goal positions for several motors in one broadcast packet (no replies)."""
+
+        from scservo_sdk import GroupSyncWrite
+
+        address, size = REGISTERS["goal_position"]
+        group = GroupSyncWrite(self._port, self._packet, address, size)
+        for motor, ticks in goals.items():
+            value = int(ticks)
+            group.addParam(motor, [value & 0xFF, (value >> 8) & 0xFF])
+        group.txPacket()
 
     def missing(self) -> list[str]:
         """Joints whose motor does not answer, or is not an STS3215."""

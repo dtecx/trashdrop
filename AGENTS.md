@@ -74,7 +74,11 @@ simulator.py  probe.py
 - `simulator.py` — the cell, stepping, grasp, scoring.
 - `servo.py`, `rig.py` — the real hardware: the arms' Feetech servo buses, and
   `rig.toml`, which names each arm's adapter and camera by serial number or USB
-  id, never by port name or camera index. Reading only; nothing here moves.
+  id, never by port name or camera index.
+- `arm.py` — the only code that moves a real arm. Torque goes on only after
+  every goal register holds the present position (the servos power up with
+  goal 0); moves are streamed minimum-jerk trajectories capped at `max_speed`;
+  targets are clamped inside the EEPROM limits. Keep all three.
 - `api.py` — the open intake API. Standard library only, on purpose: no team
   should install anything to talk to us, and it must not break on venue wifi.
   Collaboration is a judging criterion, so treat this as product surface, not

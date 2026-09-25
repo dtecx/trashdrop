@@ -6,10 +6,14 @@
 [overhead]
 camera = "046d:08e5"
 
-[front]
-# bus = unknown
-# camera = unknown
+[left]
+label = "F01"          # written on the arm
+bus = "5AAF220303"       # servo adapter serial number
+camera = "2993:0858"      # wrist camera
+max_speed = 30             # degrees per second, every move
 
-[back]
-# bus = unknown
-# camera = unknown
+[right]
+label = "F02"          # written on the arm
+bus = "5AAF219965"       # servo adapter serial number
+camera = "10bb:2b08"      # wrist camera
+max_speed = 30             # degrees per second, every move

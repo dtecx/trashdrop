@@ -300,7 +300,7 @@ def _cmd_rig_identify(args: argparse.Namespace) -> int:
     from .camera import UvcCamera
     from .camera.identify import find_stream_index
     from .dataset.capture import open_camera
-    from .rig import RIG_FILE, ArmDevices, MotionMeter, first_moved, load_rig, save_rig
+    from .rig import RIG_FILE, MotionMeter, first_moved, load_rig, save_rig
     from .servo import ServoBus
 
     rig = load_rig()
@@ -337,15 +337,16 @@ def _cmd_rig_identify(args: argparse.Namespace) -> int:
         meter = MotionMeter(streams)
         meter.sample()
         print(
-            f"\nNow move the FRONT arm by hand -- the one that will sort paper. Push any joint a good\n"
-            f"way, and keep moving it for a second or two. Waiting {args.seconds:.0f} s..."
+            f"\nNow move the LEFT arm by hand ({rig.arms['left'].label}; left as seen from behind the arms,\n"
+            f"looking where they reach). Push any joint a good way and keep moving it for a\n"
+            f"second or two. Waiting {args.seconds:.0f} s..."
         )
         moved = first_moved(opened, args.seconds, on_poll=meter.sample if streams else None)
         if moved is None:
             print("nothing moved. Run it again and push a joint further (about 15 degrees is enough).")
             return 1
-        front_bus, joint = moved
-        print(f"the {joint} of adapter {front_bus} moved: that is the front arm")
+        left_bus, joint = moved
+        print(f"the {joint} of adapter {left_bus} moved: that is the left arm")
         until = time.monotonic() + 1.5
         while streams and time.monotonic() < until:
             meter.sample()
@@ -355,19 +356,147 @@ def _cmd_rig_identify(args: argparse.Namespace) -> int:
         for capture in streams.values():
             capture.release()
 
-    back_bus = next(serial for serial in buses if serial != front_bus)
-    front_camera = meter.mover() if streams else None
+    right_bus = next(serial for serial in buses if serial != left_bus)
+    left_camera = meter.mover() if streams else None
     if streams:
         changes = ", ".join(f"{key} {value:.1f}" for key, value in meter.peak.items())
         print(f"wrist cameras, how much each picture changed: {changes}")
-        if front_camera is None:
-            print("neither wrist camera clearly moved with the arm; cameras left unassigned")
-    back_camera = next((usb_id for usb_id in wrist_ids if usb_id != front_camera), None) if front_camera else None
-    rig.arms["front"] = ArmDevices(bus=front_bus, camera=front_camera)
-    rig.arms["back"] = ArmDevices(bus=back_bus, camera=back_camera)
+        if left_camera is None:
+            print("neither wrist camera clearly moved with the arm; cameras kept as they were")
+    right_camera = next((usb_id for usb_id in wrist_ids if usb_id != left_camera), None) if left_camera else None
+    for key, bus, camera in (("left", left_bus, left_camera), ("right", right_bus, right_camera)):
+        rig.arms[key].bus = bus
+        if camera:
+            rig.arms[key].camera = camera
     save_rig(rig)
     print(f"\nwrote {RIG_FILE}:\n")
     print(RIG_FILE.read_text(encoding="utf-8"))
+    return 0
+
+
+def _open_arm(name: str):
+    from .arm import connect
+
+    return connect(name)
+
+
+def _cmd_arm_status(args: argparse.Namespace) -> int:
+    from .arm import connect
+    from .rig import load_rig
+
+    rig = load_rig()
+    names = [args.arm] if args.arm else [name for name, devices in rig.arms.items() if devices.bus]
+    for name in names:
+        arm = connect(name, rig)
+        try:
+            state = {motor.name: motor for motor in arm.bus.state()}
+            devices = rig.arms[arm.name]
+            print(f"{arm.name} arm ({devices.label}), adapter {devices.bus}, max {devices.max_speed:g} deg/s")
+            for joint, value in arm.pose().items():
+                motor = state[joint]
+                unit = "% open" if joint == "gripper" else "deg"
+                print(
+                    f"    {joint:13s} {value:7.1f} {unit:6s} tick {motor.position:4d} "
+                    f"(limits {motor.min_limit}..{motor.max_limit})  torque {'ON ' if motor.torque else 'off'}  "
+                    f"{motor.voltage:4.1f} V  {motor.temperature} C"
+                )
+        finally:
+            arm.bus.close()
+    return 0
+
+
+def _move_and_report(arm, targets: dict[str, float], speed: float | None) -> int:
+    if not arm.torque_is_on():
+        print(f"{arm.name}: torque on, holding where it is")
+        arm.torque_on()
+    clamped = {joint: arm.from_ticks(joint, arm.to_ticks(joint, value)) for joint, value in targets.items()}
+    plan = ", ".join(f"{joint} -> {value:.1f}" for joint, value in clamped.items())
+    print(f"{arm.name}: moving {plan} at up to {min(speed or arm.max_speed, arm.max_speed):g} deg/s. Ctrl+C stops it.")
+    for joint in targets:
+        if abs(clamped[joint] - targets[joint]) > 0.5:
+            print(f"    {joint}: {targets[joint]:.1f} is past the joint's limit; going to {clamped[joint]:.1f}")
+    try:
+        reached = arm.move(targets, speed=speed)
+    except KeyboardInterrupt:
+        print("\nstopped; holding where it is")
+        return 130
+    report = ", ".join(f"{joint} {reached[joint]:.1f}" for joint in targets)
+    print(f"{arm.name}: reached {report}. Holding; `uv run trashdrop arm relax {arm.name}` lets it go limp.")
+    return 0
+
+
+def _cmd_arm_go(args: argparse.Namespace) -> int:
+    from .arm import load_poses
+
+    arm = _open_arm(args.arm)
+    try:
+        poses = load_poses().get(arm.name, {})
+        if args.pose not in poses:
+            print(f"no pose {args.pose!r} for the {arm.name} arm in poses.toml; it has: {', '.join(poses) or 'none'}")
+            return 1
+        return _move_and_report(arm, poses[args.pose], args.speed)
+    finally:
+        arm.bus.close()
+
+
+def _cmd_arm_jog(args: argparse.Namespace) -> int:
+    arm = _open_arm(args.arm)
+    try:
+        current = arm.pose()
+        if args.joint not in current:
+            print(f"no joint {args.joint!r}; joints: {', '.join(current)}")
+            return 1
+        return _move_and_report(arm, {args.joint: current[args.joint] + args.degrees}, args.speed)
+    finally:
+        arm.bus.close()
+
+
+def _cmd_arm_gripper(args: argparse.Namespace) -> int:
+    value = {"open": 100.0, "close": 0.0}.get(args.value)
+    if value is None:
+        value = float(args.value)
+    arm = _open_arm(args.arm)
+    try:
+        return _move_and_report(arm, {"gripper": value}, args.speed)
+    finally:
+        arm.bus.close()
+
+
+def _cmd_arm_save(args: argparse.Namespace) -> int:
+    from .arm import POSES_FILE, save_pose
+
+    arm = _open_arm(args.arm)
+    try:
+        values = arm.pose()
+    finally:
+        arm.bus.close()
+    save_pose(arm.name, args.pose, values)
+    print(f"saved {arm.name}.{args.pose} to {POSES_FILE}: " + ", ".join(f"{j} {v:.1f}" for j, v in values.items()))
+    return 0
+
+
+def _cmd_arm_hold(args: argparse.Namespace) -> int:
+    arm = _open_arm(args.arm)
+    try:
+        arm.torque_on()
+    finally:
+        arm.bus.close()
+    print(f"{arm.name}: torque on, holding where it is")
+    return 0
+
+
+def _cmd_arm_relax(args: argparse.Namespace) -> int:
+    import time
+
+    arm = _open_arm(args.arm)
+    try:
+        if not args.now:
+            print(f"{arm.name}: going limp in 3 s -- if it is up in the air, hold it now")
+            time.sleep(3)
+        arm.torque_off()
+    finally:
+        arm.bus.close()
+    print(f"{arm.name}: limp")
     return 0
 
 
@@ -691,6 +820,39 @@ def build_parser() -> argparse.ArgumentParser:
     rig_identify.add_argument("--seconds", type=float, default=60.0)
     rig_identify.add_argument("--no-video", action="store_true", help="assign the arms only, not their cameras")
     rig_identify.set_defaults(func=_cmd_rig_identify)
+
+    arm = sub.add_parser("arm", help="the real arms: status, named poses, slow moves (left / right / F01 / F02)")
+    arm_sub = arm.add_subparsers(dest="arm_command", required=True)
+    arm_status = arm_sub.add_parser("status", help="every joint in degrees, torque, temperature; moves nothing")
+    arm_status.add_argument("--arm", default=None)
+    arm_status.set_defaults(func=_cmd_arm_status)
+    arm_save = arm_sub.add_parser("save", help="record the arm's current pose into poses.toml")
+    arm_save.add_argument("arm")
+    arm_save.add_argument("pose")
+    arm_save.set_defaults(func=_cmd_arm_save)
+    arm_go = arm_sub.add_parser("go", help="move slowly to a pose from poses.toml")
+    arm_go.add_argument("arm")
+    arm_go.add_argument("pose")
+    arm_go.add_argument("--speed", type=float, default=None, help="deg/s, capped by max_speed in rig.toml")
+    arm_go.set_defaults(func=_cmd_arm_go)
+    arm_jog = arm_sub.add_parser("jog", help="move one joint by some degrees")
+    arm_jog.add_argument("arm")
+    arm_jog.add_argument("joint")
+    arm_jog.add_argument("degrees", type=float)
+    arm_jog.add_argument("--speed", type=float, default=None)
+    arm_jog.set_defaults(func=_cmd_arm_jog)
+    arm_gripper = arm_sub.add_parser("gripper", help="open, close, or a percent open")
+    arm_gripper.add_argument("arm")
+    arm_gripper.add_argument("value", help="open, close, or 0..100")
+    arm_gripper.add_argument("--speed", type=float, default=None)
+    arm_gripper.set_defaults(func=_cmd_arm_gripper)
+    arm_hold = arm_sub.add_parser("hold", help="torque on where the arm is; moves nothing")
+    arm_hold.add_argument("arm")
+    arm_hold.set_defaults(func=_cmd_arm_hold)
+    arm_relax = arm_sub.add_parser("relax", help="torque off: the arm goes limp (hold it if it is in the air)")
+    arm_relax.add_argument("arm")
+    arm_relax.add_argument("--now", action="store_true", help="skip the 3 s warning")
+    arm_relax.set_defaults(func=_cmd_arm_relax)
 
     camera = sub.add_parser("camera", help="lock focus/exposure/white balance via camera.toml")
     camera_sub = camera.add_subparsers(dest="camera_command", required=True)

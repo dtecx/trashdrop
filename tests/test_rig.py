@@ -47,13 +47,13 @@ class FakeClock:
 class RigFileTests(unittest.TestCase):
     def test_rig_toml_round_trips(self) -> None:
         rig = Rig(overhead="046d:08e5")
-        rig.arms["front"] = ArmDevices(bus="5AAF219965", camera="2993:0858")
-        rig.arms["back"] = ArmDevices(bus="5AAF220303", camera=None)
+        rig.arms["left"] = ArmDevices(bus="5AAF220303", camera="2993:0858", label="F01", max_speed=20.0)
+        rig.arms["right"] = ArmDevices(bus="5AAF219965", camera=None, label="F02")
         with tempfile.TemporaryDirectory() as directory:
             path = save_rig(rig, Path(directory) / "rig.toml")
             loaded = load_rig(path)
         self.assertEqual(loaded, rig)
-        self.assertEqual(loaded.cameras(), {"overhead": "046d:08e5", "front wrist": "2993:0858"})
+        self.assertEqual(loaded.cameras(), {"overhead": "046d:08e5", "left wrist": "2993:0858"})
 
     def test_no_rig_toml_means_nothing_identified(self) -> None:
         rig = load_rig(Path("/nonexistent/rig.toml"))

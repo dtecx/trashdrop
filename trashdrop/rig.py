@@ -5,9 +5,10 @@ another socket: a servo adapter's serial number, a camera's USB id. Serial
 port names and OpenCV indices are looked up from those every time and never
 written down, because they change.
 
-Which arm is "front" and which is "back" cannot be read off a USB device, so
-``trashdrop rig identify`` asks a person to move the front arm by hand and
-watches which bus -- and which wrist camera -- sees it move.
+Which arm is left and which is right cannot be read off a USB device, so
+``trashdrop rig identify`` asks a person to move the left arm by hand and
+watches which bus -- and which wrist camera -- sees it move. Left and right
+are the arms' own: stand behind them, looking where they reach.
 """
 
 from __future__ import annotations
@@ -19,11 +20,16 @@ from pathlib import Path
 
 import numpy as np
 
-from .station import ARMS, repository_root
+from .station import repository_root
 
 RIG_FILE = repository_root() / "rig.toml"
 OVERHEAD_DEFAULT = "046d:08e5"  # Logitech C920
-ARM_NAMES = tuple(mount.name for mount in ARMS)
+ARM_NAMES = ("left", "right")
+# What is written on each arm, for people; the code never relies on it.
+DEFAULT_LABELS = {"left": "F01", "right": "F02"}
+# Joint speed of every move the tools make, degrees per second: slow enough
+# to reach the power switch before anything is hit.
+DEFAULT_MAX_SPEED = 30.0
 # A deliberate push by hand, well above servo read noise: ~13 degrees.
 MOVE_TICKS = 150
 # The moving arm's wrist camera must see this much more change than the other.
@@ -34,12 +40,16 @@ CAMERA_MARGIN = 1.5
 class ArmDevices:
     bus: str | None = None  # serial number of the arm's servo adapter
     camera: str | None = None  # wrist camera, USB vendor:product
+    label: str = ""  # what is written on the arm
+    max_speed: float = DEFAULT_MAX_SPEED  # degrees per second
 
 
 @dataclass
 class Rig:
     overhead: str = OVERHEAD_DEFAULT
-    arms: dict[str, ArmDevices] = field(default_factory=lambda: {name: ArmDevices() for name in ARM_NAMES})
+    arms: dict[str, ArmDevices] = field(
+        default_factory=lambda: {name: ArmDevices(label=DEFAULT_LABELS[name]) for name in ARM_NAMES}
+    )
 
     def cameras(self) -> dict[str, str]:
         """Role -> USB id for every camera the rig names."""
@@ -56,7 +66,12 @@ def load_rig(path: Path = RIG_FILE) -> Rig:
     rig = Rig(overhead=payload.get("overhead", {}).get("camera", OVERHEAD_DEFAULT))
     for name in ARM_NAMES:
         section = payload.get(name, {})
-        rig.arms[name] = ArmDevices(bus=section.get("bus"), camera=section.get("camera"))
+        rig.arms[name] = ArmDevices(
+            bus=section.get("bus"),
+            camera=section.get("camera"),
+            label=section.get("label", DEFAULT_LABELS[name]),
+            max_speed=float(section.get("max_speed", DEFAULT_MAX_SPEED)),
+        )
     return rig
 
 
@@ -72,8 +87,10 @@ def render(rig: Rig) -> str:
     ]
     for name, arm in rig.arms.items():
         lines += ["", f"[{name}]"]
-        lines.append(f'bus = "{arm.bus}"      # servo adapter serial number' if arm.bus else "# bus = unknown")
-        lines.append(f'camera = "{arm.camera}"  # wrist camera' if arm.camera else "# camera = unknown")
+        lines.append(f'label = "{arm.label}"          # written on the arm')
+        lines.append(f'bus = "{arm.bus}"       # servo adapter serial number' if arm.bus else "# bus = unknown")
+        lines.append(f'camera = "{arm.camera}"      # wrist camera' if arm.camera else "# camera = unknown")
+        lines.append(f"max_speed = {arm.max_speed:g}             # degrees per second, every move")
     return "\n".join(lines) + "\n"
 
 

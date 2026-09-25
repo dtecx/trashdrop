@@ -38,6 +38,12 @@ The real arms and cameras (`rig.toml` says which USB device is which):
 uv sync --inexact --extra rig --extra arm
 uv run trashdrop rig identify            # move the front arm by hand when asked
 uv run trashdrop rig check               # every arm and camera answering, a snapshot each
+uv run trashdrop arm status              # both arms, every joint in degrees; moves nothing
+uv run trashdrop arm save left rest      # pose the limp arm by hand, record it in poses.toml
+uv run trashdrop arm go left rest        # play it back slowly (max_speed in rig.toml)
+uv run trashdrop arm jog left wrist_flex 10
+uv run trashdrop arm gripper left open   # or close, or a percent
+uv run trashdrop arm relax left          # limp again -- hold it if it is in the air
 ```
 
 Live viewer (macOS needs `mjpython`, which the `mujoco` wheel installs):
