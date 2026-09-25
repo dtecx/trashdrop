@@ -26,6 +26,8 @@ NEUTRAL = {"shoulder_pan": 0.0, "shoulder_lift": 0.0, "elbow_flex": -90.0, "wris
 # A radian of pointing error weighs as much as this many metres of position error.
 ORIENTATION_WEIGHT = 0.05
 REACHED_M = 0.003  # position error that still counts as reaching the point
+# The fixed finger's tip lies this far beyond the TCP, along the fingers.
+FINGERTIP_BEYOND_TCP = 0.007
 POINTING_TOLERANCE = 0.05  # |pointing error vector|, about 3 degrees
 DOWN = np.array([0.0, 0.0, -1.0])
 
@@ -84,6 +86,12 @@ class Kinematics:
 
         self._forward(degrees)
         return self.data.site_xpos[self._site].copy()
+
+    def fingertip(self, degrees: dict[str, float]) -> np.ndarray:
+        """Tip of the fixed finger, metres: what touches the table first."""
+
+        approach, _ = self.pointing(degrees)
+        return self.tcp(degrees) + FINGERTIP_BEYOND_TCP * approach
 
     def pointing(self, degrees: dict[str, float]) -> tuple[np.ndarray, np.ndarray]:
         """(where the fingers point, which way the jaw closes), unit vectors."""

@@ -37,6 +37,14 @@ MARKER_WORLD: dict[int, tuple[float, float]] = {
 }
 
 
+# The same centres in the sheet's own frame, in cm: origin at the middle of the
+# zone, x to the right of the printed page, y towards its top edge.
+MARKER_SHEET_CM: dict[int, tuple[float, float]] = {
+    marker_id: (round((x - PICK_ZONE.center_x) * 100.0, 2), round((y - PICK_ZONE.center_y) * 100.0, 2))
+    for marker_id, (x, y) in MARKER_WORLD.items()
+}
+
+
 def _px(mm: float) -> int:
     return int(round(mm / 25.4 * DPI))
 

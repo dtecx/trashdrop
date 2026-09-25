@@ -39,6 +39,9 @@ class ArmDevices:
     camera: str | None = None  # wrist camera, USB vendor:product
     label: str = ""  # what is written on the arm
     max_speed: float = DEFAULT_MAX_SPEED  # degrees per second
+    # Where the arm stands relative to the marker sheet: (x cm, y cm, yaw deg,
+    # table height cm), from `trashdrop rig touch`. None until it is touched.
+    sheet: tuple[float, float, float, float] | None = None
 
 
 @dataclass
@@ -68,6 +71,10 @@ def load_rig(path: Path = RIG_FILE) -> Rig:
             camera=section.get("camera"),
             label=section.get("label", DEFAULT_LABELS[name]),
             max_speed=float(section.get("max_speed", DEFAULT_MAX_SPEED)),
+            sheet=(
+                tuple(float(section["sheet"][key]) for key in ("x", "y", "yaw", "table_z"))
+                if "sheet" in section else None
+            ),
         )
     return rig
 
@@ -88,6 +95,12 @@ def render(rig: Rig) -> str:
         lines.append(f'bus = "{arm.bus}"       # servo adapter serial number' if arm.bus else "# bus = unknown")
         lines.append(f'camera = "{arm.camera}"      # wrist camera' if arm.camera else "# camera = unknown")
         lines.append(f"max_speed = {arm.max_speed:g}             # degrees per second, every move")
+        if arm.sheet:
+            x, y, yaw, table_z = arm.sheet
+            lines.append(
+                f"sheet = {{ x = {x:.2f}, y = {y:.2f}, yaw = {yaw:.2f}, table_z = {table_z:.2f} }}"
+                "  # from `rig touch`: cm, deg"
+            )
     return "\n".join(lines) + "\n"
 
 

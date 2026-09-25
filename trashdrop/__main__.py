@@ -369,6 +369,104 @@ def _cmd_rig_identify(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_rig_touch(args: argparse.Namespace) -> int:
+    """Touch the sheet's markers with the fixed fingertip; learn where the arm stands."""
+
+    import time
+
+    import numpy as np
+
+    from .camera.markers import MARKER_SHEET_CM
+    from .kinematics import Kinematics
+    from .placement import fit_placement
+    from .rig import load_rig, save_rig
+
+    rig = load_rig()
+    arm = _open_arm(args.arm)
+    kinematics = Kinematics()
+    where = {0: "top left", 1: "top right", 2: "bottom right", 3: "bottom left"}
+    touched = []
+    try:
+        if arm.torque_is_on():
+            print(f"{arm.name}: going limp in 3 s -- hold it")
+            time.sleep(3)
+            arm.torque_off()
+        print(
+            "The marker sheet must lie flat where it will stay. For each marker: put the tip of the\n"
+            "FIXED finger (the one that does not move when the gripper opens) on the marker's centre,\n"
+            "hold the arm there and press Enter. s skips a marker, Ctrl+C stops."
+        )
+        for marker_id in (0, 1, 2, 3):
+            if input(f"  marker {marker_id} ({where[marker_id]} of the page): ").strip().lower() == "s":
+                continue
+            tip = kinematics.fingertip(arm.pose()) * 100
+            touched.append((marker_id, tip))
+            print(f"      fingertip at x {tip[0]:.1f}  y {tip[1]:.1f}  z {tip[2]:.1f} cm")
+    except KeyboardInterrupt:
+        print("\nstopped; rig.toml not changed")
+        return 130
+    finally:
+        arm.bus.close()
+    if len(touched) < 3:
+        print("at least three markers are needed; rig.toml not changed")
+        return 1
+
+    table_z = float(np.mean([tip[2] for _, tip in touched]))
+    placement, residuals = fit_placement(
+        [MARKER_SHEET_CM[marker_id] for marker_id, _ in touched], [tip[:2] for _, tip in touched], table_z
+    )
+    print()
+    for (marker_id, _), residual in zip(touched, residuals):
+        print(f"  marker {marker_id}: the fit misses it by {residual:.1f} cm")
+    if max(residuals) > 1.5:
+        print("  more than 1.5 cm off: a fingertip was not on a centre, or a joint's calibration is off. Touch again.")
+    rig.arms[arm.name].sheet = (placement.x, placement.y, placement.yaw, placement.table_z)
+    save_rig(rig)
+    print(
+        f"{arm.name}: the sheet's centre is {placement.x:.1f} cm forward, {placement.y:.1f} cm left of the arm, "
+        f"turned {placement.yaw:.0f} deg; the sheet is at z {table_z:.1f} cm. Saved to rig.toml."
+    )
+    return 0
+
+
+def _cmd_camera_sheet(args: argparse.Namespace) -> int:
+    """Where the marker sheet is in the overhead camera: pixels -> sheet cm."""
+
+    import cv2
+    import numpy as np
+
+    from .camera.markers import MARKER_SHEET_CM
+    from .dataset.capture import open_camera
+    from .perception.calibration import HomographyCalibration, detect_aruco_corners
+    from .station import repository_root
+
+    source = _resolve_camera(args.camera, args.width, args.height)
+    capture = open_camera(source, args.width, args.height)
+    try:
+        for _ in range(30):  # let exposure settle
+            ok, frame = capture.read()
+    finally:
+        capture.release()
+    ids = [0, 1, 2, 3]
+    points = detect_aruco_corners(frame, ids)
+    if points is None:
+        print("not all four markers are visible to the overhead camera; nothing saved")
+        return 1
+    sheet = [np.array(MARKER_SHEET_CM[marker_id]) / 100.0 for marker_id in ids]
+    calibration = HomographyCalibration(points, sheet)
+    path = calibration.save(repository_root() / "camera_sheet.json")
+    for (u, v), marker_id in zip(points, ids):
+        cv2.circle(frame, (int(u), int(v)), 12, (0, 0, 255), 3)
+        cv2.putText(frame, str(marker_id), (int(u) + 15, int(v) - 15), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+    snapshot = args.out / "camera_sheet.jpg"
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(snapshot), frame)
+    residuals = ", ".join(f"{value:.1f}" for value in calibration.residuals_mm())
+    print(f"found all four markers; pixels -> sheet cm saved to {path} (residuals {residuals} mm)")
+    print(f"snapshot with the markers circled: {snapshot}")
+    return 0
+
+
 def _open_arm(name: str):
     from .arm import connect
 
@@ -916,6 +1014,9 @@ def build_parser() -> argparse.ArgumentParser:
     rig_identify.add_argument("--seconds", type=float, default=30.0, help="time allowed for each joint")
     rig_identify.add_argument("--quick", action="store_true", help="only the gripper of each arm")
     rig_identify.set_defaults(func=_cmd_rig_identify)
+    rig_touch = rig_sub.add_parser("touch", help="touch the sheet's markers with a fingertip; where the arm stands")
+    rig_touch.add_argument("arm")
+    rig_touch.set_defaults(func=_cmd_rig_touch)
 
     arm = sub.add_parser("arm", help="the real arms: status, named poses, slow moves (left / right / F01 / F02)")
     arm_sub = arm.add_subparsers(dest="arm_command", required=True)
@@ -987,6 +1088,12 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("--config", type=Path, default=None)
     apply_parser.add_argument("--usb-id", default=None)
     apply_parser.set_defaults(func=_cmd_camera_apply)
+
+    sheet_parser = camera_sub.add_parser("sheet", help="find the marker sheet in the overhead camera; pixels -> cm")
+    sheet_parser.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")
+    sheet_parser.add_argument("--width", type=int, default=1920)
+    sheet_parser.add_argument("--height", type=int, default=1080)
+    sheet_parser.set_defaults(func=_cmd_camera_sheet)
 
     tune_parser = camera_sub.add_parser("tune", help="find settings for this rig and write camera.toml")
     tune_parser.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")

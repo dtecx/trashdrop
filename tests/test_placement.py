@@ -1,0 +1,35 @@
+"""Where an arm stands relative to the marker sheet, from touched markers."""
+
+from __future__ import annotations
+
+import unittest
+
+import numpy as np
+
+from trashdrop.camera.markers import MARKER_SHEET_CM
+from trashdrop.placement import Placement, fit_placement
+
+
+class PlacementTests(unittest.TestCase):
+    def test_marker_centres_sit_on_the_zone_corners_around_the_sheet_middle(self) -> None:
+        self.assertEqual(MARKER_SHEET_CM[0], (-10.0, 7.5))
+        self.assertEqual(MARKER_SHEET_CM[2], (10.0, -7.5))
+
+    def test_touches_give_back_the_arms_placement(self) -> None:
+        truth = Placement(x=22.0, y=-6.0, yaw=95.0)
+        sheet = [MARKER_SHEET_CM[i] for i in (0, 1, 2, 3)]
+        rng = np.random.default_rng(0)
+        touched = [truth.to_arm(point) + rng.normal(0, 0.2, 2) for point in sheet]  # a hand is not exact
+        fitted, residuals = fit_placement(sheet, touched)
+        self.assertAlmostEqual(fitted.x, truth.x, delta=0.3)
+        self.assertAlmostEqual(fitted.y, truth.y, delta=0.3)
+        self.assertAlmostEqual(fitted.yaw, truth.yaw, delta=1.5)
+        self.assertLess(max(residuals), 0.6)
+
+    def test_a_direction_on_the_sheet_turns_with_the_arm(self) -> None:
+        self.assertAlmostEqual(Placement(0, 0, 90.0).direction_to_arm(0.0), 90.0)
+        self.assertAlmostEqual(Placement(0, 0, 170.0).direction_to_arm(30.0), -160.0)
+
+
+if __name__ == "__main__":
+    unittest.main()
