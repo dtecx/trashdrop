@@ -116,13 +116,15 @@ JOINT_HINTS = {
 STILL_TICKS = 15  # below this between polls, a joint counts as still
 
 
-def first_moved(buses: dict, seconds: float, *, poll: float = 0.05, clock=time.monotonic,
-                sleep=time.sleep) -> tuple[str, str] | None:
+def first_moved(buses: dict, seconds: float, *, ignore=frozenset(), poll: float = 0.05,
+                clock=time.monotonic, sleep=time.sleep) -> tuple[str, str] | None:
     """(bus key, joint) of the first joint pushed MOVE_TICKS from where it started.
 
     ``buses`` maps a key to anything with ``positions()``. Moving one joint by
     hand nudges its neighbours a little, so of the joints past the threshold
-    the one that moved furthest is reported.
+    the one that moved furthest is reported. Joints in ``ignore`` -- (key,
+    joint) pairs already identified -- are never reported: a person often
+    keeps turning the last joint while reading the next question.
     """
 
     start = {key: bus.positions() for key, bus in buses.items()}
@@ -131,6 +133,8 @@ def first_moved(buses: dict, seconds: float, *, poll: float = 0.05, clock=time.m
         moved = []
         for key, bus in buses.items():
             for joint, value in bus.positions().items():
+                if (key, joint) in ignore:
+                    continue
                 shift = abs(value - start[key][joint])
                 if shift >= MOVE_TICKS:
                     moved.append((shift, key, joint))
@@ -141,7 +145,7 @@ def first_moved(buses: dict, seconds: float, *, poll: float = 0.05, clock=time.m
     return None
 
 
-def wait_until_still(buses: dict, *, calm: float = 0.8, limit: float = 8.0, poll: float = 0.1,
+def wait_until_still(buses: dict, *, calm: float = 1.0, limit: float = 10.0, poll: float = 0.1,
                      clock=time.monotonic, sleep=time.sleep) -> bool:
     """Wait until no joint has moved for ``calm`` seconds, so the next question starts clean."""
 

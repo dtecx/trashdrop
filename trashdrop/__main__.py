@@ -319,20 +319,25 @@ def _cmd_rig_identify(args: argparse.Namespace) -> int:
 
         joints = ["gripper"] if args.quick else list(JOINT_HINTS)
         found: dict[tuple[str, str], tuple[str, str]] = {}
+        print("Move ONLY the joint asked for, about 20 degrees, then let go. Ctrl+C stops.")
         for side in ("left", "right"):
             label = rig.arms[side].label
             print(f"\n{side.upper()} arm ({label}) -- left and right as seen from behind the arms")
             for joint in joints:
                 wait_until_still(opened)
-                print(f"  {joint}: {JOINT_HINTS[joint]} (about 20 degrees is plenty)...", end="", flush=True)
-                moved = first_moved(opened, args.seconds)
+                print(f"  {joint}: {JOINT_HINTS[joint]}...", end="", flush=True)
+                # Joints already found are ignored, so finishing the last move is harmless.
+                moved = first_moved(opened, args.seconds, ignore=set(found.values()))
                 if moved is None:
                     print(" nothing moved; skipped")
                     continue
                 serial, moved_joint = moved
                 verdict = "ok" if moved_joint == joint else f"WRONG: that was motor {MOTORS[moved_joint]}, {moved_joint}"
-                print(f" adapter {serial}, motor {MOTORS[moved_joint]} -- {verdict}")
+                print(f" adapter {serial}, motor {MOTORS[moved_joint]} -- {verdict}. Got it, let go.")
                 found[(side, joint)] = (serial, moved_joint)
+    except KeyboardInterrupt:
+        print("\nstopped; rig.toml not changed")
+        return 130
     finally:
         for bus in opened.values():
             bus.close()

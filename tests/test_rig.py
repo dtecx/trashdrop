@@ -90,6 +90,13 @@ class IdentifyTests(unittest.TestCase):
         bus.positions = positions
         self.assertEqual(first_moved({"arm": bus}, 5.0, clock=clock, sleep=clock.sleep), ("arm", "elbow_flex"))
 
+    def test_a_joint_already_identified_does_not_answer_the_next_question(self) -> None:
+        # The person is still turning the base when asked for the shoulder.
+        clock = FakeClock()
+        bus = FakeBus({2: ("shoulder_pan", MOVE_TICKS + 300), 6: ("elbow_flex", MOVE_TICKS + 50)})
+        found = first_moved({"arm": bus}, 5.0, ignore={("arm", "shoulder_pan")}, clock=clock, sleep=clock.sleep)
+        self.assertEqual(found, ("arm", "elbow_flex"))
+
     def test_the_next_question_waits_for_the_arm_to_settle(self) -> None:
         clock = FakeClock()
         wobbling = FakeBus({n: ("elbow_flex", 40 if n % 2 else -40) for n in range(2, 12)})
