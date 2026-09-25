@@ -538,7 +538,7 @@ def _cmd_pick(args: argparse.Namespace) -> int:
             print(
                 f"  the {plan.arm} arm takes it: {plan.grasp_plan.width_m * 100:.1f} cm across, jaws open "
                 f"{plan.open_percent:.0f} %, fixed finger to ({plan.target_cm[0]:.1f}, {plan.target_cm[1]:.1f}) cm "
-                f"in its frame (red dot in out/pick_plan.jpg)"
+                f"in its frame, fingers leaning {plan.lean_deg:.0f} deg (red dot in out/pick_plan.jpg)"
             )
             if input("  Enter = go, s = skip: ").strip().lower() == "s":
                 continue

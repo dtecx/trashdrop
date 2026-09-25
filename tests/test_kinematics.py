@@ -49,6 +49,15 @@ class KinematicsTests(unittest.TestCase):
         self.assertFalse(self.kinematics.solve(np.array([0.60, 0.0, 0.05])).reachable)
         self.assertFalse(self.kinematics.solve(np.array([0.20, 0.0, 0.14])).reachable, "too high for fingers down")
 
+    def test_leaning_fingers_reach_further_and_point_as_asked(self) -> None:
+        target = np.array([0.34, 0.0, 0.0])
+        self.assertFalse(self.kinematics.solve(target).reachable, "straight down stops short of 34 cm")
+        solution = self.kinematics.solve(target, lean_deg=30.0)
+        self.assertTrue(solution.reachable, solution)
+        fingers, _ = self.kinematics.pointing(solution.degrees)
+        self.assertGreater(fingers @ self.kinematics.approach_for(target, 30.0), 0.99)
+        self.assertGreater(fingers[0], 0.4, "leaning away from the base, not towards it")
+
     def test_the_real_joints_limits_are_kept(self) -> None:
         tight = {"wrist_flex": (-10.0, 60.0)}
         solution = self.kinematics.solve(np.array([0.20, 0.0, 0.04]), limits=tight)

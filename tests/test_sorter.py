@@ -77,6 +77,15 @@ class PlanTests(unittest.TestCase):
         sheet_target = sheet_points(self.homography, np.array([plan.pixel[0]]), np.array([plan.pixel[1]]))[0]
         self.assertGreater(abs(sheet_target[0] - (-10.0)), 1.5 - 0.2)
 
+    def test_an_item_in_the_middle_of_the_table_is_taken_with_leaning_fingers(self) -> None:
+        # Where the bottle lay at the venue: the sheet's centre, 31.5 cm from the left base.
+        item = item_at(self.homography, (0.0, 0.0), (6.5, 20.0))
+        plan, reason = plan_pick(item, SCALE, self.homography, {"left": LEFT}, self.kinematics, {})
+        self.assertIsNotNone(plan, reason)
+        self.assertGreater(plan.lean_deg, 0.0)
+        reached = self.kinematics.tcp(plan.grasp) * 100
+        self.assertLess(np.hypot(reached[0] - plan.target_cm[0], reached[1] - plan.target_cm[1]), 0.3)
+
     def test_an_item_out_of_reach_is_refused_with_a_reason(self) -> None:
         item = item_at(self.homography, (30.0, 20.0), (3.0, 8.0))
         plan, reason = plan_pick(item, SCALE, self.homography, {"left": LEFT}, self.kinematics, {})

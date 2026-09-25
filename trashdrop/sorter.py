@@ -25,17 +25,19 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .kinematics import LEANS_DEG
 from .perception.grasp import GraspPlan, plan_grasp
 from .placement import Placement
 
 ANALYSIS_WIDTH = 320
-# Where the TCP goes, above the table: grasping, and approaching from above --
-# as high as the fingers-down reach allows at that spot, trying these in turn.
+# Where the TCP goes above the table to grasp, and how far back along the
+# fingers the approach starts -- as far as the reach allows at that spot.
 GRASP_HEIGHT_CM = 2.5
-ABOVE_HEIGHTS_CM = (10.0, 9.0, 8.0, 7.0)
+BACK_OFF_CM = (7.0, 6.0, 5.0, 4.0)
 DESCENT_SPEED = 15.0  # deg/s for the last few centimetres
-# The ring around a base where items are looked for, cm.
-RING_CM = (9.0, 29.0)
+# The ring around a base where items are looked for, cm: fingers straight down
+# reach from about 10 cm, fingers leaning 45 degrees to about 42 cm.
+RING_CM = (9.0, 42.0)
 # Tip opening of the SO-101 jaw against the gripper joint angle (CAD, see
 # station.py), and the joint's travel over the LeRobot 0..100 range.
 _OPENING_M = (0.032, 0.046, 0.060, 0.074, 0.087)
@@ -60,6 +62,7 @@ class PickPlan:
     grasp_plan: GraspPlan
     target_cm: tuple[float, float]  # TCP in the arm's frame
     pixel: tuple[float, float]  # where the fixed finger goes, full-resolution pixels
+    lean_deg: float = 0.0  # how far the fingers lean away from the base
 
 
 def sheet_points(homography, us, vs) -> np.ndarray:
@@ -151,19 +154,28 @@ def plan_pick(item_small, scale: float, homography, placements: dict[str, Placem
         target_sheet, direction_sheet = ends[0], ends[1] - ends[0]
         yaw = placement.direction_to_arm(float(np.degrees(np.arctan2(direction_sheet[1], direction_sheet[0]))))
         x, y = placement.to_arm(target_sheet)
-        above = None
-        for height in ABOVE_HEIGHTS_CM:
-            above = kinematics.solve(np.array([x, y, placement.table_z + height]) / 100,
-                                     yaw_deg=yaw, limits=limits.get(name))
-            if above.reachable:
+        target = np.array([x, y, placement.table_z + GRASP_HEIGHT_CM]) / 100
+        found = None
+        for lean in LEANS_DEG:
+            down = kinematics.solve(target, yaw_deg=yaw, limits=limits.get(name), lean_deg=lean)
+            if not down.reachable:
+                continue
+            # Start the approach back along the fingers, so the last move is along them.
+            approach = kinematics.approach_for(target, lean)
+            for back in BACK_OFF_CM:
+                above = kinematics.solve(target - approach * back / 100, yaw_deg=yaw, start=down.degrees,
+                                         limits=limits.get(name), lean_deg=lean)
+                if above.reachable:
+                    found = (above, down, lean)
+                    break
+            if found:
                 break
-        down = kinematics.solve(np.array([x, y, placement.table_z + GRASP_HEIGHT_CM]) / 100,
-                                yaw_deg=yaw, start=above.degrees, limits=limits.get(name))
-        if not (above.reachable and down.reachable):
-            reasons.append(f"{name}: out of reach ({np.hypot(x, y):.0f} cm from the base)")
+        if found is None:
+            reasons.append(f"{name}: out of reach, {np.hypot(x, y):.0f} cm from its base (it reaches 10-42 cm)")
             continue
+        above, down, lean = found
         return PickPlan(name, above.degrees, down.degrees, gripper_percent_for(grasp.opening_m), grasp,
-                        (float(x), float(y)), (float(fixed_px[0]), float(fixed_px[1]))), None
+                        (float(x), float(y)), (float(fixed_px[0]), float(fixed_px[1])), lean), None
     return None, "; ".join(reasons) or "no calibrated arm"
 
 

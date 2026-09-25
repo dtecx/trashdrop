@@ -26,10 +26,12 @@ NEUTRAL = {"shoulder_pan": 0.0, "shoulder_lift": 0.0, "elbow_flex": -90.0, "wris
 # A radian of pointing error weighs as much as this many metres of position error.
 ORIENTATION_WEIGHT = 0.05
 REACHED_M = 0.003  # position error that still counts as reaching the point
+# How far past fingers-straight-down the fingers may lean away from the base,
+# tried in turn: leaning reaches further (about 30, 34, 38, 42 cm).
+LEANS_DEG = (0.0, 15.0, 30.0, 45.0)
 # The fixed finger's tip lies this far beyond the TCP, along the fingers.
 FINGERTIP_BEYOND_TCP = 0.007
 POINTING_TOLERANCE = 0.05  # |pointing error vector|, about 3 degrees
-DOWN = np.array([0.0, 0.0, -1.0])
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,8 @@ class Kinematics:
             across = -across
         self._approach_local = rotation.T @ approach
         self._across_local = rotation.T @ across
+        shoulder = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "shoulder")
+        self.pan_axis = self.data.xpos[shoulder][:2].copy()  # where the base turns, in xy
 
     # --- forward ---------------------------------------------------------------
 
@@ -102,17 +106,28 @@ class Kinematics:
 
     # --- inverse ---------------------------------------------------------------
 
+    def approach_for(self, target, lean_deg: float) -> np.ndarray:
+        """Where the fingers should point: down, leaning ``lean_deg`` away from the base."""
+
+        radial = np.asarray(target, dtype=float)[:2] - self.pan_axis
+        radial = radial / max(np.linalg.norm(radial), 1e-9)
+        lean = np.radians(lean_deg)
+        return np.array([np.sin(lean) * radial[0], np.sin(lean) * radial[1], -np.cos(lean)])
+
     def solve(self, target, *, yaw_deg: float | None = None, start: dict[str, float] | None = None,
-              limits: dict[str, tuple[float, float]] | None = None) -> Solution:
+              limits: dict[str, tuple[float, float]] | None = None, lean_deg: float = 0.0) -> Solution:
         """Joint degrees putting the TCP at ``target`` with the fingers pointing down.
 
-        ``yaw_deg`` turns the jaw so it closes along that direction in the
-        arm's xy plane (the grasp plan's ``across``); without it the wrist
-        roll stays where ``start`` has it. ``limits`` are the real joints'
-        limits in degrees; the model's own are used otherwise.
+        ``lean_deg`` lets the fingers lean that far away from the base, which
+        reaches further. ``yaw_deg`` turns the jaw so it closes along that
+        direction in the arm's xy plane (the grasp plan's ``across``, tipped
+        square to the fingers when they lean); without it the wrist roll stays
+        where ``start`` has it. ``limits`` are the real joints' limits in
+        degrees; the model's own are used otherwise.
         """
 
         target = np.asarray(target, dtype=float)
+        wanted_approach = self.approach_for(target, lean_deg)
         # The tighter of the model's design range and the real joint's limits.
         limits = {
             joint: (
@@ -122,14 +137,16 @@ class Kinematics:
             for joint in ARM_JOINTS
         }
         variables = list(ARM_JOINTS) if yaw_deg is not None else list(ARM_JOINTS[:4])
-        wanted_across = (
-            np.array([np.cos(np.radians(yaw_deg)), np.sin(np.radians(yaw_deg)), 0.0]) if yaw_deg is not None else None
-        )
+        wanted_across = None
+        if yaw_deg is not None:
+            flat = np.array([np.cos(np.radians(yaw_deg)), np.sin(np.radians(yaw_deg)), 0.0])
+            square = flat - (flat @ wanted_approach) * wanted_approach
+            wanted_across = square / np.linalg.norm(square)
 
         def residual(degrees: dict[str, float]) -> np.ndarray:
             position = self.tcp(degrees)
             approach, across = self.pointing(degrees)
-            parts = [position - target, ORIENTATION_WEIGHT * (approach - DOWN)]
+            parts = [position - target, ORIENTATION_WEIGHT * (approach - wanted_approach)]
             if wanted_across is not None:
                 parts.append(ORIENTATION_WEIGHT * (across - wanted_across))
             return np.concatenate(parts)
@@ -154,7 +171,7 @@ class Kinematics:
                     break
             position_error = float(np.linalg.norm(self.tcp(degrees) - target))
             approach, across = self.pointing(degrees)
-            pointing_error = float(np.linalg.norm(approach - DOWN))
+            pointing_error = float(np.linalg.norm(approach - wanted_approach))
             if wanted_across is not None:
                 pointing_error = max(pointing_error, float(np.linalg.norm(across - wanted_across)))
             candidate = Solution({j: round(v, 2) for j, v in degrees.items()}, position_error, pointing_error)
