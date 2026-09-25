@@ -490,6 +490,28 @@ def _cmd_arm_test(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_arm_pick(args: argparse.Namespace) -> int:
+    from .arm import load_poses, pick_and_drop
+
+    arm = _open_arm(args.arm)
+    try:
+        poses = load_poses().get(arm.name, {})
+        if not arm.torque_is_on():
+            print(f"{arm.name}: torque on, holding where it is")
+            arm.torque_on()
+        carried = pick_and_drop(arm, poses, speed=args.speed, check=not args.no_check)
+    except ValueError as error:
+        print(f"{error}\nTeach them: `uv run trashdrop arm relax {args.arm}`, pose the arm by hand, then "
+              f"`uv run trashdrop arm save {args.arm} above` (and grab, drop; neutral you have).")
+        return 1
+    except KeyboardInterrupt:
+        print("\nstopped; holding where it is")
+        return 130
+    finally:
+        arm.bus.close()
+    return 0 if carried else 2
+
+
 def _cmd_arm_save(args: argparse.Namespace) -> int:
     from .arm import POSES_FILE, save_pose
 
@@ -881,6 +903,11 @@ def build_parser() -> argparse.ArgumentParser:
     arm_test.add_argument("--degrees", type=float, default=6.0, help="per joint, at most 15")
     arm_test.add_argument("--speed", type=float, default=15.0, help="deg/s")
     arm_test.set_defaults(func=_cmd_arm_test)
+    arm_pick = arm_sub.add_parser("pick", help="play above -> grab -> close -> drop -> neutral from poses.toml")
+    arm_pick.add_argument("arm")
+    arm_pick.add_argument("--speed", type=float, default=None, help="deg/s, capped by max_speed in rig.toml")
+    arm_pick.add_argument("--no-check", action="store_true", help="carry on even if the jaws closed on nothing")
+    arm_pick.set_defaults(func=_cmd_arm_pick)
     arm_hold = arm_sub.add_parser("hold", help="torque on where the arm is; moves nothing")
     arm_hold.add_argument("arm")
     arm_hold.set_defaults(func=_cmd_arm_hold)

@@ -20,6 +20,7 @@ from trashdrop.arm import (
     load_poses,
     resolve_arm,
     nudge_joints,
+    pick_and_drop,
     save_pose,
 )
 from trashdrop.rig import Rig
@@ -182,6 +183,59 @@ class NudgeTests(unittest.TestCase):
         answers = iter(["s", "", "q"])
         moved = nudge_joints(arm, 6.0, 15.0, ask=lambda _: next(answers), log=lambda *_: None)
         self.assertEqual(moved, ["wrist_roll"])
+
+
+class PickTests(unittest.TestCase):
+    POSES = {
+        "above": {"shoulder_lift": 10.0, "elbow_flex": -60.0, "gripper": 50.0},
+        "grab": {"shoulder_lift": 20.0, "elbow_flex": -50.0, "gripper": 50.0},
+        "drop": {"shoulder_pan": 80.0, "gripper": 0.0},
+        "neutral": {"shoulder_pan": 0.0, "shoulder_lift": 0.0, "elbow_flex": -90.0, "gripper": 0.0},
+    }
+
+    def arm_holding(self, stopped_at: float | None):
+        """An arm whose jaws stop at ``stopped_at`` percent when told to close (None: nothing there)."""
+
+        bus = FakeBus()
+        arm = make_arm(bus, max_speed=60.0)
+        arm.torque_on()
+        if stopped_at is not None:
+            gripper = MOTORS["gripper"]
+            low, high = LIMITS[gripper]
+            item_edge = round(low + stopped_at / 100 * (high - low))
+            original = bus._settle
+
+            def settle():
+                original()
+                regs = bus.regs[gripper]
+                regs["position"] = max(regs["position"], item_edge)  # the item stops the jaws
+
+            bus._settle = settle
+        return bus, arm
+
+    def test_an_item_is_carried_with_the_jaws_never_opening_until_the_drop(self) -> None:
+        bus, arm = self.arm_holding(stopped_at=35.0)
+        self.assertTrue(pick_and_drop(arm, self.POSES, log=lambda *_: None))
+        gripper, pan = MOTORS["gripper"], MOTORS["shoulder_pan"]
+        streamed = bus.goals_streamed()
+        path = [goals[gripper] for goals in streamed]
+        closed = path.index(min(path))
+        first_opening = next(i for i in range(closed + 1, len(path)) if path[i] > path[i - 1])
+        # The jaws start to open only once the arm is over the drop zone.
+        self.assertEqual(streamed[first_opening][pan], arm.to_ticks("shoulder_pan", 80.0))
+        self.assertEqual(bus.regs[pan]["goal_position"], arm.to_ticks("shoulder_pan", 0.0), "back to neutral")
+
+    def test_jaws_that_close_on_nothing_are_a_miss_and_nothing_is_carried(self) -> None:
+        bus, arm = self.arm_holding(stopped_at=None)
+        self.assertFalse(pick_and_drop(arm, self.POSES, log=lambda *_: None))
+        pan_goals = [goals[MOTORS["shoulder_pan"]] for goals in bus.goals_streamed()]
+        self.assertLess(max(pan_goals), arm.to_ticks("shoulder_pan", 40.0), "it never swung towards the drop zone")
+
+    def test_missing_poses_are_named(self) -> None:
+        bus, arm = self.arm_holding(stopped_at=35.0)
+        with self.assertRaises(ValueError) as caught:
+            pick_and_drop(arm, {"neutral": {}}, log=lambda *_: None)
+        self.assertIn("above", str(caught.exception))
 
 
 class UnitTests(unittest.TestCase):

@@ -194,6 +194,55 @@ def nudge_joints(arm: Arm, degrees: float, speed: float, *, ask=input, log=print
     return moved
 
 
+# --- pick and drop by taught poses ---------------------------------------------
+
+# The poses a pick is played from, taught by hand and saved with `arm save`.
+PICK_POSES = ("above", "grab", "drop", "neutral")
+# A gripper told to close that stops below this is closed on nothing.
+MISS_BELOW = 4.0
+# How far the gripper opens to let go, percent.
+RELEASE_OPEN = 60.0
+
+
+def pick_and_drop(arm: Arm, poses: dict[str, dict[str, float]], *, speed: float | None = None,
+                  check: bool = True, log=print) -> bool:
+    """Play one pick from taught poses; True if something was carried and dropped.
+
+    From "above" the arm comes down to "grab" with the jaws as they were
+    taught (open), closes, and looks at where the jaws stopped: closed all
+    the way means nothing is between them, and the arm goes back without
+    pretending. While carrying, the gripper is left out of every move, so
+    nothing on the way can open it.
+    """
+
+    missing = [name for name in PICK_POSES if name not in poses]
+    if missing:
+        raise ValueError(f"the {arm.name} arm has no pose {', '.join(missing)} in poses.toml")
+
+    def carry(pose: dict[str, float]) -> dict[str, float]:
+        return {joint: value for joint, value in pose.items() if joint != GRIPPER}
+
+    log(f"{arm.name}: above the item")
+    arm.move(poses["above"], speed=speed)
+    log(f"{arm.name}: down to grab")
+    arm.move(poses["grab"], speed=speed)
+    log(f"{arm.name}: closing")
+    held = arm.move({GRIPPER: 0.0}, speed=speed)[GRIPPER]
+    if check and held < MISS_BELOW:
+        log(f"{arm.name}: the jaws closed to {held:.0f} %: nothing between them, a miss")
+        arm.move(poses["above"], speed=speed)
+        arm.move(poses["neutral"], speed=speed)
+        return False
+    log(f"{arm.name}: holding it, jaws at {held:.0f} % -- lifting")
+    arm.move(carry(poses["above"]), speed=speed)
+    log(f"{arm.name}: over the drop zone")
+    arm.move(carry(poses["drop"]), speed=speed)
+    arm.move({GRIPPER: RELEASE_OPEN}, speed=speed)
+    log(f"{arm.name}: dropped; back to neutral")
+    arm.move(poses["neutral"], speed=speed)
+    return True
+
+
 def connect(name: str, rig=None) -> Arm:
     """The arm called ``name`` in rig.toml -- "left", "right", or its label."""
 
