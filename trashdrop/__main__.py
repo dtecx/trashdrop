@@ -100,8 +100,9 @@ def _webcam():
 
     try:
         from .camera import UvcCamera
+        from .rig import overhead_usb_id
 
-        return UvcCamera.find()
+        return UvcCamera.find(overhead_usb_id())
     except Exception:
         return None
 
@@ -187,10 +188,180 @@ def _cmd_cameras(args: argparse.Namespace) -> int:
     return 0
 
 
+def _servo_buses() -> dict[str, str]:
+    """Serial number -> port for every adapter with a full SO-101 behind it."""
+
+    from .servo import ServoBus, list_buses
+
+    found = {}
+    for serial, port in list_buses():
+        try:
+            with ServoBus(port) as bus:
+                if not bus.missing():
+                    found[serial] = port
+        except Exception:
+            continue  # not a servo adapter, or busy
+    return found
+
+
+def _print_bus(serial: str, port: str) -> bool:
+    from .servo import ServoBus
+
+    with ServoBus(port) as bus:
+        missing = bus.missing()
+        if missing:
+            print(f"    NOT ANSWERING: {', '.join(missing)}")
+            return False
+        for motor in bus.state():
+            print(
+                f"    {motor.motor} {motor.name:13s} position {motor.position:4d}  "
+                f"limits {motor.min_limit:4d}..{motor.max_limit:<4d}  torque {'ON ' if motor.torque else 'off'}  "
+                f"{motor.voltage:4.1f} V  {motor.temperature} C"
+            )
+    return True
+
+
+def _cmd_rig_check(args: argparse.Namespace) -> int:
+    from .camera import UvcCamera
+    from .camera.identify import find_stream_index
+    from .dataset.capture import open_camera
+    from .rig import RIG_FILE, load_rig
+    from .servo import list_buses
+
+    rig = load_rig()
+    ok = True
+    print(f"rig: {RIG_FILE if RIG_FILE.is_file() else 'no rig.toml yet -- run: uv run trashdrop rig identify'}\n")
+
+    adapters = dict(list_buses())
+    named = {arm.bus for arm in rig.arms.values() if arm.bus}
+    for name, arm in rig.arms.items():
+        if not arm.bus:
+            print(f"{name} arm: not identified yet")
+            ok = False
+        elif arm.bus not in adapters:
+            print(f"{name} arm: adapter {arm.bus} is NOT plugged in")
+            ok = False
+        else:
+            print(f"{name} arm: adapter {arm.bus} at {adapters[arm.bus]}")
+            ok &= _print_bus(arm.bus, adapters[arm.bus])
+    for serial, port in _servo_buses().items():
+        if serial not in named:
+            print(f"arm not in rig.toml: adapter {serial} at {port} -- run: uv run trashdrop rig identify")
+            ok = False
+
+    print()
+    snapshots = args.out / "rig"
+    for role, usb_id in rig.cameras().items():
+        try:
+            camera = UvcCamera.find(usb_id)
+        except Exception as error:
+            print(f"{role} camera {usb_id}: NOT FOUND ({error})")
+            ok = False
+            continue
+        if args.no_video:
+            print(f"{role} camera {usb_id}: on USB")
+            continue
+        try:
+            index = find_stream_index(camera, lambda index: open_camera(index, 640, 480), log=lambda *_: None)
+            capture = open_camera(index, 640, 480)
+            ok_frame, frame = capture.read()
+            capture.release()
+            snapshots.mkdir(parents=True, exist_ok=True)
+            target = snapshots / f"{role.replace(' ', '_')}.jpg"
+            if ok_frame:
+                import cv2
+
+                cv2.imwrite(str(target), frame)
+            print(f"{role} camera {usb_id}: stream index {index}  snapshot -> {target}")
+        except Exception as error:
+            print(f"{role} camera {usb_id}: on USB, but no video: {error}")
+            ok = False
+    print("\nRIG OK" if ok else "\nRIG NOT READY")
+    return 0 if ok else 1
+
+
+def _cmd_rig_identify(args: argparse.Namespace) -> int:
+    import time
+
+    from .camera import UvcCamera
+    from .camera.identify import find_stream_index
+    from .dataset.capture import open_camera
+    from .rig import RIG_FILE, ArmDevices, MotionMeter, first_moved, load_rig, save_rig
+    from .servo import ServoBus
+
+    rig = load_rig()
+    buses = _servo_buses()
+    if len(buses) != 2:
+        print(f"expected two arms with six answering servos each, found {len(buses)}: {buses or 'none'}")
+        return 1
+
+    wrist_ids = []
+    if sys.platform == "darwin":
+        from .camera.iokit import list_devices
+
+        wrist_ids = [f"{v:04x}:{p:04x}" for v, p in list_devices() if f"{v:04x}:{p:04x}" != rig.overhead]
+    streams = {}
+    if len(wrist_ids) == 2 and not args.no_video:
+        for usb_id in wrist_ids:
+            try:
+                camera = UvcCamera.find(usb_id)
+                index = find_stream_index(camera, lambda index: open_camera(index, 640, 480), log=lambda *_: None)
+                streams[usb_id] = open_camera(index, 640, 480)
+            except Exception as error:
+                print(f"wrist camera {usb_id}: no video ({error}); cameras will not be assigned")
+                streams = {}
+                break
+    elif not args.no_video:
+        print(f"expected two wrist cameras besides the overhead {rig.overhead}, found {wrist_ids}")
+
+    opened = {serial: ServoBus(port) for serial, port in buses.items()}
+    try:
+        stiff = [serial for serial, bus in opened.items() if any(m.torque for m in bus.state())]
+        if stiff:
+            print(f"torque is ON on {', '.join(stiff)}: that arm cannot be moved by hand. Power it off and on.")
+            return 1
+        meter = MotionMeter(streams)
+        meter.sample()
+        print(
+            f"\nNow move the FRONT arm by hand -- the one that will sort paper. Push any joint a good\n"
+            f"way, and keep moving it for a second or two. Waiting {args.seconds:.0f} s..."
+        )
+        moved = first_moved(opened, args.seconds, on_poll=meter.sample if streams else None)
+        if moved is None:
+            print("nothing moved. Run it again and push a joint further (about 15 degrees is enough).")
+            return 1
+        front_bus, joint = moved
+        print(f"the {joint} of adapter {front_bus} moved: that is the front arm")
+        until = time.monotonic() + 1.5
+        while streams and time.monotonic() < until:
+            meter.sample()
+    finally:
+        for bus in opened.values():
+            bus.close()
+        for capture in streams.values():
+            capture.release()
+
+    back_bus = next(serial for serial in buses if serial != front_bus)
+    front_camera = meter.mover() if streams else None
+    if streams:
+        changes = ", ".join(f"{key} {value:.1f}" for key, value in meter.peak.items())
+        print(f"wrist cameras, how much each picture changed: {changes}")
+        if front_camera is None:
+            print("neither wrist camera clearly moved with the arm; cameras left unassigned")
+    back_camera = next((usb_id for usb_id in wrist_ids if usb_id != front_camera), None) if front_camera else None
+    rig.arms["front"] = ArmDevices(bus=front_bus, camera=front_camera)
+    rig.arms["back"] = ArmDevices(bus=back_bus, camera=back_camera)
+    save_rig(rig)
+    print(f"\nwrote {RIG_FILE}:\n")
+    print(RIG_FILE.read_text(encoding="utf-8"))
+    return 0
+
+
 def _cmd_camera_show(args: argparse.Namespace) -> int:
     from .camera import UvcCamera
+    from .rig import overhead_usb_id
 
-    camera = UvcCamera.find(args.usb_id)
+    camera = UvcCamera.find(args.usb_id or overhead_usb_id())
     print(f"{camera.describe()}\n")
     print(f"  {'control':24s} {'now':>7} {'min':>7} {'max':>7} {'step':>5} {'default':>8}")
     for name, known in camera.ranges().items():
@@ -219,9 +390,11 @@ def _cmd_camera_tune(args: argparse.Namespace) -> int:
     from .dataset.capture import open_camera
     from .dataset.zone import DEFAULT_CALIBRATION, DEFAULT_ZONE_CONFIG, calibrate_zone, save_zone, zone_size
 
+    from .rig import overhead_usb_id
+
     # Talk to the camera first: if control is refused, say so before any
     # video is opened.
-    camera = UvcCamera.find(args.usb_id)
+    camera = UvcCamera.find(args.usb_id or overhead_usb_id())
     ranges = camera.ranges()
     print(f"{camera.describe()}: {len(ranges)} adjustable controls")
 
@@ -299,8 +472,9 @@ def _cmd_camera_zone(args: argparse.Namespace) -> int:
 
 def _cmd_camera_probe(args: argparse.Namespace) -> int:
     from .camera.uvc import probe_access
+    from .rig import overhead_usb_id
 
-    verdict = probe_access(args.usb_id)
+    verdict = probe_access(args.usb_id or overhead_usb_id())
     if verdict == "ok":
         print()
         print("VERDICT: camera settings can be read and written. Next:")
@@ -458,6 +632,16 @@ def build_parser() -> argparse.ArgumentParser:
     cameras.add_argument("--width", type=int, default=1920)
     cameras.add_argument("--height", type=int, default=1080)
     cameras.set_defaults(func=_cmd_cameras)
+
+    rig = sub.add_parser("rig", help="arms, wrist cameras and the overhead camera: which is which, all answering?")
+    rig_sub = rig.add_subparsers(dest="rig_command", required=True)
+    rig_check = rig_sub.add_parser("check", help="every device in rig.toml plugged in and answering; a snapshot per camera")
+    rig_check.add_argument("--no-video", action="store_true", help="skip opening the cameras' video")
+    rig_check.set_defaults(func=_cmd_rig_check)
+    rig_identify = rig_sub.add_parser("identify", help="move the front arm by hand; writes rig.toml")
+    rig_identify.add_argument("--seconds", type=float, default=60.0)
+    rig_identify.add_argument("--no-video", action="store_true", help="assign the arms only, not their cameras")
+    rig_identify.set_defaults(func=_cmd_rig_identify)
 
     camera = sub.add_parser("camera", help="lock focus/exposure/white balance via camera.toml")
     camera_sub = camera.add_subparsers(dest="camera_command", required=True)

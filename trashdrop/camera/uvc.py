@@ -199,10 +199,10 @@ class UvcCamera:
 
     @classmethod
     def find(cls, usb_id: str | None = None) -> "UvcCamera":
-        """The first UVC webcam, or the one matching ``vvvv:pppp``.
+        """The UVC camera matching ``vvvv:pppp``, or the only one plugged in.
 
         On an Apple-silicon MacBook the built-in camera is not a USB device,
-        so the first UVC device found is the external webcam.
+        so a lone USB webcam needs no id. Several need one.
         """
 
         wanted = _parse_usb_id(usb_id)
@@ -210,14 +210,30 @@ class UvcCamera:
             return cls._find_iokit(wanted)
         return cls._find_libusb(wanted)
 
+    @staticmethod
+    def _only(ids: list[tuple[int, int]]) -> tuple[int, int]:
+        """The one camera there is. With several, refuse rather than guess.
+
+        With arm cameras plugged in next to the webcam, "the first one found"
+        is whichever the OS lists first -- and tuning the wrong camera has
+        already cost this project an afternoon.
+        """
+
+        if not ids:
+            raise RuntimeError("no UVC webcam found on USB -- is it plugged in?")
+        if len(ids) > 1:
+            listed = ", ".join(f"{vendor:04x}:{product:04x}" for vendor, product in ids)
+            raise RuntimeError(
+                f"several UVC cameras are plugged in ({listed}); say which one with --usb-id, "
+                "or name the overhead camera in rig.toml"
+            )
+        return ids[0]
+
     @classmethod
     def _find_iokit(cls, wanted: tuple[int, int] | None) -> "UvcCamera":
         from .iokit import IOKitDevice, list_devices
 
-        candidates = [wanted] if wanted else list_devices()
-        if not candidates:
-            raise RuntimeError("no UVC webcam found on USB -- is it plugged in?")
-        device = IOKitDevice(*candidates[0])
+        device = IOKitDevice(*(wanted or cls._only(list_devices())))
         found = parse_configuration(device.configuration_descriptor())
         if found is None:
             device.close()
@@ -233,6 +249,7 @@ class UvcCamera:
             raise RuntimeError("camera control on this OS needs: uv sync --extra rig") from error
 
         backend = libusb_package.get_libusb1_backend()
+        found = []
         for device in usb.core.find(find_all=True, backend=backend):
             if wanted and (device.idVendor, device.idProduct) != wanted:
                 continue
@@ -244,8 +261,13 @@ class UvcCamera:
                     ):
                         camera_id, processing_id = parse_video_control(bytes(interface.extra_descriptors))
                         if camera_id is not None and processing_id is not None:
-                            return cls(_LibusbDevice(device), interface.bInterfaceNumber, camera_id, processing_id)
-        raise RuntimeError("no UVC webcam found on USB -- is it plugged in?")
+                            found.append((device, interface.bInterfaceNumber, camera_id, processing_id))
+        if not wanted:
+            cls._only([(device.idVendor, device.idProduct) for device, *_ in found])
+        if not found:
+            raise RuntimeError("no UVC webcam found on USB -- is it plugged in?")
+        device, interface, camera_id, processing_id = found[0]
+        return cls(_LibusbDevice(device), interface, camera_id, processing_id)
 
     # --- raw requests ------------------------------------------------------
 

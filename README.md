@@ -32,6 +32,14 @@ uv run trashdrop sim                     # full two-arm sort, ~7 s, writes out/
 uv run python -m pytest tests/ -q        # full test suite
 ```
 
+The real arms and cameras (`rig.toml` says which USB device is which):
+
+```bash
+uv sync --inexact --extra rig --extra arm
+uv run trashdrop rig identify            # move the front arm by hand when asked
+uv run trashdrop rig check               # every arm and camera answering, a snapshot each
+```
+
 Live viewer (macOS needs `mjpython`, which the `mujoco` wheel installs):
 
 ```bash

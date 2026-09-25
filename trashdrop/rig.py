@@ -1,0 +1,143 @@
+"""Which USB device is which part of the cell.
+
+rig.toml names every device by something that survives moving a cable to
+another socket: a servo adapter's serial number, a camera's USB id. Serial
+port names and OpenCV indices are looked up from those every time and never
+written down, because they change.
+
+Which arm is "front" and which is "back" cannot be read off a USB device, so
+``trashdrop rig identify`` asks a person to move the front arm by hand and
+watches which bus -- and which wrist camera -- sees it move.
+"""
+
+from __future__ import annotations
+
+import time
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+
+from .station import ARMS, repository_root
+
+RIG_FILE = repository_root() / "rig.toml"
+OVERHEAD_DEFAULT = "046d:08e5"  # Logitech C920
+ARM_NAMES = tuple(mount.name for mount in ARMS)
+# A deliberate push by hand, well above servo read noise: ~13 degrees.
+MOVE_TICKS = 150
+# The moving arm's wrist camera must see this much more change than the other.
+CAMERA_MARGIN = 1.5
+
+
+@dataclass
+class ArmDevices:
+    bus: str | None = None  # serial number of the arm's servo adapter
+    camera: str | None = None  # wrist camera, USB vendor:product
+
+
+@dataclass
+class Rig:
+    overhead: str = OVERHEAD_DEFAULT
+    arms: dict[str, ArmDevices] = field(default_factory=lambda: {name: ArmDevices() for name in ARM_NAMES})
+
+    def cameras(self) -> dict[str, str]:
+        """Role -> USB id for every camera the rig names."""
+
+        roles = {"overhead": self.overhead}
+        roles.update({f"{name} wrist": arm.camera for name, arm in self.arms.items() if arm.camera})
+        return roles
+
+
+def load_rig(path: Path = RIG_FILE) -> Rig:
+    if not path.is_file():
+        return Rig()
+    payload = tomllib.loads(path.read_text(encoding="utf-8"))
+    rig = Rig(overhead=payload.get("overhead", {}).get("camera", OVERHEAD_DEFAULT))
+    for name in ARM_NAMES:
+        section = payload.get(name, {})
+        rig.arms[name] = ArmDevices(bus=section.get("bus"), camera=section.get("camera"))
+    return rig
+
+
+def render(rig: Rig) -> str:
+    lines = [
+        "# Which USB device is which part of the cell. Devices are named by their",
+        "# serial number or USB id, never by /dev name or camera index: those change",
+        "# when a cable moves to another socket. Written by `trashdrop rig identify`;",
+        "# `trashdrop rig check` verifies everything is plugged in and answering.",
+        "",
+        "[overhead]",
+        f'camera = "{rig.overhead}"',
+    ]
+    for name, arm in rig.arms.items():
+        lines += ["", f"[{name}]"]
+        lines.append(f'bus = "{arm.bus}"      # servo adapter serial number' if arm.bus else "# bus = unknown")
+        lines.append(f'camera = "{arm.camera}"  # wrist camera' if arm.camera else "# camera = unknown")
+    return "\n".join(lines) + "\n"
+
+
+def save_rig(rig: Rig, path: Path = RIG_FILE) -> Path:
+    path.write_text(render(rig), encoding="utf-8")
+    return path
+
+
+def overhead_usb_id(path: Path = RIG_FILE) -> str | None:
+    """The overhead camera's USB id, if a rig.toml names one."""
+
+    return load_rig(path).overhead if path.is_file() else None
+
+
+# --- identify: which bus and which wrist camera belong to the front arm -----
+
+
+def first_moved(buses: dict, seconds: float, *, poll: float = 0.05, clock=time.monotonic,
+                sleep=time.sleep, on_poll=None) -> tuple[str, str] | None:
+    """(bus key, joint) of the first joint pushed MOVE_TICKS from where it started.
+
+    ``buses`` maps a key to anything with ``positions()``. ``on_poll`` is
+    called once per round, so the caller can sample cameras meanwhile.
+    """
+
+    start = {key: bus.positions() for key, bus in buses.items()}
+    deadline = clock() + seconds
+    while clock() < deadline:
+        if on_poll is not None:
+            on_poll()
+        for key, bus in buses.items():
+            for joint, value in bus.positions().items():
+                if abs(value - start[key][joint]) >= MOVE_TICKS:
+                    return key, joint
+        sleep(poll)
+    return None
+
+
+class MotionMeter:
+    """How much each stream's picture has changed since it was first sampled."""
+
+    def __init__(self, streams: dict) -> None:
+        self.streams = streams
+        self.first: dict[str, np.ndarray] = {}
+        self.peak = {key: 0.0 for key in streams}
+
+    def sample(self) -> None:
+        import cv2
+
+        for key, capture in self.streams.items():
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                continue
+            small = cv2.resize(frame, (160, 90), interpolation=cv2.INTER_AREA).astype(np.float32)
+            if key not in self.first:
+                self.first[key] = small
+            else:
+                self.peak[key] = max(self.peak[key], float(np.abs(small - self.first[key]).mean()))
+
+    def mover(self) -> str | None:
+        """The stream that changed clearly more than every other, if one did."""
+
+        if len(self.peak) < 2:
+            return next(iter(self.peak), None) if self.peak and max(self.peak.values()) > 0 else None
+        ranked = sorted(self.peak.items(), key=lambda item: item[1], reverse=True)
+        (best, top), (_, runner_up) = ranked[0], ranked[1]
+        return best if top >= CAMERA_MARGIN * max(runner_up, 1.0) else None

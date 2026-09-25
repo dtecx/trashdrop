@@ -72,6 +72,9 @@ simulator.py  probe.py
 - `dataset/` — capture on the rig, autolabel, review; plus indexers for the
   public datasets.
 - `simulator.py` — the cell, stepping, grasp, scoring.
+- `servo.py`, `rig.py` — the real hardware: the arms' Feetech servo buses, and
+  `rig.toml`, which names each arm's adapter and camera by serial number or USB
+  id, never by port name or camera index. Reading only; nothing here moves.
 - `api.py` — the open intake API. Standard library only, on purpose: no team
   should install anything to talk to us, and it must not break on venue wifi.
   Collaboration is a judging criterion, so treat this as product surface, not

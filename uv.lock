@@ -621,6 +621,15 @@ wheels = [
 ]
 
 [[package]]
+name = "feetech-servo-sdk"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyserial" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5f/8e/c53d6f9a8bf3a86a635b58eeb675723f1b040f1665a0681467756c8989aa/feetech-servo-sdk-1.0.0.tar.gz", hash = "sha256:d4d3832e4b1b22a8222133a414db9f868224c2fb639426a1b11d96ddfe84e69c", size = 8392, upload-time = "2022-11-08T03:44:45.269Z" }
+
+[[package]]
 name = "filelock"
 version = "4.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2992,6 +3001,10 @@ version = "0.3.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
+arm = [
+    { name = "feetech-servo-sdk" },
+    { name = "pyserial" },
+]
 camera = [
     { name = "libusb-package", marker = "sys_platform == 'linux'" },
     { name = "pyusb", marker = "sys_platform == 'linux'" },
@@ -3028,6 +3041,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "feetech-servo-sdk", marker = "extra == 'arm'", specifier = ">=1.0" },
     { name = "lerobot", marker = "extra == 'teleop'", specifier = ">=0.1" },
     { name = "libusb-package", marker = "sys_platform == 'linux' and extra == 'camera'", specifier = ">=1.0" },
     { name = "mujoco", marker = "extra == 'simulation'", specifier = ">=3.3" },
@@ -3036,10 +3050,11 @@ requires-dist = [
     { name = "onnxruntime", marker = "extra == 'classifier'", specifier = ">=1.17" },
     { name = "opencv-python", marker = "extra == 'dataset'", specifier = ">=4.9" },
     { name = "opencv-python", marker = "extra == 'simulation'", specifier = ">=4.9" },
+    { name = "pyserial", marker = "extra == 'arm'", specifier = ">=3.5" },
     { name = "pyusb", marker = "sys_platform == 'linux' and extra == 'camera'", specifier = ">=1.2" },
     { name = "trashdrop", extras = ["dataset", "camera"], marker = "extra == 'rig'" },
 ]
-provides-extras = ["dataset", "simulation", "camera", "rig", "classifier", "teleop"]
+provides-extras = ["dataset", "simulation", "camera", "rig", "classifier", "arm", "teleop"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0" }]

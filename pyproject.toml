@@ -36,6 +36,12 @@ rig = [
 classifier = [
     "onnxruntime>=1.17",
 ]
+# Talking to the arms' Feetech STS3215 servos through their USB bus adapters:
+# the vendor SDK and pyserial, nothing else.
+arm = [
+    "feetech-servo-sdk>=1.0",
+    "pyserial>=3.5",
+]
 # Teleoperation and demonstration recording with the leader arm. Heavy and
 # deliberately opt-in -- see docs/APPROACH.md for when this is worth it.
 teleop = [

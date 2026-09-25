@@ -73,6 +73,39 @@ class RestlessStream(WebcamStream):
         return True, frame
 
 
+class WristCamera:
+    """A small wrist camera: a token zoom range, so brightness is the wiggle."""
+
+    usb_id = "2993:0858"
+
+    def __init__(self) -> None:
+        self.current = {"zoom": 0, "brightness": 0, "saturation": 64}
+
+    def ranges(self):
+        from trashdrop.camera.uvc import ControlRange
+
+        return {
+            "zoom": ControlRange(0, 3, 1, 0),
+            "brightness": ControlRange(-128, 127, 1, 0),
+            "saturation": ControlRange(0, 128, 1, 64),
+        }
+
+    def get(self, name: str) -> int:
+        return self.current[name]
+
+    def set(self, name: str, value: int) -> None:
+        self.current[name] = value
+
+
+class WristStream(WebcamStream):
+    """Frames from the wrist camera: they follow its brightness."""
+
+    def read(self):
+        frame = self.base.astype(np.float32) + self.device.current["brightness"] * 0.5
+        noisy = frame + self.rng.normal(0, 2, frame.shape)
+        return True, np.clip(noisy, 0, 255).astype(np.uint8)
+
+
 class IdentityTests(unittest.TestCase):
     def test_the_webcam_stream_is_recognised(self) -> None:
         camera, device = fake_camera()
@@ -118,6 +151,17 @@ class IdentityTests(unittest.TestCase):
             find_stream_index(camera, open_stream, log=lambda *_: None)
         self.assertIn("index 0", str(caught.exception))
         self.assertIn("index 1", str(caught.exception))
+
+    def test_a_camera_without_real_zoom_is_found_by_its_brightness(self) -> None:
+        wrist = WristCamera()
+        verdict, detail = stream_follows_camera(WristStream(wrist), wrist, settle_frames=1)
+        self.assertTrue(verdict, detail)
+        self.assertIn("brightness", detail)
+        self.assertEqual(wrist.current["brightness"], 0, "brightness must be put back")
+
+        verdict, detail = stream_follows_camera(LaptopStream(wrist), wrist, settle_frames=1)
+        self.assertIs(verdict, False, detail)
+        self.assertEqual(wrist.current, {"zoom": 0, "brightness": 0, "saturation": 64})
 
 
 if __name__ == "__main__":
