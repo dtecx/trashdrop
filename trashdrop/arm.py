@@ -78,6 +78,15 @@ class Arm:
             return 100.0 * (ticks - limits.low) / (limits.high - limits.low)
         return (ticks - (limits.low + limits.high) / 2) * DEG_PER_TICK
 
+    def limits_degrees(self) -> dict[str, tuple[float, float]]:
+        """Each joint's usable range in degrees, margin included (gripper left out)."""
+
+        return {
+            joint: (self.from_ticks(joint, limits.low + LIMIT_MARGIN), self.from_ticks(joint, limits.high - LIMIT_MARGIN))
+            for joint, limits in self.limits.items()
+            if joint != GRIPPER
+        }
+
     def pose(self) -> dict[str, float]:
         """Where every joint is now, in degrees (gripper: percent open)."""
 

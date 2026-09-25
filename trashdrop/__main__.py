@@ -512,6 +512,50 @@ def _cmd_arm_pick(args: argparse.Namespace) -> int:
     return 0 if carried else 2
 
 
+def _cmd_arm_where(args: argparse.Namespace) -> int:
+    from .kinematics import Kinematics
+
+    arm = _open_arm(args.arm)
+    try:
+        pose = arm.pose()
+    finally:
+        arm.bus.close()
+    kinematics = Kinematics()
+    x, y, z = kinematics.tcp(pose) * 100
+    fingers, _ = kinematics.pointing(pose)
+    print(f"{arm.name}: TCP at x {x:.1f}  y {y:.1f}  z {z:.1f} cm   (the arm's own frame: x forward, y left, z up)")
+    down = "  -- straight down" if fingers[2] < -0.98 else ""
+    print(f"    fingers point ({fingers[0]:+.2f}, {fingers[1]:+.2f}, {fingers[2]:+.2f}){down}")
+    return 0
+
+
+def _cmd_arm_reach(args: argparse.Namespace) -> int:
+    import numpy as np
+
+    from .kinematics import Kinematics
+
+    if args.z < 3.0 and not args.low:
+        print("below 3 cm the fingertips are within 2 cm of the table; add --low if that is meant")
+        return 1
+    kinematics = Kinematics()
+    arm = _open_arm(args.arm)
+    try:
+        solution = kinematics.solve(
+            np.array([args.x, args.y, args.z]) / 100, yaw_deg=args.yaw, start=arm.pose(), limits=arm.limits_degrees()
+        )
+        if not solution.reachable:
+            print(
+                f"{arm.name}: cannot put the TCP at ({args.x:g}, {args.y:g}, {args.z:g}) cm with the fingers straight down; "
+                f"the closest is {solution.position_error_m * 100:.1f} cm off. Fingers-down reach is about 10-28 cm "
+                "in front of the base, below about 8 cm."
+            )
+            return 1
+        print(f"{arm.name}: joints for that point: " + ", ".join(f"{j} {v:.1f}" for j, v in solution.degrees.items()))
+        return _move_and_report(arm, solution.degrees, args.speed)
+    finally:
+        arm.bus.close()
+
+
 def _cmd_arm_save(args: argparse.Namespace) -> int:
     from .arm import POSES_FILE, save_pose
 
@@ -908,6 +952,18 @@ def build_parser() -> argparse.ArgumentParser:
     arm_pick.add_argument("--speed", type=float, default=None, help="deg/s, capped by max_speed in rig.toml")
     arm_pick.add_argument("--no-check", action="store_true", help="carry on even if the jaws closed on nothing")
     arm_pick.set_defaults(func=_cmd_arm_pick)
+    arm_where = arm_sub.add_parser("where", help="where the gripper is now, cm in the arm's frame; moves nothing")
+    arm_where.add_argument("arm")
+    arm_where.set_defaults(func=_cmd_arm_where)
+    arm_reach = arm_sub.add_parser("reach", help="put the gripper at x y z cm (arm's frame), fingers down")
+    arm_reach.add_argument("arm")
+    arm_reach.add_argument("x", type=float, help="cm forward of the base")
+    arm_reach.add_argument("y", type=float, help="cm to the arm's left")
+    arm_reach.add_argument("z", type=float, help="cm above the bottom of the base")
+    arm_reach.add_argument("--yaw", type=float, default=None, help="deg: the direction the jaw closes along")
+    arm_reach.add_argument("--speed", type=float, default=None)
+    arm_reach.add_argument("--low", action="store_true", help="allow a TCP below 3 cm")
+    arm_reach.set_defaults(func=_cmd_arm_reach)
     arm_hold = arm_sub.add_parser("hold", help="torque on where the arm is; moves nothing")
     arm_hold.add_argument("arm")
     arm_hold.set_defaults(func=_cmd_arm_hold)

@@ -8,7 +8,7 @@
 out/
 build/
 frames/
-models/
+/models/
 artifacts/
 *.mp4
 *.png
