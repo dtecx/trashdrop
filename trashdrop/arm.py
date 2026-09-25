@@ -1,10 +1,11 @@
 """Driving one real SO-101: slow, smooth, interruptible moves.
 
 The servos count in ticks, 4096 to a turn. The arms were calibrated with
-LeRobot, which leaves two things in each motor's EEPROM: a homing offset that
-makes the calibration pose read 2047 on every joint, and the joint's limits.
-People read and write degrees from that calibration pose instead -- and the
-gripper as percent open -- and this module converts.
+LeRobot, which leaves each joint's homing offset and range in the motor's
+EEPROM. People read and write LeRobot's own units instead, so that a pose here
+means the same as in ``lerobot-teleoperate`` or a recorded dataset: degrees
+from the middle of each joint's calibrated range (LeRobot's ``use_degrees``),
+and the gripper 0..100 across its range, 0 closed.
 
 Three rules keep a real arm, and the people next to it, safe:
 
@@ -30,9 +31,8 @@ from pathlib import Path
 from .servo import MOTORS
 from .station import repository_root
 
-TICKS_PER_TURN = 4096
-CALIBRATION_TICK = 2047  # where LeRobot's homing puts the calibration pose
-DEG_PER_TICK = 360.0 / TICKS_PER_TURN
+# LeRobot divides by the largest tick value, not by ticks per turn.
+DEG_PER_TICK = 360.0 / 4095
 LIMIT_MARGIN = 20  # ticks kept clear of each EEPROM limit, ~1.8 degrees
 RATE_HZ = 50
 MIN_JERK_PEAK = 1.875  # peak speed of a minimum-jerk move, relative to its average
@@ -63,20 +63,20 @@ class Arm:
     # --- units ---------------------------------------------------------------
 
     def to_ticks(self, joint: str, value: float) -> int:
-        """Degrees from the calibration pose (gripper: percent open), clamped."""
+        """LeRobot degrees (gripper: 0..100), clamped inside the joint's range."""
 
         limits = self.limits[joint]
         if joint == GRIPPER:
             ticks = limits.low + value / 100.0 * (limits.high - limits.low)
         else:
-            ticks = CALIBRATION_TICK + value / DEG_PER_TICK
+            ticks = (limits.low + limits.high) / 2 + value / DEG_PER_TICK
         return int(round(min(max(ticks, limits.low + LIMIT_MARGIN), limits.high - LIMIT_MARGIN)))
 
     def from_ticks(self, joint: str, ticks: int) -> float:
         limits = self.limits[joint]
         if joint == GRIPPER:
             return 100.0 * (ticks - limits.low) / (limits.high - limits.low)
-        return (ticks - CALIBRATION_TICK) * DEG_PER_TICK
+        return (ticks - (limits.low + limits.high) / 2) * DEG_PER_TICK
 
     def pose(self) -> dict[str, float]:
         """Where every joint is now, in degrees (gripper: percent open)."""
@@ -197,10 +197,12 @@ def save_pose(arm: str, name: str, values: dict[str, float], path: Path = POSES_
     poses = load_poses(path)
     poses.setdefault(arm, {})[name] = values
     lines = [
-        "# Named poses, per arm: degrees from the pose the arm was calibrated in,",
-        "# the gripper in percent open. Edit freely. To record one, pose the limp",
-        "# arm by hand and run:   uv run trashdrop arm save left rest",
-        "# and to play it back:   uv run trashdrop arm go left rest",
+        "# Named poses, per arm, in LeRobot's units: degrees from the middle of each",
+        "# joint's calibrated range, the gripper 0..100 (0 = closed). Edit freely.",
+        "# To record one, pose the limp arm by hand and run:",
+        "#     uv run trashdrop arm save left rest",
+        "# and to play it back:",
+        "#     uv run trashdrop arm go left rest",
     ]
     for arm_name in sorted(poses):
         for pose_name in sorted(poses[arm_name]):

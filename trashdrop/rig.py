@@ -6,9 +6,10 @@ port names and OpenCV indices are looked up from those every time and never
 written down, because they change.
 
 Which arm is left and which is right cannot be read off a USB device, so
-``trashdrop rig identify`` asks a person to move the left arm by hand and
-watches which bus -- and which wrist camera -- sees it move. Left and right
-are the arms' own: stand behind them, looking where they reach.
+``trashdrop rig identify`` asks a person to move each joint of each arm by
+hand in turn and watches which adapter, and which motor on it, answers. That
+also proves every motor carries the ID LeRobot's setup gives its joint. Left
+and right are the arms' own: stand behind them, looking where they reach.
 """
 
 from __future__ import annotations
@@ -17,8 +18,6 @@ import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-
-import numpy as np
 
 from .station import repository_root
 
@@ -32,8 +31,6 @@ DEFAULT_LABELS = {"left": "F01", "right": "F02"}
 DEFAULT_MAX_SPEED = 30.0
 # A deliberate push by hand, well above servo read noise: ~13 degrees.
 MOVE_TICKS = 150
-# The moving arm's wrist camera must see this much more change than the other.
-CAMERA_MARGIN = 1.5
 
 
 @dataclass
@@ -105,56 +102,58 @@ def overhead_usb_id(path: Path = RIG_FILE) -> str | None:
     return load_rig(path).overhead if path.is_file() else None
 
 
-# --- identify: which bus and which wrist camera belong to the front arm -----
+# --- identify: which adapter and which motor is which joint of which arm -------
+
+# What to tell a person to do with each joint, in the order the wizard asks.
+JOINT_HINTS = {
+    "shoulder_pan": "turn the whole arm left or right at its base",
+    "shoulder_lift": "raise or lower the upper arm at the shoulder",
+    "elbow_flex": "bend the elbow",
+    "wrist_flex": "tilt the wrist up or down",
+    "wrist_roll": "twist the wrist",
+    "gripper": "open or close the jaw",
+}
+STILL_TICKS = 15  # below this between polls, a joint counts as still
 
 
 def first_moved(buses: dict, seconds: float, *, poll: float = 0.05, clock=time.monotonic,
-                sleep=time.sleep, on_poll=None) -> tuple[str, str] | None:
+                sleep=time.sleep) -> tuple[str, str] | None:
     """(bus key, joint) of the first joint pushed MOVE_TICKS from where it started.
 
-    ``buses`` maps a key to anything with ``positions()``. ``on_poll`` is
-    called once per round, so the caller can sample cameras meanwhile.
+    ``buses`` maps a key to anything with ``positions()``. Moving one joint by
+    hand nudges its neighbours a little, so of the joints past the threshold
+    the one that moved furthest is reported.
     """
 
     start = {key: bus.positions() for key, bus in buses.items()}
     deadline = clock() + seconds
     while clock() < deadline:
-        if on_poll is not None:
-            on_poll()
+        moved = []
         for key, bus in buses.items():
             for joint, value in bus.positions().items():
-                if abs(value - start[key][joint]) >= MOVE_TICKS:
-                    return key, joint
+                shift = abs(value - start[key][joint])
+                if shift >= MOVE_TICKS:
+                    moved.append((shift, key, joint))
+        if moved:
+            _, key, joint = max(moved)
+            return key, joint
         sleep(poll)
     return None
 
 
-class MotionMeter:
-    """How much each stream's picture has changed since it was first sampled."""
+def wait_until_still(buses: dict, *, calm: float = 0.8, limit: float = 8.0, poll: float = 0.1,
+                     clock=time.monotonic, sleep=time.sleep) -> bool:
+    """Wait until no joint has moved for ``calm`` seconds, so the next question starts clean."""
 
-    def __init__(self, streams: dict) -> None:
-        self.streams = streams
-        self.first: dict[str, np.ndarray] = {}
-        self.peak = {key: 0.0 for key in streams}
-
-    def sample(self) -> None:
-        import cv2
-
-        for key, capture in self.streams.items():
-            ok, frame = capture.read()
-            if not ok or frame is None:
-                continue
-            small = cv2.resize(frame, (160, 90), interpolation=cv2.INTER_AREA).astype(np.float32)
-            if key not in self.first:
-                self.first[key] = small
-            else:
-                self.peak[key] = max(self.peak[key], float(np.abs(small - self.first[key]).mean()))
-
-    def mover(self) -> str | None:
-        """The stream that changed clearly more than every other, if one did."""
-
-        if len(self.peak) < 2:
-            return next(iter(self.peak), None) if self.peak and max(self.peak.values()) > 0 else None
-        ranked = sorted(self.peak.items(), key=lambda item: item[1], reverse=True)
-        (best, top), (_, runner_up) = ranked[0], ranked[1]
-        return best if top >= CAMERA_MARGIN * max(runner_up, 1.0) else None
+    last = {key: bus.positions() for key, bus in buses.items()}
+    quiet_since = clock()
+    deadline = clock() + limit
+    while clock() < deadline:
+        sleep(poll)
+        now = {key: bus.positions() for key, bus in buses.items()}
+        if any(abs(now[key][joint] - last[key][joint]) > STILL_TICKS for key in now for joint in now[key]):
+            quiet_since = clock()
+        last = now
+        if clock() - quiet_since >= calm:
+            return True
+    return False

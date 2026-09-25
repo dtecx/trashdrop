@@ -36,7 +36,7 @@ The real arms and cameras (`rig.toml` says which USB device is which):
 
 ```bash
 uv sync --inexact --extra rig --extra arm
-uv run trashdrop rig identify            # move the front arm by hand when asked
+uv run trashdrop rig identify            # move each joint of each arm by hand when asked
 uv run trashdrop rig check               # every arm and camera answering, a snapshot each
 uv run trashdrop arm status              # both arms, every joint in degrees; moves nothing
 uv run trashdrop arm save left rest      # pose the limp arm by hand, record it in poses.toml

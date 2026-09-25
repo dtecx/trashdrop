@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 from trashdrop.camera.uvc import UvcCamera
-from trashdrop.rig import MOVE_TICKS, ArmDevices, MotionMeter, Rig, first_moved, load_rig, save_rig
+from trashdrop.rig import MOVE_TICKS, ArmDevices, Rig, first_moved, load_rig, save_rig, wait_until_still
 from trashdrop.servo import decode_offset
 
 
@@ -72,15 +72,29 @@ class IdentifyTests(unittest.TestCase):
         buses = {"a": FakeBus({3: ("shoulder_pan", 6)}), "b": FakeBus({5: ("elbow_flex", -9)})}
         self.assertIsNone(first_moved(buses, 2.0, clock=clock, sleep=clock.sleep))
 
-    def test_the_camera_that_swung_with_the_arm_is_picked(self) -> None:
-        meter = MotionMeter({"2993:0858": None, "10bb:2b08": None})
-        meter.peak = {"2993:0858": 41.0, "10bb:2b08": 7.5}
-        self.assertEqual(meter.mover(), "2993:0858")
+    def test_the_joint_that_moved_most_is_reported_not_a_nudged_neighbour(self) -> None:
+        # Bending an elbow by hand drags the shoulder along a little.
+        clock = FakeClock()
+        bus = FakeBus({3: ("elbow_flex", MOVE_TICKS + 200)})
+        bus.moves_extra = {3: ("shoulder_pan", MOVE_TICKS + 10)}
+        original = bus.positions
 
-    def test_two_cameras_that_changed_alike_are_not_guessed_between(self) -> None:
-        meter = MotionMeter({"2993:0858": None, "10bb:2b08": None})
-        meter.peak = {"2993:0858": 20.0, "10bb:2b08": 17.0}
-        self.assertIsNone(meter.mover())
+        def positions():
+            result = original()
+            if bus.polls == 3:
+                joint, ticks = bus.moves_extra[3]
+                bus.current[joint] += ticks
+                result[joint] = bus.current[joint]
+            return result
+
+        bus.positions = positions
+        self.assertEqual(first_moved({"arm": bus}, 5.0, clock=clock, sleep=clock.sleep), ("arm", "elbow_flex"))
+
+    def test_the_next_question_waits_for_the_arm_to_settle(self) -> None:
+        clock = FakeClock()
+        wobbling = FakeBus({n: ("elbow_flex", 40 if n % 2 else -40) for n in range(2, 12)})
+        self.assertTrue(wait_until_still({"arm": wobbling}, calm=0.5, limit=5.0, clock=clock, sleep=clock.sleep))
+        self.assertGreater(clock.now, 1.0, "it waited out the wobble before calling the arm still")
 
 
 class CameraChoiceTests(unittest.TestCase):

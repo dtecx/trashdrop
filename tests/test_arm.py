@@ -12,7 +12,6 @@ import unittest
 from pathlib import Path
 
 from trashdrop.arm import (
-    CALIBRATION_TICK,
     DEG_PER_TICK,
     LIMIT_MARGIN,
     RATE_HZ,
@@ -160,9 +159,12 @@ class MoveTests(unittest.TestCase):
 
 
 class UnitTests(unittest.TestCase):
-    def test_degrees_are_from_the_calibration_pose(self) -> None:
+    def test_degrees_are_lerobots_from_the_middle_of_the_range(self) -> None:
         arm = make_arm(FakeBus())
-        self.assertEqual(arm.to_ticks("elbow_flex", 0.0), CALIBRATION_TICK)
+        low, high = LIMITS[MOTORS["elbow_flex"]]
+        self.assertEqual(arm.to_ticks("elbow_flex", 0.0), (low + high) // 2)
+        # LeRobot: degrees = (ticks - mid) * 360 / 4095
+        self.assertAlmostEqual(arm.from_ticks("elbow_flex", (low + high) // 2 + 4095 // 4), 90.0, delta=0.1)
         self.assertAlmostEqual(arm.from_ticks("elbow_flex", arm.to_ticks("elbow_flex", 37.0)), 37.0, delta=0.1)
 
     def test_gripper_is_percent_open_within_its_limits(self) -> None:

@@ -295,82 +295,72 @@ def _cmd_rig_check(args: argparse.Namespace) -> int:
 
 
 def _cmd_rig_identify(args: argparse.Namespace) -> int:
+    """Move each joint of each arm by hand when asked; learn which adapter and motor it is."""
+
     import time
 
-    from .camera import UvcCamera
-    from .camera.identify import find_stream_index
-    from .dataset.capture import open_camera
-    from .rig import RIG_FILE, MotionMeter, first_moved, load_rig, save_rig
-    from .servo import ServoBus
+    from .rig import JOINT_HINTS, RIG_FILE, first_moved, load_rig, save_rig, wait_until_still
+    from .servo import MOTORS, ServoBus
 
     rig = load_rig()
     buses = _servo_buses()
     if len(buses) != 2:
         print(f"expected two arms with six answering servos each, found {len(buses)}: {buses or 'none'}")
         return 1
-
-    wrist_ids = []
-    if sys.platform == "darwin":
-        from .camera.iokit import list_devices
-
-        wrist_ids = [f"{v:04x}:{p:04x}" for v, p in list_devices() if f"{v:04x}:{p:04x}" != rig.overhead]
-    streams = {}
-    if len(wrist_ids) == 2 and not args.no_video:
-        for usb_id in wrist_ids:
-            try:
-                camera = UvcCamera.find(usb_id)
-                index = find_stream_index(camera, lambda index: open_camera(index, 640, 480), log=lambda *_: None)
-                streams[usb_id] = open_camera(index, 640, 480)
-            except Exception as error:
-                print(f"wrist camera {usb_id}: no video ({error}); cameras will not be assigned")
-                streams = {}
-                break
-    elif not args.no_video:
-        print(f"expected two wrist cameras besides the overhead {rig.overhead}, found {wrist_ids}")
-
     opened = {serial: ServoBus(port) for serial, port in buses.items()}
     try:
         stiff = [serial for serial, bus in opened.items() if any(m.torque for m in bus.state())]
         if stiff:
-            print(f"torque is ON on {', '.join(stiff)}: that arm cannot be moved by hand. Power it off and on.")
-            return 1
-        meter = MotionMeter(streams)
-        meter.sample()
-        print(
-            f"\nNow move the LEFT arm by hand ({rig.arms['left'].label}; left as seen from behind the arms,\n"
-            f"looking where they reach). Push any joint a good way and keep moving it for a\n"
-            f"second or two. Waiting {args.seconds:.0f} s..."
-        )
-        moved = first_moved(opened, args.seconds, on_poll=meter.sample if streams else None)
-        if moved is None:
-            print("nothing moved. Run it again and push a joint further (about 15 degrees is enough).")
-            return 1
-        left_bus, joint = moved
-        print(f"the {joint} of adapter {left_bus} moved: that is the left arm")
-        until = time.monotonic() + 1.5
-        while streams and time.monotonic() < until:
-            meter.sample()
+            print("an arm is holding its pose (torque on). It goes limp in 3 s -- hold it if it is in the air")
+            time.sleep(3)
+            for serial in stiff:
+                for motor in MOTORS.values():
+                    opened[serial].write(motor, "torque_enable", 0)
+
+        joints = ["gripper"] if args.quick else list(JOINT_HINTS)
+        found: dict[tuple[str, str], tuple[str, str]] = {}
+        for side in ("left", "right"):
+            label = rig.arms[side].label
+            print(f"\n{side.upper()} arm ({label}) -- left and right as seen from behind the arms")
+            for joint in joints:
+                wait_until_still(opened)
+                print(f"  {joint}: {JOINT_HINTS[joint]} (about 20 degrees is plenty)...", end="", flush=True)
+                moved = first_moved(opened, args.seconds)
+                if moved is None:
+                    print(" nothing moved; skipped")
+                    continue
+                serial, moved_joint = moved
+                verdict = "ok" if moved_joint == joint else f"WRONG: that was motor {MOTORS[moved_joint]}, {moved_joint}"
+                print(f" adapter {serial}, motor {MOTORS[moved_joint]} -- {verdict}")
+                found[(side, joint)] = (serial, moved_joint)
     finally:
         for bus in opened.values():
             bus.close()
-        for capture in streams.values():
-            capture.release()
 
-    right_bus = next(serial for serial in buses if serial != left_bus)
-    left_camera = meter.mover() if streams else None
-    if streams:
-        changes = ", ".join(f"{key} {value:.1f}" for key, value in meter.peak.items())
-        print(f"wrist cameras, how much each picture changed: {changes}")
-        if left_camera is None:
-            print("neither wrist camera clearly moved with the arm; cameras kept as they were")
-    right_camera = next((usb_id for usb_id in wrist_ids if usb_id != left_camera), None) if left_camera else None
-    for key, bus, camera in (("left", left_bus, left_camera), ("right", right_bus, right_camera)):
-        rig.arms[key].bus = bus
-        if camera:
-            rig.arms[key].camera = camera
+    problems = []
+    sides = {}
+    for side in ("left", "right"):
+        serials = {serial for (s, _), (serial, _) in found.items() if s == side}
+        if len(serials) != 1:
+            problems.append(f"the {side} arm's joints turned up on {len(serials)} adapters: {sorted(serials)}")
+        else:
+            sides[side] = serials.pop()
+    if len(sides) == 2 and sides["left"] == sides["right"]:
+        problems.append("both arms' joints turned up on the same adapter -- was the same arm moved twice?")
+    wrong = [f"{side} {joint} is motor {MOTORS[got]}" for (side, joint), (_, got) in found.items() if got != joint]
+    if wrong:
+        problems.append("motor IDs do not follow LeRobot's setup (" + "; ".join(wrong) + ")."
+                        " Fix with lerobot-setup-motors before driving the arm")
+    if problems:
+        print("\nrig.toml NOT changed:\n  - " + "\n  - ".join(problems))
+        return 1
+    for side, serial in sides.items():
+        rig.arms[side].bus = serial
     save_rig(rig)
-    print(f"\nwrote {RIG_FILE}:\n")
-    print(RIG_FILE.read_text(encoding="utf-8"))
+    print(f"\nall answered as expected. Wrote {RIG_FILE}:")
+    for side in ("left", "right"):
+        devices = rig.arms[side]
+        print(f"  {side:5s} ({devices.label}): adapter {devices.bus}, wrist camera {devices.camera or 'not set'}")
     return 0
 
 
@@ -816,9 +806,11 @@ def build_parser() -> argparse.ArgumentParser:
     rig_check = rig_sub.add_parser("check", help="every device in rig.toml plugged in and answering; a snapshot per camera")
     rig_check.add_argument("--no-video", action="store_true", help="skip opening the cameras' video")
     rig_check.set_defaults(func=_cmd_rig_check)
-    rig_identify = rig_sub.add_parser("identify", help="move the front arm by hand; writes rig.toml")
-    rig_identify.add_argument("--seconds", type=float, default=60.0)
-    rig_identify.add_argument("--no-video", action="store_true", help="assign the arms only, not their cameras")
+    rig_identify = rig_sub.add_parser(
+        "identify", help="move each joint of each arm by hand when asked; learns which adapter is which arm"
+    )
+    rig_identify.add_argument("--seconds", type=float, default=30.0, help="time allowed for each joint")
+    rig_identify.add_argument("--quick", action="store_true", help="only the gripper of each arm")
     rig_identify.set_defaults(func=_cmd_rig_identify)
 
     arm = sub.add_parser("arm", help="the real arms: status, named poses, slow moves (left / right / F01 / F02)")
