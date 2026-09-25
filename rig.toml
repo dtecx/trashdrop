@@ -11,6 +11,7 @@ label = "F01"          # written on the arm
 bus = "5AAF219965"       # servo adapter serial number
 camera = "2993:0858"      # wrist camera
 max_speed = 30             # degrees per second, every move
+sheet = { x = 24.65, y = -19.64, yaw = -92.31, table_z = -2.42 }  # from `rig touch`: cm, deg
 
 [right]
 label = "F02"          # written on the arm
