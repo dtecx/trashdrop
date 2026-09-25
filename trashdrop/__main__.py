@@ -251,7 +251,16 @@ def _cmd_rig_check(args: argparse.Namespace) -> int:
 
     print()
     snapshots = args.out / "rig"
-    for role, usb_id in rig.cameras().items():
+    roles = list(rig.cameras().items())
+    if sys.platform == "darwin":
+        from .camera.iokit import list_devices
+
+        named_cameras = {usb_id for _, usb_id in roles}
+        for vendor, product in list_devices():
+            usb_id = f"{vendor:04x}:{product:04x}"
+            if usb_id not in named_cameras:
+                roles.append(("unassigned", usb_id))
+    for role, usb_id in roles:
         try:
             camera = UvcCamera.find(usb_id)
         except Exception as error:
@@ -262,17 +271,22 @@ def _cmd_rig_check(args: argparse.Namespace) -> int:
             print(f"{role} camera {usb_id}: on USB")
             continue
         try:
+            from .camera.tune import sharpness
+
             index = find_stream_index(camera, lambda index: open_camera(index, 640, 480), log=lambda *_: None)
             capture = open_camera(index, 640, 480)
-            ok_frame, frame = capture.read()
+            for _ in range(10):  # let exposure settle
+                ok_frame, frame = capture.read()
             capture.release()
             snapshots.mkdir(parents=True, exist_ok=True)
-            target = snapshots / f"{role.replace(' ', '_')}.jpg"
+            name = role if role != "unassigned" else f"unassigned_{usb_id}"
+            target = snapshots / f"{name.replace(' ', '_').replace(':', '-')}.jpg"
             if ok_frame:
                 import cv2
 
                 cv2.imwrite(str(target), frame)
-            print(f"{role} camera {usb_id}: stream index {index}  snapshot -> {target}")
+            detail = f"sharpness {sharpness(frame):.0f}  " if ok_frame else ""
+            print(f"{role} camera {usb_id}: stream index {index}  {detail}snapshot -> {target}")
         except Exception as error:
             print(f"{role} camera {usb_id}: on USB, but no video: {error}")
             ok = False
@@ -354,6 +368,41 @@ def _cmd_rig_identify(args: argparse.Namespace) -> int:
     save_rig(rig)
     print(f"\nwrote {RIG_FILE}:\n")
     print(RIG_FILE.read_text(encoding="utf-8"))
+    return 0
+
+
+def _cmd_camera_sharpness(args: argparse.Namespace) -> int:
+    """A live sharpness number while a lens is turned by hand."""
+
+    import time
+
+    from .camera import UvcCamera
+    from .camera.identify import find_stream_index
+    from .camera.tune import sharpness
+    from .dataset.capture import open_camera
+    from .rig import overhead_usb_id
+
+    camera = UvcCamera.find(args.usb_id or overhead_usb_id())
+    print(f"finding the video of {camera.usb_id} (its picture flickers for a moment)...")
+    index = find_stream_index(camera, lambda index: open_camera(index, 640, 480), log=lambda *_: None)
+    capture = open_camera(index, 640, 480)
+    print("point it at the marker sheet's star from the distance it will work at, then turn the lens")
+    print("slowly. The number peaks when the picture is sharpest. Ctrl+C to stop.\n")
+    best = 0.0
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                continue
+            value = sharpness(frame)
+            best = max(best, value)
+            bar = "#" * int(40 * value / best) if best else ""
+            print(f"\r  sharpness {value:7.0f}   best so far {best:7.0f}   {bar:<40s}", end="", flush=True)
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        print()
+    finally:
+        capture.release()
     return 0
 
 
@@ -645,6 +694,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     camera = sub.add_parser("camera", help="lock focus/exposure/white balance via camera.toml")
     camera_sub = camera.add_subparsers(dest="camera_command", required=True)
+
+    sharp = camera_sub.add_parser("sharpness", help="live sharpness number while turning a lens by hand")
+    sharp.add_argument("--usb-id", default=None, help="vvvv:pppp; default: the overhead camera")
+    sharp.set_defaults(func=_cmd_camera_sharpness)
 
     show = camera_sub.add_parser("show", help="every control the webcam offers, with current values")
     show.add_argument("--usb-id", default=None, help="vvvv:pppp, if several webcams are plugged in")

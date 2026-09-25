@@ -1,0 +1,15 @@
+# Which USB device is which part of the cell. Devices are named by their
+# serial number or USB id, never by /dev name or camera index: those change
+# when a cable moves to another socket. Written by `trashdrop rig identify`;
+# `trashdrop rig check` verifies everything is plugged in and answering.
+
+[overhead]
+camera = "046d:08e5"
+
+[front]
+# bus = unknown
+# camera = unknown
+
+[back]
+# bus = unknown
+# camera = unknown
