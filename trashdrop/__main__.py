@@ -697,13 +697,18 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     from .placement import Placement
     from .rig import load_rig
     from .sorter import draw_detection, draw_plan, draw_zone, execute_pick, find_item, plan_pick, reach_mask, zone_mask
-    from .station import repository_root
+    from .station import FLAT_PINCH_WIDTH, repository_root
 
     rig = load_rig()
     placements = {name: Placement(*devices.sheet) for name, devices in rig.arms.items() if devices.sheet}
     if not placements:
         print("no arm has touched the sheet yet: run `uv run trashdrop rig touch left` first")
         return 1
+    for name in placements:
+        devices = rig.arms[name]
+        if devices.wrist_roll_offset and any(corner not in devices.touch_poses for corner in devices.touches):
+            print(f"WARNING: the {name} arm touched its corners before its wrist zero was measured, so its\n"
+                  f"  grasps land up to 1.6 cm off. Touch them again: uv run trashdrop rig touch {name} --tape")
     sheet_file = repository_root() / "camera_sheet.json"
     if not sheet_file.is_file():
         print("the camera has not found the sheet yet: run `uv run trashdrop camera sheet` first")
@@ -774,6 +779,10 @@ def _cmd_pick(args: argparse.Namespace) -> int:
                 f"{plan.open_percent:.0f} %, fixed finger to ({plan.target_cm[0]:.1f}, {plan.target_cm[1]:.1f}) cm "
                 f"in its frame, fingers leaning {plan.lean_deg:.0f} deg (red dot in out/pick_plan.jpg)"
             )
+            if plan.grasp_plan.width_m > FLAT_PINCH_WIDTH:
+                print(f"  careful: wider than {FLAT_PINCH_WIDTH * 100:.1f} cm. Opened that far the moving jaw rides "
+                      "high and comes down\n  on top of anything low (a pack lying flat): expect a miss unless "
+                      "the item is tall.")
             if input("  Enter = go, s = skip: ").strip().lower() == "s":
                 continue
             execute_pick(arms[plan.arm], plan, poses[plan.arm]["neutral"], kinematics=kinematics[plan.arm],

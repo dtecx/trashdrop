@@ -41,16 +41,18 @@ DESCENT_SPEED = 15.0  # deg/s for the last few centimetres
 # reach from about 10 cm, fingers leaning 45 degrees to about 42 cm.
 RING_CM = (9.0, 42.0)
 # Tip opening of the SO-101 jaw against the gripper joint angle (CAD, see
-# station.py), and the joint's travel over the LeRobot 0..100 range.
+# station.py), and the joint's travel over the LeRobot 0..100 range. Past the
+# last entry the jaw mostly swings up, not out: it is never opened further,
+# where closing would bring it down from high above onto the item.
 _OPENING_M = (0.032, 0.046, 0.060, 0.074, 0.087)
 _JAW_RAD = (0.2, 0.4, 0.6, 0.8, 1.0)
 _JAW_RANGE_RAD = (-0.17, 1.75)
 
 
 def gripper_percent_for(opening_m: float) -> float:
-    """LeRobot gripper percent that opens the fingertips about ``opening_m``."""
+    """LeRobot gripper percent that opens the fingertips about ``opening_m``, at most the table's widest."""
 
-    angle = float(np.interp(opening_m, _OPENING_M, _JAW_RAD, right=_JAW_RANGE_RAD[1]))
+    angle = float(np.interp(opening_m, _OPENING_M, _JAW_RAD))
     low, high = _JAW_RANGE_RAD
     return float(np.clip(100.0 * (angle - low) / (high - low), 0.0, 100.0))
 
@@ -312,41 +314,18 @@ def drop_pose(arm: str) -> dict[str, float]:
 MISS_BELOW = 4.0  # percent: jaws told to close that stop below this hold nothing
 RELEASE_OPEN = 60.0
 
-# An arm reaching out hangs a little below its goal under its own weight, and
-# the touches that found the table were made limp, without that sag. The hover
-# above the item measures it in the air, where nothing can be hit, and the
-# grasp goal is raised by as much, so the fingertips come down where planned.
-SAG_JOINTS = ("shoulder_lift", "elbow_flex", "wrist_flex")
-SAG_LIMIT_DEG = 4.0  # more than this is not sag: something is wrong, correct nothing
+# The descent goes where the plan says, uncorrected. Raising it by the sag the
+# hover showed was tried at the venue: the hover came up 2-7 mm short, but the
+# grasp itself barely sags, and the fingertips ended 5 mm higher than planned.
+# Where they really are is reported instead, from the joints' own readings.
 SETTLE_S = 0.5
-STILL_DEG = 0.3  # a joint that moved less than this in 0.2 s has settled
-
-
-def measure_sag(arm, goal: dict[str, float], sleep) -> tuple[dict[str, float], dict[str, float]]:
-    """(the pose the arm settled in, degrees each loaded joint hangs below ``goal``).
-
-    The sag is empty when the arm has not settled or hangs implausibly far off:
-    then nothing is corrected.
-    """
-
-    sleep(SETTLE_S)
-    first = arm.pose()
-    sleep(0.2)
-    present = arm.pose()
-    if any(abs(present[joint] - first[joint]) > STILL_DEG for joint in SAG_JOINTS):
-        return present, {}
-    sag = {joint: goal[joint] - present[joint] for joint in SAG_JOINTS}
-    if any(abs(value) > SAG_LIMIT_DEG for value in sag.values()):
-        return present, {}
-    return present, sag
 
 
 def execute_pick(arm, plan: PickPlan, neutral: dict[str, float], *, kinematics=None, dry_run: bool = False,
                  sleep=None, log=print) -> bool:
     """Carry out a PickPlan with a real (or fake) Arm; True if something was dropped.
 
-    With ``kinematics`` the hover measures the arm's sag and the descent makes
-    up for it, and the fingertips' real height above the table is reported.
+    With ``kinematics`` the fingertips' real height above the table is reported.
     """
 
     import time
@@ -357,20 +336,13 @@ def execute_pick(arm, plan: PickPlan, neutral: dict[str, float], *, kinematics=N
     arm.move({gripper: plan.open_percent})
     log(f"{arm.name}: above the item")
     arm.move(plan.above)
-    grasp = dict(plan.grasp)
-    if kinematics is not None:
-        present, sag = measure_sag(arm, plan.above, sleep)
-        low_cm = (kinematics.fingertip(plan.above)[2] - kinematics.fingertip(present)[2]) * 100
-        hanging = ", ".join(f"{joint} {value:+.1f}" for joint, value in sag.items()) or "not measured, not corrected"
-        log(f"{arm.name}: hovering {low_cm:.1f} cm below where it was sent (sag, deg: {hanging})")
-        grasp.update({joint: grasp[joint] + value for joint, value in sag.items()})
     if dry_run:
         log(f"{arm.name}: dry run -- hovering over the item for 3 s, then back")
         sleep(3.0)
         arm.move(neutral)
         return False
     log(f"{arm.name}: down")
-    arm.move(grasp, speed=DESCENT_SPEED)
+    arm.move(plan.grasp, speed=DESCENT_SPEED)
     if kinematics is not None and plan.table_cm is not None:
         sleep(SETTLE_S)
         tip_cm = kinematics.fingertip(arm.pose())[2] * 100 - plan.table_cm

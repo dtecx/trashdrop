@@ -182,6 +182,17 @@ MAX_PAYLOAD_KG = 0.25
 # on the pads. MAX_GRASP_WIDTH assumes the tape is there.
 PARALLEL_GRASP_WIDTH = 0.032
 MAX_GRASP_WIDTH = 0.070
+# The same hinge makes the moving jaw ride up as it opens. On the SO-ARM100's
+# jaw meshes (mujoco_menagerie/trs_so_arm100), fingers pointing down, its tip
+# is this far above the fixed fingertip at each gap from the fixed finger:
+#
+#   gap                   3.2 cm   4.6 cm   5.7 cm   6.7 cm   7.7 cm (widest)
+#   moving tip higher by  1.3 cm   2.1 cm   3.2 cm   4.4 cm   7.4 cm
+#
+# Closing, it comes down on top of anything low and wider than about 4.5 cm
+# -- a cigarette pack lying flat, at the venue -- and squeezes it out from
+# under. A taller item of that width can still end up between the fingers.
+FLAT_PINCH_WIDTH = 0.045
 # The TCP sits on the FIXED finger's inner face. That finger comes down this
 # far outside one edge of the item and the moving finger sweeps the item onto
 # it. Aiming the TCP at the item's centre instead lands the fixed finger on top

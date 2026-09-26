@@ -28,6 +28,7 @@ label = "F01"          # written on the arm
 bus = "5AAF219965"       # servo adapter serial number
 camera = "2993:0858"      # wrist camera
 max_speed = 30             # degrees per second, every move
+wrist_roll_offset = -80.0  # model roll = LeRobot roll + this (from `rig roll`)
 touches = { far_left = [33.84, -9.56, -3.33], near_right = [3.63, -35.98, -3.20], near_left = [6.54, -4.97, -0.26] }  # tape corners touched, cm in the arm's frame
 sheet = { x = 19.12, y = -21.70, yaw = -95.36, table_z = 0.88, dz_dx = -0.0950, dz_dy = 0.1037 }  # from `rig touch`: cm, deg, table plane
 
@@ -36,5 +37,6 @@ label = "F02"          # written on the arm
 bus = "5AAF220303"       # servo adapter serial number
 camera = "10bb:2b08"      # wrist camera
 max_speed = 30             # degrees per second, every move
+wrist_roll_offset = 5.0  # model roll = LeRobot roll + this (from `rig roll`)
 touches = { far_right = [33.92, 9.02, -2.36], near_right = [5.62, 3.13, -0.86], near_left = [2.31, 35.26, -2.17] }  # tape corners touched, cm in the arm's frame
 sheet = { x = 17.97, y = 20.73, yaw = -84.12, table_z = -0.47, dz_dx = -0.0436, dz_dy = -0.0453 }  # from `rig touch`: cm, deg, table plane

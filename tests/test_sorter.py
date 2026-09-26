@@ -22,7 +22,6 @@ from trashdrop.placement import Placement  # noqa: E402
 from trashdrop.rig import PickZone  # noqa: E402
 from trashdrop.sorter import (  # noqa: E402
     GRASP_HEIGHT_CM,
-    SAG_JOINTS,
     draw_detection,
     draw_zone,
     find_item,
@@ -181,7 +180,12 @@ class GripperTests(unittest.TestCase):
     def test_wider_items_open_the_jaw_further(self) -> None:
         openings = [gripper_percent_for(w) for w in (0.03, 0.05, 0.07, 0.09)]
         self.assertEqual(openings, sorted(openings))
-        self.assertEqual(gripper_percent_for(0.20), 100.0)
+
+    def test_the_jaw_is_never_swung_up_past_its_widest(self) -> None:
+        # The venue's cigarette pack asked for 9 cm and got 100 %: the jaw swung
+        # up and came down on top of it.
+        self.assertEqual(gripper_percent_for(0.20), gripper_percent_for(0.087))
+        self.assertLess(gripper_percent_for(0.20), 65.0)
 
 
 class FakeArm:
@@ -199,19 +203,19 @@ class FakeArm:
         return reached
 
 
-class SaggingArm(FakeArm):
-    """A real arm's weight: each loaded joint settles ``sag`` degrees short of its goal."""
+class ReportingArm(FakeArm):
+    """Also says where its joints are: where they were last sent."""
 
-    def __init__(self, sag: float, **kwargs) -> None:
+    def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.sag, self.goal = sag, {}
+        self.goal = {}
 
     def move(self, targets, speed=None):
         self.goal.update(targets)
         return super().move(targets, speed)
 
     def pose(self):
-        return {joint: value - (self.sag if joint in SAG_JOINTS else 0.0) for joint, value in self.goal.items()}
+        return dict(self.goal)
 
 
 class ExecuteTests(unittest.TestCase):
@@ -234,26 +238,18 @@ class ExecuteTests(unittest.TestCase):
                             log=lines.append, **kwargs)
         return done, lines
 
-    def test_the_descent_makes_up_for_the_sag_measured_in_the_air(self) -> None:
-        arm = SaggingArm(sag=1.5)
+    def test_the_descent_goes_where_planned_and_says_where_the_fingertips_are(self) -> None:
+        arm = ReportingArm()
         done, lines = self.pick(arm)
         self.assertTrue(done)
-        raised = {joint: value + (1.5 if joint in SAG_JOINTS else 0.0) for joint, value in self.PLAN.grasp.items()}
-        self.assertIn(raised, arm.moves, "the grasp goal is raised by the sag, the pan and roll left alone")
-        self.assertTrue(any("sag" in line for line in lines), lines)
+        self.assertIn(self.PLAN.grasp, arm.moves)
         self.assertTrue(any("above the table" in line for line in lines), lines)
 
-    def test_an_implausible_sag_is_not_corrected(self) -> None:
-        arm = SaggingArm(sag=10.0)
-        self.pick(arm)
-        self.assertIn(self.PLAN.grasp, arm.moves)
-
-    def test_a_dry_run_measures_the_sag_but_never_goes_down(self) -> None:
-        arm = SaggingArm(sag=1.5)
-        done, lines = self.pick(arm, dry_run=True)
+    def test_a_dry_run_with_kinematics_never_goes_down(self) -> None:
+        arm = ReportingArm()
+        done, _ = self.pick(arm, dry_run=True)
         self.assertFalse(done)
-        self.assertEqual(len([move for move in arm.moves if "shoulder_lift" in move]), 2, "above, then neutral")
-        self.assertTrue(any("sag" in line for line in lines), lines)
+        self.assertNotIn(self.PLAN.grasp, arm.moves)
 
     def test_a_dry_run_never_goes_down(self) -> None:
         arm = FakeArm()

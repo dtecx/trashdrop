@@ -43,9 +43,9 @@ repository agrees within a few millimetres. The numbers live in
    plane through the corners that arm touched: the venue's arms read the flat
    table up to 3 cm lower at full reach than beside their bases, so one
    height for the whole zone either hits the table near the base or closes
-   above the item far out. The hover above the item measures how far the
-   loaded joints sag below their goals; the descent is raised by as much,
-   and the pick prints where the fingertips really ended up. The jaw is
+   above the item far out. The pick prints where the fingertips really
+   ended up (raising the descent by the sag seen at the hover was tried:
+   the grasp barely sags, and it left them 5 mm high). The jaw is
    turned to close across the item with each arm's own wrist roll zero
    (`rig roll`): at the venue the left arm's was a quarter turn from the
    model's, and its first grasp closed along a screwdriver, beside it.
