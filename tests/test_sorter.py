@@ -325,8 +325,17 @@ class ExecuteTests(unittest.TestCase):
         closed = next(i for i, move in enumerate(arm.moves) if move.get("gripper") == 0.0)
         opened = next(i for i, move in enumerate(arm.moves) if i > closed and "gripper" in move)
         self.assertEqual(arm.moves[opened - 1], drop_pose("right"))
-        self.assertLess(drop_pose("right")["shoulder_pan"], 0, "the right arm turns right")
         self.assertEqual(arm.moves[-1], self.NEUTRAL)
+
+    def test_each_arm_drops_on_its_own_outer_side(self) -> None:
+        # In an arm's own frame +y is its left. The venue's left arm once
+        # dropped a bottle to its right, between the two arms.
+        left = self.kinematics.tcp(drop_pose("left"))
+        right = self.kinematics.tcp(drop_pose("right"))
+        self.assertGreater(left[1], 0.15, "the left arm drops to its left")
+        self.assertLess(right[1], -0.15, "the right arm drops to its right")
+        for tcp in (left, right):
+            self.assertGreater(tcp[2], 0.2, "and high enough to drop, not place")
 
 
 if __name__ == "__main__":

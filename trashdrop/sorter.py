@@ -412,9 +412,15 @@ def draw_plan(frame, item_small, scale: float, plan: PickPlan | None) -> np.ndar
 
 
 def drop_pose(arm: str) -> dict[str, float]:
-    """Turned to the arm's own side -- left for the left arm, right for the right -- and lifted."""
+    """Turned to the arm's own side -- left for the left arm, right for the right -- and lifted.
 
-    pan = 80.0 if arm == "left" else -80.0
+    A positive shoulder_pan turns an SO-101 to ITS RIGHT (the calibrated
+    joint and the model agree; tests/test_sorter.py checks it on the model).
+    Guessed the other way at first, the venue's left arm dropped a bottle
+    between the two arms, swinging towards the other one.
+    """
+
+    pan = -80.0 if arm == "left" else 80.0
     return {"shoulder_pan": pan, "shoulder_lift": 0.0, "elbow_flex": -60.0, "wrist_flex": 60.0, "wrist_roll": 0.0}
 
 
