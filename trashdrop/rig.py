@@ -55,8 +55,10 @@ class PickZone:
     width: float = 30.0
     height: float = 21.0
 
-    def corners(self) -> list[tuple[float, float]]:
-        hw, hh = self.width / 2, self.height / 2
+    def corners(self, inset: float = 0.0) -> list[tuple[float, float]]:
+        """Far left, far right, near right, near left -- far is away from the arms."""
+
+        hw, hh = self.width / 2 - inset, self.height / 2 - inset
         return [(self.x - hw, self.y + hh), (self.x + hw, self.y + hh),
                 (self.x + hw, self.y - hh), (self.x - hw, self.y - hh)]
 

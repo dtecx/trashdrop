@@ -105,12 +105,17 @@ class Detection:
     changed: np.ndarray  # everything that differs from the empty table, for a look
 
 
+# Items are looked for this far inside the zone's edge, clear of tape marking it.
+ZONE_INSET_CM = 1.0
+
+
 def zone_mask(shape: tuple[int, int], scale: float, homography, zone) -> np.ndarray:
-    """Analysis-resolution mask of the pick zone (a rectangle in sheet cm)."""
+    """Analysis-resolution mask of the pick zone (a rectangle in sheet cm), inset from its edge."""
 
     import cv2
 
-    polygon = np.array([homography.world_to_pixel(x / 100, y / 100) for x, y in zone.corners()]) / scale
+    corners = zone.corners(inset=ZONE_INSET_CM)
+    polygon = np.array([homography.world_to_pixel(x / 100, y / 100) for x, y in corners]) / scale
     mask = np.zeros(shape, np.uint8)
     cv2.fillPoly(mask, [np.rint(polygon).astype(np.int32)], 255)
     return mask

@@ -384,7 +384,15 @@ def _cmd_rig_touch(args: argparse.Namespace) -> int:
     rig = load_rig()
     arm = _open_arm(args.arm)
     kinematics = Kinematics()
-    where = {0: "top left", 1: "top right", 2: "bottom right", 3: "bottom left"}
+    if args.tape:
+        names = ("far left", "far right", "near right", "near left")
+        points = dict(zip(names, rig.pick_zone.corners()))
+        what = "INNER corner of the tape square"
+    else:
+        names = ("marker 0 (top left of the page)", "marker 1 (top right)", "marker 2 (bottom right)",
+                 "marker 3 (bottom left)")
+        points = dict(zip(names, (MARKER_SHEET_CM[i] for i in (0, 1, 2, 3))))
+        what = "marker's centre"
     touched = []
     try:
         if arm.torque_is_on():
@@ -392,15 +400,15 @@ def _cmd_rig_touch(args: argparse.Namespace) -> int:
             time.sleep(3)
             arm.torque_off()
         print(
-            "The marker sheet must lie flat where it will stay. For each marker: put the tip of the\n"
-            "FIXED finger (the one that does not move when the gripper opens) on the marker's centre,\n"
-            "hold the arm there and press Enter. s skips a marker, Ctrl+C stops."
+            f"For each point: put the tip of the FIXED finger (the one that does not move when the\n"
+            f"gripper opens) on the {what}, hold the arm there and press Enter.\n"
+            "s skips a point the arm cannot reach (three are enough), Ctrl+C stops."
         )
-        for marker_id in (0, 1, 2, 3):
-            if input(f"  marker {marker_id} ({where[marker_id]} of the page): ").strip().lower() == "s":
+        for name in names:
+            if input(f"  {name}: ").strip().lower() == "s":
                 continue
             tip = kinematics.fingertip(arm.pose()) * 100
-            touched.append((marker_id, tip))
+            touched.append((name, tip))
             print(f"      fingertip at x {tip[0]:.1f}  y {tip[1]:.1f}  z {tip[2]:.1f} cm")
     except KeyboardInterrupt:
         print("\nstopped; rig.toml not changed")
@@ -412,20 +420,109 @@ def _cmd_rig_touch(args: argparse.Namespace) -> int:
         return 1
 
     table_z = float(np.mean([tip[2] for _, tip in touched]))
-    placement, residuals = fit_placement(
-        [MARKER_SHEET_CM[marker_id] for marker_id, _ in touched], [tip[:2] for _, tip in touched], table_z
-    )
+    placement, residuals = fit_placement([points[name] for name, _ in touched], [tip[:2] for _, tip in touched], table_z)
     print()
-    for (marker_id, _), residual in zip(touched, residuals):
-        print(f"  marker {marker_id}: the fit misses it by {residual:.1f} cm")
+    for (name, _), residual in zip(touched, residuals):
+        print(f"  {name}: the fit misses it by {residual:.1f} cm")
     if max(residuals) > 1.5:
-        print("  more than 1.5 cm off: a fingertip was not on a centre, or a joint's calibration is off. Touch again.")
+        print("  more than 1.5 cm off: a fingertip was not on its point, the zone's size in rig.toml is wrong,\n"
+              "  or a joint's calibration is off. Touch again.")
     rig.arms[arm.name].sheet = (placement.x, placement.y, placement.yaw, placement.table_z)
     save_rig(rig)
     print(
         f"{arm.name}: the sheet's centre is {placement.x:.1f} cm forward, {placement.y:.1f} cm left of the arm, "
         f"turned {placement.yaw:.0f} deg; the sheet is at z {table_z:.1f} cm. Saved to rig.toml."
     )
+    return 0
+
+
+def _click_corners(frame, labels: tuple[str, ...]):
+    """Let a person click points on a frame, in order. Returns full-resolution points, or None."""
+
+    import cv2
+    import numpy as np
+
+    scale = min(1.0, 1400 / frame.shape[1])
+    shown = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    points: list[tuple[float, float]] = []
+
+    def on_mouse(event, x, y, *_):
+        if event == cv2.EVENT_LBUTTONDOWN and len(points) < len(labels):
+            points.append((x / scale, y / scale))
+
+    window = "trashdrop: click the corners"
+    cv2.namedWindow(window)
+    cv2.setMouseCallback(window, on_mouse)
+    try:
+        while True:
+            view = shown.copy()
+            for index, (u, v) in enumerate(points):
+                cv2.circle(view, (int(u * scale), int(v * scale)), 8, (0, 0, 255), -1)
+                cv2.putText(view, labels[index], (int(u * scale) + 10, int(v * scale) - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            if len(points) < len(labels):
+                prompt = f"click the {labels[len(points)]}   (r = start over, Esc = cancel)"
+            else:
+                prompt = "Enter = save   r = start over   Esc = cancel"
+            cv2.rectangle(view, (0, 0), (view.shape[1], 40), (0, 0, 0), -1)
+            cv2.putText(view, prompt, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            cv2.imshow(window, view)
+            key = cv2.waitKey(30) & 0xFF
+            if key == 27:
+                return None
+            if key in (ord("r"), ord("R")):
+                points.clear()
+            if key in (10, 13) and len(points) == len(labels):
+                return np.array(points, dtype=np.float32)
+    finally:
+        cv2.destroyWindow(window)
+        cv2.waitKey(1)
+
+
+def _cmd_camera_tape(args: argparse.Namespace) -> int:
+    """The tape square is the zone and the reference: click its inner corners in the camera picture."""
+
+    import cv2
+    import numpy as np
+
+    from .dataset.capture import open_camera
+    from .perception.calibration import HomographyCalibration
+    from .rig import PickZone, load_rig, save_rig
+    from .station import repository_root
+
+    try:
+        width, height = (float(value) for value in args.size.lower().split("x"))
+    except ValueError:
+        print("--size is the tape square's INNER width x depth in cm, e.g. --size 30x28")
+        return 1
+    rig = load_rig()
+    rig.pick_zone = PickZone(0.0, 0.0, width, height)
+    capture = open_camera(_resolve_camera(args.camera, 1920, 1080), 1920, 1080)
+    try:
+        for _ in range(30):  # let exposure settle
+            ok, frame = capture.read()
+    finally:
+        capture.release()
+    labels = ("far left", "far right", "near right", "near left")
+    print("a window opens: click the tape square's INNER corners -- far left, far right, near right, near left\n"
+          "(far = away from the arms; left and right as the arms see them)")
+    corners = _click_corners(frame, labels)
+    if corners is None:
+        print("cancelled; nothing saved")
+        return 1
+    zone_cm = rig.pick_zone.corners()
+    calibration = HomographyCalibration(corners, [(x / 100, y / 100) for x, y in zone_cm])
+    path = calibration.save(repository_root() / "camera_sheet.json")
+    save_rig(rig)
+    view = frame.copy()
+    cv2.polylines(view, [np.rint(corners).astype(np.int32)], True, (60, 220, 60), 3)
+    for (u, v), label in zip(corners, labels):
+        cv2.circle(view, (int(u), int(v)), 10, (0, 0, 255), -1)
+        cv2.putText(view, label, (int(u) + 12, int(v) - 12), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+    args.out.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(args.out / "camera_tape.jpg"), view)
+    print(f"saved: pixels -> cm of the {width:g} x {height:g} cm square in {path}; the square is the pick zone "
+          f"(rig.toml). Check out/camera_tape.jpg, then: uv run trashdrop rig touch left --tape")
     return 0
 
 
@@ -514,7 +611,7 @@ def _cmd_pick(args: argparse.Namespace) -> int:
         args.out.mkdir(parents=True, exist_ok=True)
 
         def photograph_empty_table():
-            input("Clear the pick zone (where the marker sheet lay; the rest of the table can stay as it is),\n"
+            input("Clear the pick zone (inside the tape square; the rest of the table can stay as it is),\n"
                   "then press Enter to photograph it empty...")
             empty = grab()
             small_shape = (round(empty.shape[0] * 320 / empty.shape[1]), 320)
@@ -1118,8 +1215,9 @@ def build_parser() -> argparse.ArgumentParser:
     rig_identify.add_argument("--seconds", type=float, default=30.0, help="time allowed for each joint")
     rig_identify.add_argument("--quick", action="store_true", help="only the gripper of each arm")
     rig_identify.set_defaults(func=_cmd_rig_identify)
-    rig_touch = rig_sub.add_parser("touch", help="touch the sheet's markers with a fingertip; where the arm stands")
+    rig_touch = rig_sub.add_parser("touch", help="touch reference points with a fingertip; where the arm stands")
     rig_touch.add_argument("arm")
+    rig_touch.add_argument("--tape", action="store_true", help="the tape square's inner corners, not the sheet's markers")
     rig_touch.set_defaults(func=_cmd_rig_touch)
 
     pick = sub.add_parser("pick", help="the overhead camera finds an item; an arm picks it and drops it aside")
@@ -1197,6 +1295,11 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("--config", type=Path, default=None)
     apply_parser.add_argument("--usb-id", default=None)
     apply_parser.set_defaults(func=_cmd_camera_apply)
+
+    tape_parser = camera_sub.add_parser("tape", help="click the tape square's inner corners; it becomes the pick zone")
+    tape_parser.add_argument("--size", required=True, help="inner width x depth of the square in cm, e.g. 30x28")
+    tape_parser.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")
+    tape_parser.set_defaults(func=_cmd_camera_tape)
 
     sheet_parser = camera_sub.add_parser("sheet", help="find the marker sheet in the overhead camera; pixels -> cm")
     sheet_parser.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")

@@ -55,6 +55,11 @@ class RigFileTests(unittest.TestCase):
         self.assertEqual(loaded, rig)
         self.assertEqual(loaded.cameras(), {"overhead": "046d:08e5", "left wrist": "2993:0858"})
 
+    def test_zone_corners_run_far_left_far_right_near_right_near_left(self) -> None:
+        zone = PickZone(x=0.0, y=0.0, width=30.0, height=28.0)
+        self.assertEqual(zone.corners(), [(-15.0, 14.0), (15.0, 14.0), (15.0, -14.0), (-15.0, -14.0)])
+        self.assertEqual(zone.corners(inset=1.0)[0], (-14.0, 13.0), "inset keeps tape on the edge out")
+
     def test_no_rig_toml_means_nothing_identified(self) -> None:
         rig = load_rig(Path("/nonexistent/rig.toml"))
         self.assertTrue(all(arm.bus is None for arm in rig.arms.values()))
