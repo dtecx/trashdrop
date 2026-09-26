@@ -1,0 +1,110 @@
+"""Crab rave: both arms rock what they hold between them to a beat, as one.
+
+The organisers' mini task. The arms stand straight up -- crab_start in
+poses.toml: neutral, wrists turned, grippers clamped -- holding a giant can
+between their grippers. Holding one thing, they have to move as one: one
+clock, the same offsets for both at every tick, the goals for both written in
+the same 50 Hz loop, and both servos' own speed limits alike, so neither lags
+behind the other.
+
+Straight up, an SO-101 cannot lower its gripper straight down: that bends
+the elbow further back, and the left one is at its end stop there. So the
+can goes down and up the way the arms can take it: rocking forwards and back
+from the shoulders -- the wrists turning against them, so the can stays
+level -- and swaying left and right from the bases. Everything is an offset
+from where the arms stand when the dance starts, eased in and out, so it
+starts and ends where it began; Ctrl+C holds both where they are.
+"""
+
+from __future__ import annotations
+
+import math
+import time
+
+BPM = 60.0  # slow, to begin with; Crab Rave itself is 125
+BEATS_PER_ROCK = 2  # forwards and back again
+BEATS_PER_SWAY = 4  # left and right again
+ROCK_DEG = 5.0
+SWAY_DEG = 3.0
+MAX_ROCK_DEG = 15.0
+MAX_SWAY_DEG = 10.0
+EASE_S = 2.0
+# The servos' own speed limit while dancing, the same for both arms: with the
+# right arm's usual 45 deg/s it would lag the left one and twist the can.
+DANCE_SPEED = 150.0
+
+
+def offsets(t: float, total: float, *, bpm: float = BPM, rock: float = ROCK_DEG,
+            sway: float = SWAY_DEG) -> dict[str, float]:
+    """Joint offsets in degrees at ``t`` seconds into a ``total``-second dance, the same for both arms."""
+
+    ease = _ease(t, total)
+    beat = 60.0 / bpm
+    lean = ease * rock * math.sin(2 * math.pi * t / (beat * BEATS_PER_ROCK))
+    return {
+        "shoulder_lift": lean,
+        "wrist_flex": -lean,  # the gripper keeps pointing the way it did: the can stays level
+        "shoulder_pan": ease * sway * math.sin(2 * math.pi * t / (beat * BEATS_PER_SWAY)),
+    }
+
+
+def _ease(t: float, total: float) -> float:
+    """0 at both ends of the dance, 1 in between, smooth: no jump starting or stopping."""
+
+    edge = min(t, total - t, EASE_S) / EASE_S
+    edge = max(0.0, min(1.0, edge))
+    return edge * edge * (3 - 2 * edge)
+
+
+def dance(arms: dict, *, seconds: float, bpm: float = BPM, rock: float = ROCK_DEG, sway: float = SWAY_DEG,
+          log=print, clock=time.monotonic, sleep=time.sleep) -> None:
+    """Dance ``seconds`` with every arm in ``arms`` at once, from where they stand now."""
+
+    from .arm import DEG_PER_TICK, LIMIT_MARGIN, RATE_HZ, Stopped
+    from .servo import MOTORS
+
+    if not (0 < bpm <= 200 and 0 <= rock <= MAX_ROCK_DEG and 0 <= sway <= MAX_SWAY_DEG and seconds > 0):
+        raise ValueError(f"bpm 1-200, rock 0-{MAX_ROCK_DEG:g} deg, sway 0-{MAX_SWAY_DEG:g} deg, seconds > 0")
+    for arm in arms.values():
+        if not arm.torque_is_on():
+            arm.torque_on()
+    start = {name: {joint: arm.bus.read(motor, "goal_position") for joint, motor in MOTORS.items()}
+             for name, arm in arms.items()}
+    speeds = {name: arm.max_speed for name, arm in arms.items()}
+
+    def goals_at(t: float, name: str) -> dict[int, int]:
+        moved = offsets(t, seconds, bpm=bpm, rock=rock, sway=sway)
+        limits = arms[name].limits
+        return {
+            motor: min(max(start[name][joint] + round(moved.get(joint, 0.0) / DEG_PER_TICK),
+                           limits[joint].low + LIMIT_MARGIN), limits[joint].high - LIMIT_MARGIN)
+            for joint, motor in MOTORS.items()
+        }
+
+    try:
+        for arm in arms.values():
+            arm.max_speed = DANCE_SPEED
+            arm.limit_speed()
+        log(f"dancing {seconds:g} s at {bpm:g} bpm: rocking {rock:g} deg, swaying {sway:g} deg")
+        began = clock()
+        while True:
+            t = min(clock() - began, seconds)
+            if any(arm.stop is not None and arm.stop.is_set() for arm in arms.values()):
+                raise Stopped
+            for name, arm in arms.items():  # one tick, every arm: they stay together
+                arm.bus.write_goals(goals_at(t, name))
+            if t >= seconds:
+                break
+            sleep(1.0 / RATE_HZ)
+    except KeyboardInterrupt:
+        for arm in arms.values():
+            arm.hold()
+        raise
+    finally:
+        for name, arm in arms.items():
+            arm.max_speed = speeds[name]
+            try:
+                arm.limit_speed()
+            except Exception:  # a bus that went away must not hide what happened first
+                pass
+    log("done: back where they started")

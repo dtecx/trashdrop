@@ -1049,6 +1049,33 @@ def _cmd_arm_first(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_dance(args: argparse.Namespace) -> int:
+    """Crab rave: both arms rock what they hold between them to a beat, as one."""
+
+    from .arm import connect
+    from .dance import dance
+    from .rig import load_rig
+
+    rig = load_rig()
+    arms = {}
+    try:
+        arms = {name: connect(name, rig) for name in ("left", "right")}
+        input(f"both arms dance {args.seconds:g} s from where they stand now (to stand them there first: "
+              f"uv run trashdrop arm together crab_start)\n  {args.bpm:g} bpm, rocking {args.rock:g} deg, swaying "
+              f"{args.sway:g} deg. Ctrl+C holds both where they are. Enter starts...")
+        dance(arms, seconds=args.seconds, bpm=args.bpm, rock=args.rock, sway=args.sway)
+    except (ValueError, RuntimeError) as error:
+        print(error)
+        return 1
+    except KeyboardInterrupt:
+        print("\nstopped; both arms hold where they are")
+        return 130
+    finally:
+        for arm in arms.values():
+            arm.bus.close()
+    return 0
+
+
 def _cmd_arm_together(args: argparse.Namespace) -> int:
     """Both arms to one saved pose together; the grippers clamp first and keep clamping."""
 
@@ -1596,6 +1623,14 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--demo", action="store_true", help="no camera or arms: out/'s saved pictures and pretend arms")
     web.add_argument("--open", action="store_true", help="open the page in the default browser")
     web.set_defaults(func=_cmd_web)
+
+    crab = sub.add_parser("dance", help="crab rave: both arms rock what they hold between them to a beat")
+    crab.add_argument("--bpm", type=float, default=60.0, help="beats a minute (default 60, slow; Crab Rave is 125)")
+    crab.add_argument("--rock", type=float, default=5.0,
+                      help="degrees forwards and back from the shoulders, the can kept level (default 5, at most 15)")
+    crab.add_argument("--sway", type=float, default=3.0, help="degrees left and right from the bases (default 3, at most 10)")
+    crab.add_argument("--seconds", type=float, default=20.0)
+    crab.set_defaults(func=_cmd_dance)
 
     arm = sub.add_parser("arm", help="the real arms: status, named poses, slow moves (left / right / F01 / F02)")
     arm_sub = arm.add_subparsers(dest="arm_command", required=True)

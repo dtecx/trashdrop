@@ -47,6 +47,8 @@ uv run trashdrop arm status              # both arms, every joint in degrees; mo
 uv run trashdrop arm save left rest      # pose the limp arm by hand, record it in poses.toml
 uv run trashdrop arm go left rest        # play it back slowly (max_speed in rig.toml)
 uv run trashdrop arm first --speed 12    # releases both for hand posing; Enter -> both together to organizers_first
+uv run trashdrop arm together crab_start # both arms to one pose, grippers clamping what they hold between them
+uv run trashdrop dance                   # crab rave with it: slow; --bpm 125 --rock 8 --sway 6 for the real thing
 uv run trashdrop arm jog left wrist_flex 10
 uv run trashdrop arm gripper left open   # or close, or a percent
 uv run trashdrop arm relax left          # limp again -- hold it if it is in the air
