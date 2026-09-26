@@ -46,13 +46,13 @@ def _plain(value):
     raise TypeError(f"{type(value).__name__} is not JSON")
 
 
-def encode(frame) -> bytes:
+def encode(frame, *, width: int = STREAM_WIDTH, quality: int = JPEG_QUALITY) -> bytes:
     import cv2
 
-    height, width = frame.shape[:2]
-    if width > STREAM_WIDTH:
-        frame = cv2.resize(frame, (STREAM_WIDTH, round(height * STREAM_WIDTH / width)), interpolation=cv2.INTER_AREA)
-    ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+    height, source_width = frame.shape[:2]
+    if source_width > width:
+        frame = cv2.resize(frame, (width, round(height * width / source_width)), interpolation=cv2.INTER_AREA)
+    ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
     if not ok:
         raise RuntimeError("could not encode a frame")
     return jpeg.tobytes()

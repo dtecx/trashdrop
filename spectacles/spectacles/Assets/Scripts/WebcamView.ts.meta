@@ -1,0 +1,53 @@
+- !<AssetImportMetadata/57174f5b-a016-49ab-9724-2c23cf1e39b6>
+  ImportedAssetIds:
+    TypeScriptAsset: !<reference> e6fdc834-a1d5-4fe0-91d3-ff26b2298f90
+  ImporterName: TypeScriptAssetImporter
+  PrimaryAsset: !<reference> e6fdc834-a1d5-4fe0-91d3-ff26b2298f90
+  PackageType: NotAPackage
+  LegacyPackagePolicy: ~
+  ExtraData:
+    {}
+  AssetDataMap:
+    TypeScriptAsset: !<own> 87177899-5f94-48f3-94b6-e977515378c0
+  DependentFiles:
+    []
+  ImporterSettings: !<AssetImporterSettings>
+    {}
+  CompressionSettings: !<own> 00000000-0000-0000-0000-000000000000
+- !<TypeScriptAssetData/87177899-5f94-48f3-94b6-e977515378c0>
+  SvgIcon: ""
+  SetupScript:
+    code: ""
+  Description: ""
+  VersionMajor: 0
+  VersionMinor: 0
+  VersionPatch: 0
+  ComponentUid: 39e105b6-23e9-4169-86c9-1218cbd72a4d
+  ExportUid: 00000000-0000-0000-0000-000000000000
+  PackagePolicy: CanBeUnpacked
+  ScriptInputsHidden:
+    image: false
+    internetModule: false
+    previewToo: false
+    url: false
+  ScriptTypesHidden:
+    {}
+  ReadMe: !<reference> 00000000-0000-0000-0000-000000000000
+  DeclarationFile: !<reference> 00000000-0000-0000-0000-000000000000
+  Tags:
+    []
+  Attachments:
+    []
+  DefaultScriptInputs:
+    - internetModule: !<reference.InternetModule> 00000000-0000-0000-0000-000000000000
+      image: !<reference.Image> 00000000-0000-0000-0000-000000000000
+      url: "ws://127.0.0.1:8766"
+      previewToo: false
+  ScriptTypes:
+    -
+      {}
+  InputLines:
+    - // @input Asset.InternetModule internetModule
+    - // @input Component.Image image
+    - '// @input string url = "ws://127.0.0.1:8766"'
+    - // @input bool previewToo

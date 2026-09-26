@@ -1,0 +1,59 @@
+- !<AssetImportMetadata/01baba73-37e2-49a3-9363-90aafa849656>
+  ImportedAssetIds:
+    TypeScriptAsset: !<reference> ecbc5f6b-2434-418c-8092-cc22cd369967
+  ImporterName: TypeScriptAssetImporter
+  PrimaryAsset: !<reference> ecbc5f6b-2434-418c-8092-cc22cd369967
+  PackageType: NotAPackage
+  LegacyPackagePolicy: ~
+  ExtraData:
+    {}
+  AssetDataMap:
+    TypeScriptAsset: !<own> e3d3034f-4337-4073-bb71-0e523d9edd85
+  DependentFiles:
+    []
+  ImporterSettings: !<AssetImporterSettings>
+    {}
+  CompressionSettings: !<own> 00000000-0000-0000-0000-000000000000
+- !<TypeScriptAssetData/e3d3034f-4337-4073-bb71-0e523d9edd85>
+  SvgIcon: ""
+  SetupScript:
+    code: ""
+  Description: ""
+  VersionMajor: 0
+  VersionMinor: 0
+  VersionPatch: 0
+  ComponentUid: b55a71d8-3e7b-4e35-b288-09e4f3e4a649
+  ExportUid: 00000000-0000-0000-0000-000000000000
+  PackagePolicy: CanBeUnpacked
+  ScriptInputsHidden:
+    camera: false
+    internetModule: false
+    previewToo: false
+    rate: false
+    status: false
+    url: false
+  ScriptTypesHidden:
+    {}
+  ReadMe: !<reference> 00000000-0000-0000-0000-000000000000
+  DeclarationFile: !<reference> 00000000-0000-0000-0000-000000000000
+  Tags:
+    []
+  Attachments:
+    []
+  DefaultScriptInputs:
+    - internetModule: !<reference.InternetModule> 00000000-0000-0000-0000-000000000000
+      camera: !<reference.SceneObject> 00000000-0000-0000-0000-000000000000
+      url: "ws://127.0.0.1:8765"
+      rate: !<float> 30.000000
+      status: !<reference.Text> 00000000-0000-0000-0000-000000000000
+      previewToo: false
+  ScriptTypes:
+    -
+      {}
+  InputLines:
+    - '// @input Asset.InternetModule internetModule {"hint":"The Internet Module asset"}'
+    - "// @input SceneObject camera {\"hint\":\"The scene's Camera Object: where the wearer's head is and faces\"}"
+    - "// @input string url = \"ws://127.0.0.1:8765\" {\"hint\":\"ws://127.0.0.1:8765 over the USB cable, or ws://<the Mac's address>:8765 over Wi-Fi -- the Mac prints it\"}"
+    - '// @input float rate = 30 {"hint":"Messages a second"}'
+    - '// @input Component.Text status {"hint":"Optional: a Text to show what the arms are doing"}'
+    - "// @input bool previewToo {\"hint\":\"Connect from Lens Studio's preview too, to try the link without the glasses. Leave it off otherwise: the preview runs on the Mac, reaches it at the same address, and its hands would mix with the glasses'\"}"

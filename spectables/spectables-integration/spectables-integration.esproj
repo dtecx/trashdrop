@@ -1,0 +1,55 @@
+studioVersion:
+  major: 5
+  minor: 24
+  patch: 0
+  build: 26090816
+  type: Public
+coreVersion: 377
+clientVersion: 14.21
+updateCheckpoint: 107
+sceneId: 0a1ccb1a-fe88-4fbb-9883-e3af3c75fd99
+metaInfo:
+  hints:
+    []
+  tags:
+    []
+  lensName: SpecsBaseTemplate
+  lensDescriptors:
+    - AI_MUTATED
+    - EXPERIMENTAL_API
+  lensApplicableContext:
+    - live_camera
+    - reply_camera
+    - video_chat
+  lensApplicability:
+    - Front
+    - Back
+  lensClientCompatibilities:
+    - Spectacles
+  platformBundlesEnabled: false
+  iconHash: ""
+  videoPreviewHash: ""
+  localizationsHash: ""
+  fromTemplateName: Specs Base Template
+  fromTemplateUrl: Lens Studio 5.24.0.26090816
+  activationCamera: Front
+  sourceMapEnabled: false
+  shaderCacheInvalidationEnabled: false
+  usingMinClientVersions: false
+  androidMinClientVersion:
+    major: 0
+    minor: 0
+    patch: 0
+    build: 0
+  iOSMinClientVersion:
+    major: 0
+    minor: 0
+    patch: 0
+    build: 0
+  documentId: 52e28d49-85d1-44f1-8843-5d22abb5f6d5
+  originalDocumentId: 4492aa5f-47e4-4abe-9643-7d6f708b0869
+  packageId: ""
+  packageVersion: ""
+  spkPrivilegeLevel: Generic
+  gluboEnabled: false
+targetPlatform: Spectacles
