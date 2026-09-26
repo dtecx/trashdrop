@@ -37,6 +37,7 @@ LIMIT_MARGIN = 20  # ticks kept clear of each EEPROM limit, ~1.8 degrees
 RATE_HZ = 50
 MIN_JERK_PEAK = 1.875  # peak speed of a minimum-jerk move, relative to its average
 SETTLED_TICKS = 25  # how close a joint must end up to call a move done
+SERVO_ACCELERATION = 254  # what LeRobot sets; it resets when a servo loses power
 STILL_TICKS = 1  # ... or how little it may move between two readings, 20 ms apart,
 STILL_READINGS = 5  # this many times in a row, to have stopped where it is
 GRIPPER = "gripper"
@@ -103,14 +104,26 @@ class Arm:
         """Hold the arm where it is. Rule one: goals first, then torque."""
 
         present = self.bus.positions()
-        speed_cap = int(round(2 * self.max_speed / DEG_PER_TICK))
         for joint, motor in MOTORS.items():
             self.bus.write(motor, "goal_position", present[joint])
             if abs(self.bus.read(motor, "goal_position") - present[joint]) > 2:
                 raise RuntimeError(f"{self.name} {joint}: goal did not take; torque left off")
-            self.bus.write(motor, "goal_speed", speed_cap)
+        self.limit_speed()
         for motor in MOTORS.values():
             self.bus.write(motor, "torque_enable", 1)
+
+    def limit_speed(self) -> None:
+        """The servos' own speed limit, twice max_speed, behind the streamed path; LeRobot's acceleration.
+
+        Written on connecting too, not only with torque: an arm left holding
+        from an earlier run kept the limit of the max_speed it had then, and a
+        faster max_speed in rig.toml changed next to nothing.
+        """
+
+        speed_cap = int(round(2 * self.max_speed / DEG_PER_TICK))
+        for motor in MOTORS.values():
+            self.bus.write(motor, "goal_speed", speed_cap)
+            self.bus.write(motor, "acceleration", SERVO_ACCELERATION)
 
     def torque_off(self) -> None:
         """Go limp. Mid-air, the arm falls: someone must be holding it."""
@@ -297,7 +310,9 @@ def connect(name: str, rig=None) -> Arm:
     devices = rig.arms[key]
     if not devices.bus:
         raise RuntimeError(f"the {key} arm has no bus in rig.toml: run `uv run trashdrop rig identify`")
-    return Arm(key, ServoBus.by_serial(devices.bus), devices.max_speed)
+    arm = Arm(key, ServoBus.by_serial(devices.bus), devices.max_speed)
+    arm.limit_speed()
+    return arm
 
 
 def resolve_arm(name: str, rig) -> str:

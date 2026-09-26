@@ -113,6 +113,15 @@ class TorqueTests(unittest.TestCase):
         expected = round(2 * 30.0 / DEG_PER_TICK)
         self.assertTrue(all(regs["goal_speed"] == expected for regs in bus.regs.values()))
 
+    def test_a_holding_arm_takes_a_new_speed_limit_without_letting_go(self) -> None:
+        # An arm left holding from an earlier run: rig.toml says faster now.
+        bus = FakeBus()
+        make_arm(bus, max_speed=30.0).torque_on()
+        faster = make_arm(bus, max_speed=60.0)
+        faster.limit_speed()
+        self.assertTrue(all(regs["goal_speed"] == round(2 * 60.0 / DEG_PER_TICK) for regs in bus.regs.values()))
+        self.assertTrue(all(regs["torque_enable"] for regs in bus.regs.values()), "still holding")
+
     def test_a_limp_arm_refuses_to_move(self) -> None:
         with self.assertRaises(RuntimeError):
             make_arm(FakeBus()).move({"elbow_flex": 10.0})
