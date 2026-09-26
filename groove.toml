@@ -1,25 +1,32 @@
 # The organisers' merch dance: uv run python -m trashdrop.groove (see trashdrop/groove.py).
-# Edit freely; --preview checks it without the arms.
+# Edit freely; --preview checks it without the arms and prints the most each speed can be.
 #
 # order: the moves, in the order they are danced; a move left out is not danced.
 # Per move -- reps: times through it (each time, both of its poses);
-#             speed: 1 the usual tempo (bpm), 0.5 half as fast, 1.5 half again as fast.
+#             speed: 1 the usual tempo (bpm), 0.5 half as fast, 2 twice as fast (at most 4);
+#             size: how far it swings, 1 as designed, 0.6 smaller -- and a smaller move
+#                   can go faster (at most 1.2).
+# The servos turn at most 270 deg/s: a speed they cannot keep up with is refused.
 # --speed on the command line scales every move's speed on top of these.
 order = ["jaws", "point", "raise", "twist"]
 bpm = 60
 
-[jaws]   # a mouth pointing ahead: opens wide, snaps shut
-reps = 4
-speed = 1.0
+[jaws]   # a mouth pointing ahead: opens wide, snaps shut (most: 1.88 at size 1)
+reps = 3
+speed = 1.85
+size = 1.0
 
-[point]  # a flat hand held still, the bases sweeping it side to side
-reps = 4
-speed = 1.0
+[point]  # a flat hand held still, the bases sweeping it side to side (most: 2.29 at size 1)
+reps = 2
+speed = 2.25
+size = 1.0
 
-[raise]  # one arm up, the other lowered in front, swapped; grippers shut
-reps = 4
-speed = 1.0
+[raise]  # one arm up, the other lowered in front, swapped; grippers shut (most: 4)
+reps = 5
+speed = 3.0
+size = 1.0
 
-[twist]  # open hands turning at the wrists, mirrored
-reps = 4
-speed = 1.0
+[twist]  # open hands turning at the wrists, mirrored (most: 2.14 at size 1)
+reps = 10
+speed = 2.1
+size = 1.0
