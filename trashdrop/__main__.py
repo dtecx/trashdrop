@@ -998,6 +998,57 @@ def _cmd_arm_go(args: argparse.Namespace) -> int:
         arm.bus.close()
 
 
+def _cmd_arm_first(args: argparse.Namespace) -> int:
+    import math
+    import time
+
+    from .arm import FIRST_POSE, connect, load_poses, move_named_pose_together
+    from .rig import load_rig
+
+    rig = load_rig()
+    arms = {}
+    prepared = moving = False
+    try:
+        if not math.isfinite(args.speed) or args.speed <= 0:
+            print("speed must be finite and positive")
+            return 1
+        for name in ("left", "right"):
+            arms[name] = connect(name, rig)
+        poses = load_poses()
+        missing = [name for name in arms if FIRST_POSE not in poses.get(name, {})]
+        if missing:
+            print(f"no {FIRST_POSE} pose for: {', '.join(missing)}")
+            return 1
+        print("hold both arms: their five joints go limp in 3 s; the grippers keep holding")
+        time.sleep(3)
+        for arm in arms.values():
+            arm.relax_joints_hold_gripper()
+        prepared = True
+        input("both arms are limp and both grippers are holding. Pose the arms, then press Enter to return...")
+        print(f"both arms: moving together from their current positions to {FIRST_POSE} "
+              f"at up to {args.speed:g} deg/s. Ctrl+C stops both where they are.")
+        moving = True
+        reached = move_named_pose_together(arms, poses, FIRST_POSE, args.speed)
+    except ValueError as error:
+        print(error)
+        return 1
+    except KeyboardInterrupt:
+        if moving:
+            print("\nstopped; both arms hold where they are")
+        elif prepared:
+            print("\ncancelled; arm joints remain limp and both grippers keep holding")
+        else:
+            print("\ncancelled; torque was not changed")
+        return 130
+    finally:
+        for arm in arms.values():
+            arm.bus.close()
+    for name, pose in zip(arms, reached):
+        joints = ", ".join(f"{joint} {pose[joint]:.1f}" for joint in pose if joint != "gripper")
+        print(f"{name}: reached {joints}; gripper held at {pose['gripper']:.1f}% open")
+    return 0
+
+
 def _cmd_arm_jog(args: argparse.Namespace) -> int:
     arm = _open_arm(args.arm)
     try:
@@ -1533,6 +1584,12 @@ def build_parser() -> argparse.ArgumentParser:
     arm_go.add_argument("pose")
     arm_go.add_argument("--speed", type=float, default=None, help="deg/s, capped by max_speed in rig.toml")
     arm_go.set_defaults(func=_cmd_arm_go)
+    arm_first = arm_sub.add_parser(
+        "first", help="release both arms for hand posing, then move them together to organizers_first"
+    )
+    arm_first.add_argument("--speed", type=float, required=True,
+                           help="deg/s; each arm is still capped by its max_speed in rig.toml")
+    arm_first.set_defaults(func=_cmd_arm_first)
     arm_jog = arm_sub.add_parser("jog", help="move one joint by some degrees")
     arm_jog.add_argument("arm")
     arm_jog.add_argument("joint")

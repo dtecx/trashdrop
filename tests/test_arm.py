@@ -17,7 +17,9 @@ from trashdrop.arm import (
     LIMIT_MARGIN,
     RATE_HZ,
     Arm,
+    FIRST_POSE,
     load_poses,
+    move_named_pose_together,
     move_together,
     resolve_arm,
     nudge_joints,
@@ -126,6 +128,19 @@ class TorqueTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             make_arm(FakeBus()).move({"elbow_flex": 10.0})
 
+    def test_hand_posing_releases_arm_joints_but_holds_the_gripper_where_it_is(self) -> None:
+        bus = FakeBus()
+        arm = make_arm(bus)
+        arm.torque_on()
+        gripper_position = bus.positions()["gripper"]
+
+        arm.relax_joints_hold_gripper()
+
+        for joint, motor in MOTORS.items():
+            self.assertEqual(bool(bus.regs[motor]["torque_enable"]), joint == "gripper", joint)
+        self.assertEqual(bus.regs[MOTORS["gripper"]]["goal_position"], gripper_position)
+        self.assertEqual(bus.positions()["gripper"], gripper_position)
+
 
 class MoveTests(unittest.TestCase):
     def test_a_move_is_smooth_and_never_faster_than_max_speed(self) -> None:
@@ -232,6 +247,39 @@ class TogetherTests(unittest.TestCase):
         travel = abs(bus.regs[MOTORS["gripper"]]["goal_position"] - start) * DEG_PER_TICK
         trajectory = max(1.875 * travel / 30.0, 0.3)
         self.assertLess(clock.now - before, trajectory + 0.3, "stopped is done: not the 1.5 s wait on top")
+
+    def test_both_arms_return_to_the_named_pose_without_moving_the_grippers(self) -> None:
+        clock = FakeClock()
+        left_bus = FakeBus(positions={joint: 2150 + 10 * motor for joint, motor in MOTORS.items()})
+        right_bus = FakeBus(positions={joint: 2250 + 10 * motor for joint, motor in MOTORS.items()})
+        arms = {
+            "left": Arm("left", left_bus, 30.0, clock=clock, sleep=clock.sleep),
+            "right": Arm("right", right_bus, 30.0, clock=clock, sleep=clock.sleep),
+        }
+        target = {
+            "shoulder_pan": 30.0,
+            "shoulder_lift": 10.0,
+            "elbow_flex": -20.0,
+            "wrist_flex": 5.0,
+            "wrist_roll": -15.0,
+            "gripper": 100.0,  # saved value must not open the current jaws
+        }
+        poses = {name: {FIRST_POSE: target} for name in arms}
+        grippers = {"left": left_bus.positions()["gripper"], "right": right_bus.positions()["gripper"]}
+
+        reached = move_named_pose_together(arms, poses, FIRST_POSE, speed=12.0)
+
+        self.assertEqual(len(reached), 2)
+        for name, bus in (("left", left_bus), ("right", right_bus)):
+            self.assertEqual(bus.regs[MOTORS["gripper"]]["goal_position"], grippers[name])
+            self.assertTrue(all(path[MOTORS["gripper"]] == grippers[name] for path in bus.goals_streamed()))
+            self.assertEqual(bus.regs[MOTORS["shoulder_pan"]]["goal_position"],
+                             arms[name].to_ticks("shoulder_pan", target["shoulder_pan"]))
+
+    def test_together_pose_requires_a_positive_speed(self) -> None:
+        arm = make_arm(FakeBus())
+        with self.assertRaisesRegex(ValueError, "positive"):
+            move_named_pose_together({"left": arm}, {}, FIRST_POSE, speed=0.0)
 
 
 class NudgeTests(unittest.TestCase):

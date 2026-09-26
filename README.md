@@ -46,6 +46,7 @@ uv run trashdrop pick                    # plastic and metal go left, paper righ
 uv run trashdrop arm status              # both arms, every joint in degrees; moves nothing
 uv run trashdrop arm save left rest      # pose the limp arm by hand, record it in poses.toml
 uv run trashdrop arm go left rest        # play it back slowly (max_speed in rig.toml)
+uv run trashdrop arm first --speed 12    # releases both for hand posing; Enter -> both together to organizers_first
 uv run trashdrop arm jog left wrist_flex 10
 uv run trashdrop arm gripper left open   # or close, or a percent
 uv run trashdrop arm relax left          # limp again -- hold it if it is in the air

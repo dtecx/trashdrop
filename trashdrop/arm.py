@@ -23,6 +23,7 @@ go of the torque mid-air would drop it.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 import tomllib
@@ -42,6 +43,7 @@ SERVO_ACCELERATION = 254  # what LeRobot sets; it resets when a servo loses powe
 STILL_TICKS = 1  # ... or how little it may move between two readings, 20 ms apart,
 STILL_READINGS = 5  # this many times in a row, to have stopped where it is
 GRIPPER = "gripper"
+FIRST_POSE = "organizers_first"
 POSES_FILE = repository_root() / "poses.toml"
 
 
@@ -138,6 +140,24 @@ class Arm:
         for motor in MOTORS.values():
             self.bus.write(motor, "torque_enable", 0)
 
+    def relax_joints_hold_gripper(self) -> None:
+        """Make the five arm joints limp while the gripper holds its opening."""
+
+        motor = MOTORS[GRIPPER]
+        present = self.bus.read(motor, "position")
+        # A gripper that was limp may have an old goal. Point it at its present
+        # position before torque goes on so preparing a hand-taught pose cannot
+        # unexpectedly open or close the jaw.
+        self.bus.write(motor, "goal_position", present)
+        if abs(self.bus.read(motor, "goal_position") - present) > 2:
+            raise RuntimeError(f"{self.name} gripper: goal did not take; arm left unchanged")
+        self.bus.write(motor, "goal_speed", int(round(2 * self.max_speed / DEG_PER_TICK)))
+        self.bus.write(motor, "acceleration", SERVO_ACCELERATION)
+        self.bus.write(motor, "torque_enable", 1)
+        for joint, joint_motor in MOTORS.items():
+            if joint != GRIPPER:
+                self.bus.write(joint_motor, "torque_enable", 0)
+
     def hold(self) -> None:
         """Stop wherever the joints are now, and keep holding there."""
 
@@ -227,6 +247,37 @@ def move_together(moves: list[tuple[Arm, dict[str, float]]], *, speed: float | N
             arm.hold()
         raise
     return [arm.pose() for arm, _ in moves]
+
+
+def move_named_pose_together(
+    arms: dict[str, Arm], poses: dict[str, dict[str, dict[str, float]]], pose_name: str, speed: float
+) -> list[dict[str, float]]:
+    """Move every arm straight from its current pose to one saved pose, together.
+
+    The saved gripper value is deliberately ignored. Each jaw holds wherever
+    it is while the five arm joints follow a simultaneous minimum-jerk path.
+    """
+
+    if not math.isfinite(speed) or speed <= 0:
+        raise ValueError("speed must be finite and positive")
+    moves = []
+    arm_joints = tuple(joint for joint in MOTORS if joint != GRIPPER)
+    for name, arm in arms.items():
+        saved = poses.get(name, {}).get(pose_name)
+        if saved is None:
+            raise ValueError(f"no pose {pose_name!r} for the {name} arm in poses.toml")
+        missing = [joint for joint in arm_joints if joint not in saved]
+        if missing:
+            raise ValueError(f"pose {name}.{pose_name} has no {', '.join(missing)}")
+        moves.append((arm, {joint: saved[joint] for joint in arm_joints}))
+
+    # The user may have posed a limp arm by hand, or moved a powered arm away
+    # from its old goal. Start from the measured position in either case.
+    for arm, _ in moves:
+        arm.hold()
+        if not arm.torque_is_on():
+            arm.torque_on()
+    return move_together(moves, speed=speed)
 
 
 # A first test on a real arm: from the joint that can do least harm to the one
