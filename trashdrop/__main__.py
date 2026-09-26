@@ -1054,16 +1054,22 @@ def _cmd_dance(args: argparse.Namespace) -> int:
 
     from .arm import connect
     from .dance import dance
+    from .kinematics import Kinematics
+    from .placement import Placement
     from .rig import load_rig
 
     rig = load_rig()
     arms = {}
     try:
         arms = {name: connect(name, rig) for name in ("left", "right")}
+        placed = all(rig.arms[name].sheet for name in arms)
+        kinematics = {name: Kinematics(rig.arms[name].wrist_roll_offset) for name in arms} if placed else None
+        placements = {name: Placement(*rig.arms[name].sheet) for name in arms} if placed else None
         input(f"both arms dance {args.seconds:g} s from where they stand now (to stand them there first: "
-              f"uv run trashdrop arm together crab_start)\n  {args.bpm:g} bpm, rocking {args.rock:g} deg, swaying "
-              f"{args.sway:g} deg. Ctrl+C holds both where they are. Enter starts...")
-        dance(arms, seconds=args.seconds, bpm=args.bpm, rock=args.rock, sway=args.sway)
+              f"uv run trashdrop arm together crab_start)\n  {args.bpm:g} bpm, {args.style}, leaning {args.rock:g} "
+              f"deg, swaying {args.sway:g} deg. Ctrl+C holds both where they are. Enter starts...")
+        dance(arms, seconds=args.seconds, bpm=args.bpm, rock=args.rock, sway=args.sway, style=args.style,
+              kinematics=kinematics, placements=placements)
     except (ValueError, RuntimeError) as error:
         print(error)
         return 1
@@ -1627,8 +1633,10 @@ def build_parser() -> argparse.ArgumentParser:
     crab = sub.add_parser("dance", help="crab rave: both arms rock what they hold between them to a beat")
     crab.add_argument("--bpm", type=float, default=60.0, help="beats a minute (default 60, slow; Crab Rave is 125)")
     crab.add_argument("--rock", type=float, default=5.0,
-                      help="degrees forwards and back from the shoulders, the can kept level (default 5, at most 15)")
-    crab.add_argument("--sway", type=float, default=3.0, help="degrees left and right from the bases (default 3, at most 10)")
+                      help="degrees forwards (and back) from the shoulders, the can kept level (default 5, at most 35)")
+    crab.add_argument("--sway", type=float, default=3.0, help="degrees left and right from the bases (default 3, at most 30)")
+    crab.add_argument("--style", choices=("rock", "bang"), default="rock",
+                      help="rock: forwards and back every two beats; bang: a nod forwards on every beat")
     crab.add_argument("--seconds", type=float, default=20.0)
     crab.set_defaults(func=_cmd_dance)
 

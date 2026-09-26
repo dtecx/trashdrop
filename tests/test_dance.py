@@ -48,6 +48,40 @@ class ChoreographyTests(unittest.TestCase):
         self.assertGreater(forwards[0], kinematics.tcp(start)[0], "a positive lean rocks forwards")
 
 
+class ParallelTests(unittest.TestCase):
+    def test_the_grippers_stay_the_same_distance_apart_as_they_lean(self) -> None:
+        pytest.importorskip("mujoco", reason="needs the simulation extra")
+        from trashdrop.dance import _tcp_on_table, parallel_pans
+        from trashdrop.kinematics import NEUTRAL, Kinematics
+        from trashdrop.placement import Placement
+
+        # The venue: the arms face 11 degrees apart, grippers 40 cm apart.
+        placements = {"left": Placement(11.34, -22.40, -95.14), "right": Placement(17.77, 21.09, -84.12)}
+        kinematics = {"left": Kinematics(-80.0), "right": Kinematics(5.0)}
+        start = {"left": dict(NEUTRAL, wrist_roll=120.0), "right": dict(NEUTRAL, wrist_roll=0.0)}
+        pans = parallel_pans(kinematics, placements, start, 30.0)
+
+        def gap(lean, turned):
+            points = []
+            for name in ("left", "right"):
+                pose = dict(start[name], shoulder_lift=lean, wrist_flex=-lean)
+                if turned:
+                    pose["shoulder_pan"] += float(np.interp(lean, *pans[name]))
+                points.append(_tcp_on_table(kinematics[name], placements[name], pose))
+            return float(np.linalg.norm(points[1] - points[0]))
+
+        rest = gap(0.0, False)
+        self.assertGreater(abs(gap(30.0, False) - rest), 2.0, "uncorrected, 30 degrees pulls them apart")
+        for lean in (-30.0, -12.0, 12.0, 20.0, 30.0):
+            self.assertLess(abs(gap(lean, True) - rest), 0.3, f"corrected at {lean} deg")
+
+    def test_bang_nods_forwards_on_every_beat(self) -> None:
+        leans = [offsets(t, 20.0, bpm=120, rock=10, style="bang")["shoulder_lift"] for t in np.arange(3, 17, 0.01)]
+        self.assertGreaterEqual(min(leans), -1e-9, "forwards only")
+        self.assertAlmostEqual(max(leans), 10.0, delta=0.05)
+        self.assertAlmostEqual(offsets(5.0, 20.0, bpm=120, rock=10, style="bang")["shoulder_lift"], 0.0, places=6)
+
+
 class DanceTests(unittest.TestCase):
     def arms(self, clock, stop=None):
         buses = {"left": FakeBus(), "right": FakeBus()}
@@ -102,6 +136,8 @@ class DanceTests(unittest.TestCase):
         before = len(buses["left"].goals_streamed())
         with self.assertRaises(ValueError):
             dance(arms, seconds=10.0, rock=40.0, log=lambda *_: None, clock=clock, sleep=clock.sleep)
+        with self.assertRaises(ValueError):
+            dance(arms, seconds=10.0, style="twerk", log=lambda *_: None, clock=clock, sleep=clock.sleep)
         self.assertEqual(len(buses["left"].goals_streamed()), before)
 
 
