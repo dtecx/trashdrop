@@ -39,9 +39,10 @@ class ArmDevices:
     camera: str | None = None  # wrist camera, USB vendor:product
     label: str = ""  # what is written on the arm
     max_speed: float = DEFAULT_MAX_SPEED  # degrees per second
-    # Where the arm stands relative to the marker sheet: (x cm, y cm, yaw deg,
-    # table height cm), from `trashdrop rig touch`. None until it is touched.
-    sheet: tuple[float, float, float, float] | None = None
+    # Where the arm stands relative to the calibration frame, and the table's
+    # plane in its own frame: (x cm, y cm, yaw deg, table_z cm, dz/dx, dz/dy),
+    # from `trashdrop rig touch`. None until it is touched.
+    sheet: tuple[float, ...] | None = None
     # Tape corners this arm touched: name -> (x, y, z) cm in its own frame.
     touches: dict[str, tuple[float, float, float]] = field(default_factory=dict)
 
@@ -107,7 +108,7 @@ def load_rig(path: Path = RIG_FILE) -> Rig:
             label=section.get("label", DEFAULT_LABELS[name]),
             max_speed=float(section.get("max_speed", DEFAULT_MAX_SPEED)),
             sheet=(
-                tuple(float(section["sheet"][key]) for key in ("x", "y", "yaw", "table_z"))
+                tuple(float(section["sheet"].get(key, 0.0)) for key in ("x", "y", "yaw", "table_z", "dz_dx", "dz_dy"))
                 if "sheet" in section else None
             ),
             touches={name: tuple(float(v) for v in point) for name, point in section.get("touches", {}).items()},
@@ -150,10 +151,10 @@ def render(rig: Rig) -> str:
             points = ", ".join(f"{name} = [{x:.2f}, {y:.2f}, {z:.2f}]" for name, (x, y, z) in arm.touches.items())
             lines.append(f"touches = {{ {points} }}  # tape corners touched, cm in the arm's frame")
         if arm.sheet:
-            x, y, yaw, table_z = arm.sheet
+            x, y, yaw, table_z, dz_dx, dz_dy = (tuple(arm.sheet) + (0.0, 0.0))[:6]
             lines.append(
-                f"sheet = {{ x = {x:.2f}, y = {y:.2f}, yaw = {yaw:.2f}, table_z = {table_z:.2f} }}"
-                "  # from `rig touch`: cm, deg"
+                f"sheet = {{ x = {x:.2f}, y = {y:.2f}, yaw = {yaw:.2f}, table_z = {table_z:.2f}, "
+                f"dz_dx = {dz_dx:.4f}, dz_dy = {dz_dy:.4f} }}  # from `rig touch`: cm, deg, table plane"
             )
     return "\n".join(lines) + "\n"
 

@@ -80,6 +80,14 @@ class TapeTests(unittest.TestCase):
         self.assertNotIn("right", solution.placements)
         self.assert_camera_to_arm(solution, "left", cam, 0.8)
 
+    def test_each_arm_gets_the_table_plane_through_its_own_touches(self) -> None:
+        # The venue's left arm read the flat table lower the further it reached.
+        touches = touches_for(("left", "right"))
+        touches["left"] = {name: (x, y, 0.88 - 0.095 * x + 0.104 * y) for name, (x, y, _) in touches["left"].items()}
+        solution = solve(touches, pixels_for(camera()))
+        self.assertAlmostEqual(solution.placements["left"].table_height(20.0, -20.0), 0.88 - 1.9 - 2.08, places=6)
+        self.assertAlmostEqual(solution.placements["right"].table_height(20.0, 20.0), -1.9, places=6)
+
     def test_what_is_missing_is_said(self) -> None:
         self.assertTrue(solve({}, None).missing)
         solution = solve(touches_for(("left",)), None)

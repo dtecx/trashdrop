@@ -37,9 +37,15 @@ repository agrees within a few millimetres. The numbers live in
    edge, moving finger landing on the item -- only a sheet can be taken like
    that).
 2. Open the jaw to `plan.opening_m`, not fully.
-3. Lower the fixed finger to `plan.fixed_finger(...)`, fingertips a few
-   millimetres above the table. The pads then span roughly 3–47 mm of height,
-   which covers the middle of a can or bottle lying down.
+3. Lower the fixed finger to `plan.fixed_finger(...)`, fingertips about
+   13 mm above the table (`sorter.GRASP_HEIGHT_CM`), which covers the middle
+   of a 3 cm handle and of a can or bottle lying down. "The table" is the
+   plane through the corners that arm touched: the venue's arms read the flat
+   table up to 3 cm lower at full reach than beside their bases, so one
+   height for the whole zone either hits the table near the base or closes
+   above the item far out. The hover above the item measures how far the
+   loaded joints sag below their goals; the descent is raised by as much,
+   and the pick prints where the fingertips really ended up.
 4. Close with a torque limit and read the gripper position. Closed all the way
    means nothing is between the fingers: a miss.
 5. Lift 2 cm and look again. If the item is still in the pick zone, try the

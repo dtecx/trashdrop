@@ -72,6 +72,16 @@ class RigFileTests(unittest.TestCase):
         self.assertEqual(loaded.tape_pixels, rig.tape_pixels)
         self.assertEqual(loaded.pick_zone.corners(), [(-16.0, 15.5), (15.0, 13.0), (14.0, -14.5), (-15.5, -12.0)])
 
+    def test_the_table_plane_survives_the_file_and_older_files_still_load(self) -> None:
+        rig = Rig()
+        rig.arms["left"] = ArmDevices(bus="5AAF219965", sheet=(19.12, -21.7, -95.36, 0.88, -0.095, 0.1037))
+        with tempfile.TemporaryDirectory() as directory:
+            path = save_rig(rig, Path(directory) / "rig.toml")
+            self.assertEqual(load_rig(path).arms["left"].sheet, rig.arms["left"].sheet)
+            path.write_text(path.read_text().replace(", dz_dx = -0.0950, dz_dy = 0.1037", ""))
+            older = load_rig(path)
+        self.assertEqual(older.arms["left"].sheet, (19.12, -21.7, -95.36, 0.88, 0.0, 0.0), "a level table")
+
     def test_no_rig_toml_means_nothing_identified(self) -> None:
         rig = load_rig(Path("/nonexistent/rig.toml"))
         self.assertTrue(all(arm.bus is None for arm in rig.arms.values()))

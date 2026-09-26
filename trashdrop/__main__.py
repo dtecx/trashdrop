@@ -379,7 +379,8 @@ def _apply_tape(rig) -> None:
     solution = solve({arm: devices.touches for arm, devices in rig.arms.items() if devices.touches},
                      rig.tape_pixels or None)
     for arm, placement in solution.placements.items():
-        rig.arms[arm].sheet = (placement.x, placement.y, placement.yaw, placement.table_z)
+        rig.arms[arm].sheet = (placement.x, placement.y, placement.yaw, placement.table_z,
+                               placement.dz_dx, placement.dz_dy)
         misses = ", ".join(f"{LABELS[name]} {value:.1f} cm" for name, value in solution.residuals[arm].items())
         print(f"  {arm} arm fits its touches to within: {misses}")
     if solution.corners:
@@ -403,7 +404,7 @@ def _cmd_rig_touch(args: argparse.Namespace) -> int:
 
     from .camera.markers import MARKER_SHEET_CM
     from .kinematics import Kinematics
-    from .placement import fit_placement
+    from .placement import Placement, fit_placement, fit_table
     from .rig import load_rig, save_rig
 
     rig = load_rig()
@@ -452,19 +453,21 @@ def _cmd_rig_touch(args: argparse.Namespace) -> int:
         _apply_tape(rig)
         return 0
 
-    table_z = float(np.mean([tip[2] for _, tip in touched]))
-    placement, residuals = fit_placement([points[name] for name, _ in touched], [tip[:2] for _, tip in touched], table_z)
+    placement, residuals = fit_placement([points[name] for name, _ in touched], [tip[:2] for _, tip in touched])
+    table_z, dz_dx, dz_dy = fit_table([tip for _, tip in touched])
+    placement = Placement(placement.x, placement.y, placement.yaw, table_z, dz_dx, dz_dy)
     print()
     for (name, _), residual in zip(touched, residuals):
         print(f"  {name}: the fit misses it by {residual:.1f} cm")
     if max(residuals) > 1.5:
         print("  more than 1.5 cm off: a fingertip was not on its point, the zone's size in rig.toml is wrong,\n"
               "  or a joint's calibration is off. Touch again.")
-    rig.arms[arm.name].sheet = (placement.x, placement.y, placement.yaw, placement.table_z)
+    rig.arms[arm.name].sheet = (placement.x, placement.y, placement.yaw, placement.table_z,
+                                placement.dz_dx, placement.dz_dy)
     save_rig(rig)
     print(
         f"{arm.name}: the sheet's centre is {placement.x:.1f} cm forward, {placement.y:.1f} cm left of the arm, "
-        f"turned {placement.yaw:.0f} deg; the sheet is at z {table_z:.1f} cm. Saved to rig.toml."
+        f"turned {placement.yaw:.0f} deg. Saved to rig.toml."
     )
     return 0
 
@@ -652,8 +655,7 @@ def _cmd_pick(args: argparse.Namespace) -> int:
             return empty, searched
 
         background, valid = photograph_empty_table()
-        print(f"ready. The camera looks only inside the pick zone ({rig.pick_zone.width:g} x "
-              f"{rig.pick_zone.height:g} cm, green in out/pick_zone.jpg).")
+        print("ready. The camera looks only inside the pick zone (green in out/pick_zone.jpg).")
 
         while True:
             answer = input("\nPut an item within reach, then Enter (b = photograph the empty table again, q = quit): ")
@@ -681,7 +683,8 @@ def _cmd_pick(args: argparse.Namespace) -> int:
             )
             if input("  Enter = go, s = skip: ").strip().lower() == "s":
                 continue
-            execute_pick(arms[plan.arm], plan, poses[plan.arm]["neutral"], dry_run=args.dry_run)
+            execute_pick(arms[plan.arm], plan, poses[plan.arm]["neutral"], kinematics=kinematics,
+                         dry_run=args.dry_run)
     except KeyboardInterrupt:
         print("\nstopped; the arms hold where they are")
         return 130

@@ -25,14 +25,16 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .kinematics import LEANS_DEG
+from .kinematics import FINGERTIP_BEYOND_TCP, LEANS_DEG
 from .perception.grasp import GraspPlan, plan_grasp
 from .placement import Placement
 
 ANALYSIS_WIDTH = 320
 # Where the TCP goes above the table to grasp, and how far back along the
 # fingers the approach starts -- as far as the reach allows at that spot.
-GRASP_HEIGHT_CM = 2.5
+# 2 cm puts the fingertips about 1.3 cm above the table: under the middle of a
+# 3 cm handle, and the pads still cover a lying bottle's middle.
+GRASP_HEIGHT_CM = 2.0
 BACK_OFF_CM = (7.0, 6.0, 5.0, 4.0)
 DESCENT_SPEED = 15.0  # deg/s for the last few centimetres
 # The ring around a base where items are looked for, cm: fingers straight down
@@ -64,6 +66,13 @@ class PickPlan:
     pixel: tuple[float, float]  # where the fixed finger goes, full-resolution pixels
     lean_deg: float = 0.0  # how far the fingers lean away from the base
     moving_pixel: tuple[float, float] | None = None  # where the moving finger comes down
+    table_cm: float | None = None  # the table's height under the target, in the arm's frame
+
+    @property
+    def fingertip_above_table_cm(self) -> float:
+        """Where the plan puts the fixed fingertip, above the table."""
+
+        return GRASP_HEIGHT_CM - FINGERTIP_BEYOND_TCP * 100 * float(np.cos(np.radians(self.lean_deg)))
 
 
 def sheet_points(homography, us, vs) -> np.ndarray:
@@ -224,7 +233,8 @@ def plan_pick(item_small, scale: float, homography, placements: dict[str, Placem
         target_sheet, direction_sheet = ends[0], ends[1] - ends[0]
         yaw = placement.direction_to_arm(float(np.degrees(np.arctan2(direction_sheet[1], direction_sheet[0]))))
         x, y = placement.to_arm(target_sheet)
-        target = np.array([x, y, placement.table_z + GRASP_HEIGHT_CM]) / 100
+        table_cm = placement.table_height(x, y)
+        target = np.array([x, y, table_cm + GRASP_HEIGHT_CM]) / 100
         found = None
         for lean in LEANS_DEG:
             down = kinematics.solve(target, yaw_deg=yaw, limits=limits.get(name), lean_deg=lean)
@@ -246,7 +256,7 @@ def plan_pick(item_small, scale: float, homography, placements: dict[str, Placem
         above, down, lean = found
         return PickPlan(name, above.degrees, down.degrees, gripper_percent_for(grasp.opening_m), grasp,
                         (float(x), float(y)), (float(fixed_px[0]), float(fixed_px[1])), lean,
-                        (float(moving_px[0]), float(moving_px[1]))), None
+                        (float(moving_px[0]), float(moving_px[1])), table_cm), None
     return None, "; ".join(reasons) or "no calibrated arm"
 
 
@@ -290,10 +300,42 @@ def drop_pose(arm: str) -> dict[str, float]:
 MISS_BELOW = 4.0  # percent: jaws told to close that stop below this hold nothing
 RELEASE_OPEN = 60.0
 
+# An arm reaching out hangs a little below its goal under its own weight, and
+# the touches that found the table were made limp, without that sag. The hover
+# above the item measures it in the air, where nothing can be hit, and the
+# grasp goal is raised by as much, so the fingertips come down where planned.
+SAG_JOINTS = ("shoulder_lift", "elbow_flex", "wrist_flex")
+SAG_LIMIT_DEG = 4.0  # more than this is not sag: something is wrong, correct nothing
+SETTLE_S = 0.5
+STILL_DEG = 0.3  # a joint that moved less than this in 0.2 s has settled
 
-def execute_pick(arm, plan: PickPlan, neutral: dict[str, float], *, dry_run: bool = False,
+
+def measure_sag(arm, goal: dict[str, float], sleep) -> tuple[dict[str, float], dict[str, float]]:
+    """(the pose the arm settled in, degrees each loaded joint hangs below ``goal``).
+
+    The sag is empty when the arm has not settled or hangs implausibly far off:
+    then nothing is corrected.
+    """
+
+    sleep(SETTLE_S)
+    first = arm.pose()
+    sleep(0.2)
+    present = arm.pose()
+    if any(abs(present[joint] - first[joint]) > STILL_DEG for joint in SAG_JOINTS):
+        return present, {}
+    sag = {joint: goal[joint] - present[joint] for joint in SAG_JOINTS}
+    if any(abs(value) > SAG_LIMIT_DEG for value in sag.values()):
+        return present, {}
+    return present, sag
+
+
+def execute_pick(arm, plan: PickPlan, neutral: dict[str, float], *, kinematics=None, dry_run: bool = False,
                  sleep=None, log=print) -> bool:
-    """Carry out a PickPlan with a real (or fake) Arm; True if something was dropped."""
+    """Carry out a PickPlan with a real (or fake) Arm; True if something was dropped.
+
+    With ``kinematics`` the hover measures the arm's sag and the descent makes
+    up for it, and the fingertips' real height above the table is reported.
+    """
 
     import time
 
@@ -303,13 +345,24 @@ def execute_pick(arm, plan: PickPlan, neutral: dict[str, float], *, dry_run: boo
     arm.move({gripper: plan.open_percent})
     log(f"{arm.name}: above the item")
     arm.move(plan.above)
+    grasp = dict(plan.grasp)
+    if kinematics is not None:
+        present, sag = measure_sag(arm, plan.above, sleep)
+        low_cm = (kinematics.fingertip(plan.above)[2] - kinematics.fingertip(present)[2]) * 100
+        hanging = ", ".join(f"{joint} {value:+.1f}" for joint, value in sag.items()) or "not measured, not corrected"
+        log(f"{arm.name}: hovering {low_cm:.1f} cm below where it was sent (sag, deg: {hanging})")
+        grasp.update({joint: grasp[joint] + value for joint, value in sag.items()})
     if dry_run:
         log(f"{arm.name}: dry run -- hovering over the item for 3 s, then back")
         sleep(3.0)
         arm.move(neutral)
         return False
     log(f"{arm.name}: down")
-    arm.move(plan.grasp, speed=DESCENT_SPEED)
+    arm.move(grasp, speed=DESCENT_SPEED)
+    if kinematics is not None and plan.table_cm is not None:
+        sleep(SETTLE_S)
+        tip_cm = kinematics.fingertip(arm.pose())[2] * 100 - plan.table_cm
+        log(f"{arm.name}: fingertips {tip_cm:.1f} cm above the table (planned {plan.fingertip_above_table_cm:.1f})")
     held = arm.move({gripper: 0.0})[gripper]
     if held < MISS_BELOW:
         log(f"{arm.name}: the jaws closed to {held:.0f} %: nothing between them, a miss")

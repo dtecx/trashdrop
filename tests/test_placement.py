@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 
 from trashdrop.camera.markers import MARKER_SHEET_CM
-from trashdrop.placement import Placement, fit_placement
+from trashdrop.placement import Placement, fit_placement, fit_table
 
 
 class PlacementTests(unittest.TestCase):
@@ -25,6 +25,16 @@ class PlacementTests(unittest.TestCase):
         self.assertAlmostEqual(fitted.y, truth.y, delta=0.3)
         self.assertAlmostEqual(fitted.yaw, truth.yaw, delta=1.5)
         self.assertLess(max(residuals), 0.6)
+
+    def test_the_table_is_the_plane_through_the_touches(self) -> None:
+        # The venue's left arm read the flat table 3 cm lower at full reach than beside its base.
+        touches = [(33.84, -9.56, -3.33), (3.63, -35.98, -3.20), (6.54, -4.97, -0.26)]
+        placement = Placement(0.0, 0.0, 0.0, *fit_table(touches))
+        for x, y, z in touches:
+            self.assertAlmostEqual(placement.table_height(x, y), z, places=6)
+
+    def test_fewer_than_three_touches_give_a_level_table(self) -> None:
+        self.assertEqual(fit_table([(10.0, 0.0, -2.0), (20.0, 5.0, -3.0)]), (-2.5, 0.0, 0.0))
 
     def test_a_direction_on_the_sheet_turns_with_the_arm(self) -> None:
         self.assertAlmostEqual(Placement(0, 0, 90.0).direction_to_arm(0.0), 90.0)

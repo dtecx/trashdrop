@@ -19,12 +19,23 @@ import numpy as np
 
 @dataclass(frozen=True)
 class Placement:
-    """arm_xy = R(yaw) @ sheet_xy + (x, y), in cm; ``table_z`` is the sheet's height in the arm's frame."""
+    """arm_xy = R(yaw) @ sheet_xy + (x, y), in cm.
+
+    The table's height in the arm's frame is a plane, ``table_z + dz_dx * x +
+    dz_dy * y`` at the arm-frame point (x, y): the arm's small calibration
+    errors make it read the flat table lower the further it reaches, and a
+    plane through its own touches takes that out where it matters.
+    """
 
     x: float
     y: float
     yaw: float
     table_z: float = 0.0
+    dz_dx: float = 0.0
+    dz_dy: float = 0.0
+
+    def table_height(self, arm_x: float, arm_y: float) -> float:
+        return self.table_z + self.dz_dx * arm_x + self.dz_dy * arm_y
 
     def to_arm(self, sheet_xy) -> np.ndarray:
         angle = np.radians(self.yaw)
@@ -53,3 +64,14 @@ def fit_placement(sheet_points, arm_points, table_z: float = 0.0) -> tuple[Place
     placement = Placement(float(shift[0]), float(shift[1]), float(np.degrees(angle)), table_z)
     residuals = [float(np.linalg.norm(placement.to_arm(s) - p)) for s, p in zip(sheet, arm)]
     return placement, residuals
+
+
+def fit_table(points) -> tuple[float, float, float]:
+    """(table_z at the arm's origin, dz/dx, dz/dy) of the plane through touched (x, y, z) points."""
+
+    points = np.asarray(points, dtype=float)
+    if len(points) < 3:
+        return float(points[:, 2].mean()), 0.0, 0.0
+    design = np.c_[np.ones(len(points)), points[:, 0], points[:, 1]]
+    (z0, dx, dy), *_ = np.linalg.lstsq(design, points[:, 2], rcond=None)
+    return float(z0), float(dx), float(dy)

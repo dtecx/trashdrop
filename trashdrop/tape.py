@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .placement import Placement, fit_placement
+from .placement import Placement, fit_placement, fit_table
 
 CORNERS = ("far_left", "far_right", "near_right", "near_left")
 LABELS = {"far_left": "far left", "far_right": "far right", "near_right": "near right", "near_left": "near left"}
@@ -91,10 +91,10 @@ def solve(touches: dict[str, dict[str, tuple[float, float, float]]],
     for arm in arms:
         touched = touches[arm]
         names = list(touched)
-        table_z = float(np.mean([touched[name][2] for name in names]))
         placement, residuals = fit_placement([solution.corners[name] for name in names],
-                                             [touched[name][:2] for name in names], table_z)
-        solution.placements[arm] = placement
+                                             [touched[name][:2] for name in names])
+        z0, dz_dx, dz_dy = fit_table([touched[name] for name in names])
+        solution.placements[arm] = Placement(placement.x, placement.y, placement.yaw, z0, dz_dx, dz_dy)
         solution.residuals[arm] = dict(zip(names, residuals))
 
     if pixels and all(name in pixels for name in CORNERS):
