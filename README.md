@@ -42,12 +42,21 @@ uv run trashdrop rig touch left --tape   # the fixed fingertip on each taped cor
 uv run trashdrop camera tape             # click the same corners in the overhead picture
 uv run trashdrop rig roll left           # where the wrist roll's zero really is (jaw across, not along)
 uv run trashdrop pick --dry-run          # find an item, plan, hover over it; drop --dry-run to grasp
+uv run trashdrop pick                    # plastic and metal go left, paper right; unsure stays put
 uv run trashdrop arm status              # both arms, every joint in degrees; moves nothing
 uv run trashdrop arm save left rest      # pose the limp arm by hand, record it in poses.toml
 uv run trashdrop arm go left rest        # play it back slowly (max_speed in rig.toml)
 uv run trashdrop arm jog left wrist_flex 10
 uv run trashdrop arm gripper left open   # or close, or a percent
 uv run trashdrop arm relax left          # limp again -- hold it if it is in the air
+```
+
+Sorting by material needs the classifier, once per machine (the model is
+350 MB and not in git; the training environment has CLIP's weights):
+
+```bash
+(cd training && uv run python export.py) # writes models/material/: CLIP as ONNX, and its head
+uv sync --inexact --extra classifier     # onnxruntime for the cell
 ```
 
 Live viewer (macOS needs `mjpython`, which the `mujoco` wheel installs):

@@ -699,14 +699,18 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     from .rig import load_rig
     from .sorter import (
         FINGERTIPS_CM,
+        MIN_CONFIDENCE,
+        SIDE_OF,
         draw_detection,
         draw_plan,
         draw_zone,
         execute_pick,
         find_item,
+        item_crop,
         plan_pick,
         reach_mask,
         refine_item,
+        side_for,
         zone_mask,
     )
     from .station import FLAT_PINCH_WIDTH, repository_root
@@ -735,6 +739,14 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     homography = HomographyCalibration.load(sheet_file)
     poses = load_poses()
     kinematics = {name: Kinematics(rig.arms[name].wrist_roll_offset) for name in placements}
+    classifier = None
+    if not args.any_arm and not args.material:
+        from .perception.classifier import ClipMaterialClassifier
+
+        try:
+            classifier = ClipMaterialClassifier()
+        except (FileNotFoundError, RuntimeError) as error:
+            print(f"no material classifier ({error}).\n  Every item goes to the nearer arm; --any-arm hides this.")
     arms = {name: connect(name, rig) for name in placements}
     capture = None
     try:
@@ -789,11 +801,32 @@ def _cmd_pick(args: argparse.Namespace) -> int:
                 print(f"  {detection.reason}  (out/pick_seen.jpg shows what changed)")
                 continue
             item, item_scale = refine_item(frame, background, detection, valid)
-            plan, reason = plan_pick(item, item_scale, homography, placements, kinematics, limits,
+            side = None
+            if args.material:
+                side = SIDE_OF[args.material]
+                print(f"  told it is {args.material}: it goes {side}")
+            elif classifier is not None:
+                crop = item_crop(frame, item, item_scale)
+                cv2.imwrite(str(args.out / "pick_crop.jpg"), crop)
+                probabilities = classifier.probabilities(crop)
+                side, sure = side_for(probabilities, MIN_CONFIDENCE if args.min_confidence is None else args.min_confidence)
+                ranked = ", ".join(f"{name} {p:.2f}" for name, p in sorted(probabilities.items(), key=lambda kv: -kv[1]))
+                if side is None:
+                    print(f"  not sure what it is ({ranked}): leave it for a person (out/pick_crop.jpg)")
+                    continue
+                print(f"  it goes {side} ({ranked})")
+            candidates = placements if side is None else {name: p for name, p in placements.items() if name == side}
+            if not candidates:
+                print(f"  it goes {side}, but the {side} arm is not in use: leave it, or run without --arm")
+                continue
+            plan, reason = plan_pick(item, item_scale, homography, candidates, kinematics, limits,
                                      fingertips_cm=FINGERTIPS_CM if args.fingertips is None else args.fingertips)
             cv2.imwrite(str(args.out / "pick_plan.jpg"), draw_plan(frame, item, item_scale, plan))
             if plan is None:
-                print(f"  cannot pick it: {reason}")
+                if side is not None:
+                    print(f"  the {side} arm cannot take it ({reason}): move it towards the {side} arm")
+                else:
+                    print(f"  cannot pick it: {reason}")
                 continue
             others = ", ".join(f"the {name} {cm:.0f} cm" for name, cm in plan.distances_cm.items() if name != plan.arm)
             print(
@@ -820,6 +853,8 @@ def _cmd_pick(args: argparse.Namespace) -> int:
             capture.release()
         for arm in arms.values():
             arm.bus.close()
+        if classifier is not None:
+            classifier.close()
     return 0
 
 
@@ -1386,7 +1421,14 @@ def build_parser() -> argparse.ArgumentParser:
     pick.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")
     pick.add_argument("--dry-run", action="store_true", help="only hover over the item, never grasp")
     pick.add_argument("--arm", default=None,
-                      help="use only this arm: left, right (or its label); by default the nearer one takes each item")
+                      help="use only this arm: left, right (or its label); by default the arm on the side the "
+                           "item's material goes to takes it")
+    pick.add_argument("--material", choices=("plastic", "metal", "paper"), default=None,
+                      help="say what the item is instead of asking the classifier (plastic and metal go left)")
+    pick.add_argument("--any-arm", action="store_true",
+                      help="do not sort: the nearer arm takes every item and drops it on its own side")
+    pick.add_argument("--min-confidence", type=float, default=None,
+                      help="how sure the classifier must be before an item is sorted (default 0.8)")
     pick.add_argument("--fingertips", type=float, default=None,
                       help="how far above the table the fixed fingertip comes down, cm (default 0.5, at least 0.2)")
     pick.set_defaults(func=_cmd_pick)

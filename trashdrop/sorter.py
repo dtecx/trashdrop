@@ -236,6 +236,44 @@ def refine_item(frame, background, detection: Detection, valid_small) -> tuple[n
     return fine, scale
 
 
+# Which side each material goes to, and so which arm takes it: each arm drops
+# only on its own side. Metal goes with plastic, as in Poland's yellow bin
+# ("metale i tworzywa sztuczne"). Anything else is left for a person.
+SIDE_OF = {"plastic": "left", "metal": "left", "paper": "right"}
+# The classifier's certainty an item needs before it is sorted. On 17 of our
+# objects it had never seen (training/evaluate.py, one object left out at a
+# time), this rule sent nothing to the wrong side from 0.7 up; at 0.8 it
+# sorted 380 of 407 frames and left the other 27.
+MIN_CONFIDENCE = 0.8
+CROP_PADDING_PX = 10  # table kept around the item, as around the training crops
+
+
+def side_for(probabilities: dict[str, float], min_confidence: float = MIN_CONFIDENCE) -> tuple[str | None, float]:
+    """(which side the item goes to, how sure of that side); the side is None when not sure enough."""
+
+    sure: dict[str, float] = {}
+    for material, probability in probabilities.items():
+        side = SIDE_OF.get(material)
+        if side is not None:
+            sure[side] = sure.get(side, 0.0) + probability
+    if not sure:
+        return None, 0.0
+    side = max(sure, key=sure.get)
+    return (side if sure[side] >= min_confidence else None), sure[side]
+
+
+def item_crop(frame, item, scale: float) -> np.ndarray:
+    """The item cut out of the full-resolution frame, a little table around it."""
+
+    height, width = frame.shape[:2]
+    ys, xs = np.nonzero(item)
+    x0 = max(int(xs.min() * scale) - CROP_PADDING_PX, 0)
+    x1 = min(int(np.ceil((xs.max() + 1) * scale)) + CROP_PADDING_PX, width)
+    y0 = max(int(ys.min() * scale) - CROP_PADDING_PX, 0)
+    y1 = min(int(np.ceil((ys.max() + 1) * scale)) + CROP_PADDING_PX, height)
+    return frame[y0:y1, x0:x1].copy()
+
+
 def draw_zone(frame, zone_small, searched_small) -> np.ndarray:
     """The pick zone outlined in green; its part no arm can reach shaded."""
 

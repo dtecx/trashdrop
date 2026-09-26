@@ -137,7 +137,10 @@ this list fails, fix the code, not the test.
 9. **Anything uncertain goes to `mixed`.** Low classifier confidence, unknown
    category, too wide for the jaws, too heavy. The pitch promises the cell
    flags what it cannot handle instead of guessing; that promise lives in
-   `TwoArmDispatcher.dispatch` and `station.is_graspable`.
+   `TwoArmDispatcher.dispatch` and `station.is_graspable` -- and, on the real
+   arms, in `sorter.side_for`: below `MIN_CONFIDENCE` an item is left on the
+   table for a person, never sent to a side. Lowering it trades wrong sides
+   for coverage; training/evaluate.py says where the wrong sides start.
 
 ## Commands
 
