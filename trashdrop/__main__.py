@@ -700,6 +700,7 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     from .sorter import (
         FINGERTIPS_CM,
         MIN_CONFIDENCE,
+        PICK_TRIES,
         SIDE_OF,
         draw_detection,
         draw_plan,
@@ -843,8 +844,32 @@ def _cmd_pick(args: argparse.Namespace) -> int:
                       "the item is tall.")
             if input("  Enter = go, s = skip: ").strip().lower() == "s":
                 continue
-            execute_pick(arms[plan.arm], plan, poses[plan.arm]["neutral"], kinematics=kinematics[plan.arm],
-                         dry_run=args.dry_run)
+            name = plan.arm
+            execute_pick(arms[name], plan, poses[name]["neutral"], kinematics=kinematics[name], dry_run=args.dry_run)
+            # Caught or not, the overhead camera says: the arm is back in neutral,
+            # as it was when the empty zone was photographed.
+            tries = 1
+            while not args.dry_run:
+                after_frame = grab()
+                after = find_item(after_frame, background, valid)
+                cv2.imwrite(str(args.out / "pick_after.jpg"), draw_detection(after_frame, after, valid))
+                if after.code == "nothing_changed":
+                    print("  done: the zone is empty again")
+                    break
+                if after.item is None or tries == PICK_TRIES:
+                    print(f"  it is still in the zone after {tries} {'try' if tries == 1 else 'tries'}"
+                          f"{'' if after.item is not None else ' (' + after.reason + ')'}: "
+                          "leave it for a person (out/pick_after.jpg)")
+                    break
+                item, item_scale = refine_item(after_frame, background, after, valid)
+                plan, reason = plan_pick(item, item_scale, homography, {name: placements[name]}, kinematics, limits,
+                                         fingertips_cm=FINGERTIPS_CM if args.fingertips is None else args.fingertips)
+                if plan is None:
+                    print(f"  it is still in the zone, and the {name} arm cannot take it now: {reason}")
+                    break
+                tries += 1
+                print(f"  it is still in the zone -- it slipped out, or was never caught. Try {tries} of {PICK_TRIES}")
+                execute_pick(arms[name], plan, poses[name]["neutral"], kinematics=kinematics[name])
     except KeyboardInterrupt:
         print("\nstopped; the arms hold where they are")
         return 130

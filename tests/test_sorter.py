@@ -22,6 +22,7 @@ from trashdrop.placement import Placement  # noqa: E402
 from trashdrop.rig import PickZone  # noqa: E402
 from trashdrop.sorter import (  # noqa: E402
     GRASP_HEIGHT_CM,
+    RELEASE_OPEN,
     draw_detection,
     draw_zone,
     find_item,
@@ -225,6 +226,14 @@ class DetectionTests(unittest.TestCase):
         self.assertGreater(abs(np.dot(plan.across, (np.cos(np.radians(10)), np.sin(np.radians(10))))), 0.97)
         self.assertLess(np.hypot(*(np.array(plan.center) * scale - (960, 540))), 15.0, "through the middle")
 
+    def test_an_empty_zone_says_so(self) -> None:
+        # What the pick checks after every drop: nothing left means it was caught.
+        empty = self.table()
+        self.assertEqual(find_item(empty.copy(), empty, self.zone).code, "nothing_changed")
+        frame = empty.copy()
+        cv2.rectangle(frame, (900, 500), (1000, 560), (60, 90, 170), -1)
+        self.assertEqual(find_item(frame, empty, self.zone).code, "ok")
+
     def test_an_item_already_there_in_the_empty_photo_is_explained(self) -> None:
         with_item = self.table()
         cv2.rectangle(with_item, (900, 500), (1000, 560), (60, 90, 170), -1)
@@ -314,10 +323,13 @@ class ExecuteTests(unittest.TestCase):
         self.assertNotIn(self.PLAN.grasp, arm.moves)
         self.assertEqual(arm.moves[-1], self.NEUTRAL)
 
-    def test_a_miss_is_not_carried(self) -> None:
+    def test_a_jaw_closed_almost_shut_still_carries_its_item(self) -> None:
+        # A crumpled receipt closes the jaw as far as nothing does. At the venue
+        # such items were taken for misses and never let go.
         arm = FakeArm(stops_at=1.0)
-        self.assertFalse(execute_pick(arm, self.PLAN, self.NEUTRAL, log=lambda *_: None))
-        self.assertNotIn(drop_pose("left"), arm.moves)
+        self.assertTrue(execute_pick(arm, self.PLAN, self.NEUTRAL, log=lambda *_: None))
+        released = arm.moves.index(drop_pose("left")) + 1
+        self.assertEqual(arm.moves[released], {"gripper": RELEASE_OPEN})
 
     def test_the_jaws_open_only_over_the_arms_own_side(self) -> None:
         arm = FakeArm("right")

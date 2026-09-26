@@ -50,13 +50,16 @@ repository agrees within a few millimetres. The numbers live in
    turned to close across the item with each arm's own wrist roll zero
    (`rig roll`): at the venue the left arm's was a quarter turn from the
    model's, and its first grasp closed along a screwdriver, beside it.
-4. Close with a torque limit and read the gripper position. Closed all the way
-   means nothing is between the fingers: a miss.
-5. Lift 2 cm and look again. If the item is still in the pick zone, try the
-   next candidate. After two misses, hand it to the other arm, whose gripper
-   may suit it better; that arm cannot reach this material's bin, so the item
-   goes to mixed. Failing that, leave it for a human. Nothing is carried over
-   a material bin unless the checks passed.
+4. Close, lift, turn to the arm's side and open -- whatever the jaw reads.
+   Closed all the way does not mean empty: a crumpled receipt or a squashed
+   bottle closes the jaw as far as nothing does, and at the venue such
+   items were taken for misses and never let go. Opening an empty jaw over
+   the right side harms nothing.
+5. Back in neutral, the overhead camera looks at the zone, as it did when
+   the zone was photographed empty. Empty now: caught. Still there: it
+   slipped out or was never caught, and is planned and tried again, three
+   tries in all (`sorter.PICK_TRIES`); then it is left for a human. It only
+   ever goes to its own material's side: the arm was chosen for that.
 
 Things the planner cannot know from one overhead camera:
 

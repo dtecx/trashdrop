@@ -119,6 +119,9 @@ class Detection:
     scale: float  # full-resolution pixels per analysis pixel
     reason: str
     changed: np.ndarray  # everything that differs from the empty table, for a look
+    # "ok", "nothing_changed" (the zone looks empty), "touches_frame_edge",
+    # "more_than_one_object" or "untrusted" (the picture changed too much).
+    code: str = "ok"
 
 
 # Items are looked for this far inside the zone's edge, clear of tape marking it.
@@ -157,7 +160,8 @@ def find_item(frame, background, valid_small) -> Detection:
     mask, fit = _foreground(small, reference, 28, valid_small)
     if not fit.trusted:
         return Detection(None, scale, "the picture changed too much to compare with the empty table "
-                         "(light changed? camera moved?) -- press b to photograph the empty table again", mask)
+                         "(light changed? camera moved?) -- press b to photograph the empty table again", mask,
+                         "untrusted")
     region, reason = find_item_region(mask, edge_margin_px=EDGE_MARGIN_PX, valid_mask=valid_small)
     if region is None:
         changed = int((mask > 0).sum())
@@ -167,7 +171,7 @@ def find_item(frame, background, valid_small) -> Detection:
             "touches_frame_edge": "the item runs out of the reachable area: move it closer to an arm",
             "more_than_one_object": "two separate things changed: one item at a time, and nothing moving nearby",
         }
-        return Detection(None, scale, explanation.get(reason, reason), mask)
+        return Detection(None, scale, explanation.get(reason, reason), mask, reason)
     hull = np.zeros(mask.shape, np.uint8)
     cv2.fillPoly(hull, [region.hull.reshape(-1, 2)], 255)
     item = ((mask > 0) & (hull > 0)).astype(np.uint8) * 255
@@ -424,8 +428,14 @@ def drop_pose(arm: str) -> dict[str, float]:
     return {"shoulder_pan": pan, "shoulder_lift": 0.0, "elbow_flex": -60.0, "wrist_flex": 60.0, "wrist_roll": 0.0}
 
 
-MISS_BELOW = 4.0  # percent: jaws told to close that stop below this hold nothing
 RELEASE_OPEN = 60.0
+# Whether the item was caught is not read off the jaw: a crumpled receipt or
+# a squashed bottle closes it as far as nothing does, and at the venue such
+# items were taken for misses and never let go. Every grasp is carried to
+# its side and released -- opening an empty jaw there harms nothing -- and
+# the overhead camera then looks at the zone: an item still in it slipped
+# out or was never caught, and is tried again, this many times in all.
+PICK_TRIES = 3
 
 # The descent goes where the plan says, uncorrected. Raising it by the sag the
 # hover showed was tried at the venue: the hover came up 2-7 mm short, but the
@@ -436,9 +446,11 @@ SETTLE_S = 0.5
 
 def execute_pick(arm, plan: PickPlan, neutral: dict[str, float], *, kinematics=None, dry_run: bool = False,
                  sleep=None, log=print) -> bool:
-    """Carry out a PickPlan with a real (or fake) Arm; True if something was dropped.
+    """Carry out a PickPlan with a real (or fake) Arm; False for a dry run.
 
-    With ``kinematics`` the fingertips' real height above the table is reported.
+    The item, if caught, is released on the arm's side; whether it was is for
+    the overhead camera to say afterwards (see PICK_TRIES). With
+    ``kinematics`` the fingertips' real height above the table is reported.
     """
 
     import time
@@ -461,12 +473,7 @@ def execute_pick(arm, plan: PickPlan, neutral: dict[str, float], *, kinematics=N
         tip_cm = kinematics.fingertip(arm.pose())[2] * 100 - plan.table_cm
         log(f"{arm.name}: fingertips {tip_cm:.1f} cm above the table (planned {plan.fingertip_above_table_cm:.1f})")
     held = arm.move({gripper: 0.0})[gripper]
-    if held < MISS_BELOW:
-        log(f"{arm.name}: the jaws closed to {held:.0f} %: nothing between them, a miss")
-        arm.move(plan.above)
-        arm.move(neutral)
-        return False
-    log(f"{arm.name}: holding it (jaws at {held:.0f} %) -- lifting and turning to its side")
+    log(f"{arm.name}: jaws closed to {held:.0f} % -- lifting and turning to its side")
     carry = {joint: value for joint, value in plan.above.items() if joint != gripper}
     arm.move(carry)
     arm.move(drop_pose(arm.name))
