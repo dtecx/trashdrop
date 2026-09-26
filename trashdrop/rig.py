@@ -29,6 +29,9 @@ DEFAULT_LABELS = {"left": "F01", "right": "F02"}
 # Joint speed of every move the tools make, degrees per second: slow enough
 # to reach the power switch before anything is hit.
 DEFAULT_MAX_SPEED = 45.0
+# The last descent is slower than travel so a calibration error is easier to
+# stop before the fixed fingertip reaches the table.
+DEFAULT_DESCENT_SPEED = 20.0
 # A deliberate push by hand, well above servo read noise: ~13 degrees.
 MOVE_TICKS = 150
 # The joints whose angles are kept with each touch, in this order.
@@ -41,6 +44,7 @@ class ArmDevices:
     camera: str | None = None  # wrist camera, USB vendor:product
     label: str = ""  # what is written on the arm
     max_speed: float = DEFAULT_MAX_SPEED  # degrees per second
+    descent_speed: float = DEFAULT_DESCENT_SPEED  # final approach, degrees per second
     # Where the arm stands relative to the calibration frame, and the table's
     # plane in its own frame: (x cm, y cm, yaw deg, table_z cm, dz/dx, dz/dy),
     # from `trashdrop rig touch`. None until it is touched.
@@ -109,11 +113,15 @@ def load_rig(path: Path = RIG_FILE) -> Rig:
     )
     for name in ARM_NAMES:
         section = payload.get(name, {})
+        descent_speed = float(section.get("descent_speed", DEFAULT_DESCENT_SPEED))
+        if descent_speed <= 0:
+            raise ValueError(f"{name} descent_speed must be positive")
         rig.arms[name] = ArmDevices(
             bus=section.get("bus"),
             camera=section.get("camera"),
             label=section.get("label", DEFAULT_LABELS[name]),
             max_speed=float(section.get("max_speed", DEFAULT_MAX_SPEED)),
+            descent_speed=descent_speed,
             sheet=(
                 tuple(float(section["sheet"].get(key, 0.0)) for key in ("x", "y", "yaw", "table_z", "dz_dx", "dz_dy"))
                 if "sheet" in section else None
@@ -157,6 +165,7 @@ def render(rig: Rig) -> str:
         lines.append(f'bus = "{arm.bus}"       # servo adapter serial number' if arm.bus else "# bus = unknown")
         lines.append(f'camera = "{arm.camera}"      # wrist camera' if arm.camera else "# camera = unknown")
         lines.append(f"max_speed = {arm.max_speed:g}             # degrees per second, every move")
+        lines.append(f"descent_speed = {arm.descent_speed:g}         # degrees per second, final approach to an item")
         if arm.wrist_roll_offset:
             lines.append(f"wrist_roll_offset = {arm.wrist_roll_offset:.1f}  # model roll = LeRobot roll + this "
                          "(from `rig roll`)")

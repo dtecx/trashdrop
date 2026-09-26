@@ -81,6 +81,18 @@ class GraspPlanTests(unittest.TestCase):
                 self.assertGreater(s, 0.185, "the jaw should sit on the neck and cap, not the body")
                 self.assertLess(plan.width_m, 0.035)
 
+    def test_other_plastic_is_taken_across_its_middle_instead_of_a_thin_tab(self) -> None:
+        # A short narrow flap is easy to squeeze off an otherwise grippable body.
+        profile = ((0.0, 0.06), (0.10, 0.06), (0.1001, 0.02), (0.13, 0.02))
+        for angle in (0.0, 35.0):
+            with self.subTest(angle=angle):
+                mask, to_item = rasterise(profile, angle)
+                plan = plan_grasp(mask, M_PER_PX)
+                self.assertEqual(plan.mode, "pinch")
+                along, _ = to_item(*plan.center)
+                self.assertAlmostEqual(along, 0.05, delta=0.02)
+                self.assertGreater(plan.width_m, 0.05)
+
     def test_a_can_is_taken_across_the_middle(self) -> None:
         for angle in (0.0, 60.0):
             with self.subTest(angle=angle):

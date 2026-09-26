@@ -47,13 +47,23 @@ class FakeClock:
 class RigFileTests(unittest.TestCase):
     def test_rig_toml_round_trips(self) -> None:
         rig = Rig(overhead="046d:08e5", pick_zone=PickZone(x=2.0, y=-3.0, width=40.0, height=25.0))
-        rig.arms["left"] = ArmDevices(bus="5AAF220303", camera="2993:0858", label="F01", max_speed=20.0)
+        rig.arms["left"] = ArmDevices(bus="5AAF220303", camera="2993:0858", label="F01",
+                                      max_speed=20.0, descent_speed=12.0)
         rig.arms["right"] = ArmDevices(bus="5AAF219965", camera=None, label="F02")
         with tempfile.TemporaryDirectory() as directory:
             path = save_rig(rig, Path(directory) / "rig.toml")
             loaded = load_rig(path)
         self.assertEqual(loaded, rig)
         self.assertEqual(loaded.cameras(), {"overhead": "046d:08e5", "left wrist": "2993:0858"})
+
+    def test_older_rig_file_uses_default_descent_speed(self) -> None:
+        rig = Rig()
+        with tempfile.TemporaryDirectory() as directory:
+            path = save_rig(rig, Path(directory) / "rig.toml")
+            path.write_text("\n".join(line for line in path.read_text().splitlines()
+                                      if not line.startswith("descent_speed =")) + "\n")
+            loaded = load_rig(path)
+        self.assertEqual(loaded.arms["left"].descent_speed, rig.arms["left"].descent_speed)
 
     def test_zone_corners_run_far_left_far_right_near_right_near_left(self) -> None:
         zone = PickZone(x=0.0, y=0.0, width=30.0, height=28.0)

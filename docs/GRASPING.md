@@ -31,8 +31,9 @@ repository agrees within a few millimetres. The numbers live in
 ## One pick
 
 1. The detector's mask goes to `perception.grasp.plan_grasp`, which returns a
-   **pinch** (the narrowest place with parallel sides, preferring the middle:
-   a bottle by its neck or cap, a can across its body) or, for an item wider
+   **pinch** (a central cross-section with parallel sides for most items; a
+   sustained narrow neck for a long bottle, or a cap when the body cannot fit
+   the jaws) or, for an item wider
    than the jaw everywhere, an **edge** plan (fixed finger beside a long
    edge, moving finger landing on the item -- only a sheet can be taken like
    that).
@@ -50,6 +51,8 @@ repository agrees within a few millimetres. The numbers live in
    turned to close across the item with each arm's own wrist roll zero
    (`rig roll`): at the venue the left arm's was a quarter turn from the
    model's, and its first grasp closed along a screwdriver, beside it.
+   `rig.toml` sets `max_speed` for each arm's travel and `descent_speed` for
+   this final approach, both in joint degrees per second.
 4. Close, lift, turn to the arm's side and open -- whatever the jaw reads.
    Closed all the way does not mean empty: a crumpled receipt or a squashed
    bottle closes the jaw as far as nothing does, and at the venue such

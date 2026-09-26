@@ -22,6 +22,7 @@ from trashdrop.placement import Placement  # noqa: E402
 from trashdrop.rig import PickZone  # noqa: E402
 from trashdrop.sorter import (  # noqa: E402
     GRASP_HEIGHT_CM,
+    PICK_EDGE_MARGIN_PX,
     RELEASE_OPEN,
     draw_detection,
     draw_zone,
@@ -174,6 +175,13 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(mask[int(base_v / SCALE), int(base_u / SCALE)], 0, "not at the base itself")
         self.assertGreater(mask.sum(), 0)
 
+    def test_shared_reach_excludes_places_only_one_arm_can_take(self) -> None:
+        placements = {"left": LEFT, "right": RIGHT}
+        either = reach_mask((180, 320), SCALE, self.homography, placements)
+        both = reach_mask((180, 320), SCALE, self.homography, placements, require_all=True)
+        self.assertTrue(np.all((both == 0) | (either > 0)))
+        self.assertGreater((either > 0).sum(), (both > 0).sum())
+
 
 class DetectionTests(unittest.TestCase):
     """A busy table: things stay on it, people reach across it. Only the zone counts."""
@@ -225,6 +233,17 @@ class DetectionTests(unittest.TestCase):
         self.assertLess(plan.width_m, coarse.width_m - 0.005)
         self.assertGreater(abs(np.dot(plan.across, (np.cos(np.radians(10)), np.sin(np.radians(10))))), 0.97)
         self.assertLess(np.hypot(*(np.array(plan.center) * scale - (960, 540))), 15.0, "through the middle")
+
+    def test_live_pick_accepts_an_item_near_the_zone_edge_but_not_on_it(self) -> None:
+        self.assertEqual(PICK_EDGE_MARGIN_PX, 1)
+        left = int(np.flatnonzero(self.zone[90] > 0)[0])
+        empty = self.table()
+        for offset, expected in ((0, "touches_frame_edge"), (2, "ok")):
+            with self.subTest(offset=offset):
+                frame = empty.copy()
+                x = int((left + offset) * SCALE)
+                cv2.rectangle(frame, (x, 500), (x + 72, 560), (40, 40, 40), -1)
+                self.assertEqual(find_item(frame, empty, self.zone).code, expected)
 
     def test_an_empty_zone_says_so(self) -> None:
         # What the pick checks after every drop: nothing left means it was caught.
@@ -284,6 +303,16 @@ class ReportingArm(FakeArm):
         return dict(self.goal)
 
 
+class SpeedArm(FakeArm):
+    def __init__(self) -> None:
+        super().__init__()
+        self.speeds = []
+
+    def move(self, targets, speed=None):
+        self.speeds.append(speed)
+        return super().move(targets, speed)
+
+
 class ExecuteTests(unittest.TestCase):
     PLAN = type("P", (), {
         "above": {"shoulder_pan": -60.0, "shoulder_lift": 10.0, "elbow_flex": 5.0, "wrist_flex": 80.0, "wrist_roll": 20.0},
@@ -316,6 +345,11 @@ class ExecuteTests(unittest.TestCase):
         done, _ = self.pick(arm, dry_run=True)
         self.assertFalse(done)
         self.assertNotIn(self.PLAN.grasp, arm.moves)
+
+    def test_the_final_descent_uses_its_configured_speed(self) -> None:
+        arm = SpeedArm()
+        execute_pick(arm, self.PLAN, self.NEUTRAL, descent_speed=12.0, sleep=lambda _: None, log=lambda *_: None)
+        self.assertEqual(arm.speeds[arm.moves.index(self.PLAN.grasp)], 12.0)
 
     def test_a_dry_run_never_goes_down(self) -> None:
         arm = FakeArm()

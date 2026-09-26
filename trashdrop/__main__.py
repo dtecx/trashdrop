@@ -782,6 +782,12 @@ def _cmd_pick(args: argparse.Namespace) -> int:
             if unreachable > 0.05:
                 print(f"  {unreachable:.0%} of the pick zone is out of every calibrated arm's reach "
                       "(shaded in out/pick_zone.jpg); items there will be refused")
+            if len(placements) > 1:
+                shared = zone & reach_mask(small_shape, scale, homography, placements, require_all=True)
+                one_arm_only = 1.0 - (shared > 0).sum() / max((zone > 0).sum(), 1)
+                if one_arm_only > 0:
+                    print(f"  {one_arm_only:.0%} of the pick zone is outside at least one arm's approximate reach; "
+                          "an item assigned to that arm may be refused")
             return empty, searched
 
         background, valid = photograph_empty_table()
@@ -825,7 +831,11 @@ def _cmd_pick(args: argparse.Namespace) -> int:
             cv2.imwrite(str(args.out / "pick_plan.jpg"), draw_plan(frame, item, item_scale, plan))
             if plan is None:
                 if side is not None:
-                    print(f"  the {side} arm cannot take it ({reason}): move it towards the {side} arm")
+                    if "wider than" in reason:
+                        print(f"  the {side} arm cannot take it ({reason}): reorient it for a narrower grip "
+                              "or leave it for a person")
+                    else:
+                        print(f"  the {side} arm cannot take it ({reason}): move it towards the {side} arm")
                 else:
                     print(f"  cannot pick it: {reason}")
                 continue
@@ -845,7 +855,8 @@ def _cmd_pick(args: argparse.Namespace) -> int:
             if input("  Enter = go, s = skip: ").strip().lower() == "s":
                 continue
             name = plan.arm
-            execute_pick(arms[name], plan, poses[name]["neutral"], kinematics=kinematics[name], dry_run=args.dry_run)
+            execute_pick(arms[name], plan, poses[name]["neutral"], kinematics=kinematics[name], dry_run=args.dry_run,
+                         descent_speed=rig.arms[name].descent_speed)
             # Caught or not, the overhead camera says: the arm is back in neutral,
             # as it was when the empty zone was photographed.
             tries = 1
@@ -869,7 +880,8 @@ def _cmd_pick(args: argparse.Namespace) -> int:
                     break
                 tries += 1
                 print(f"  it is still in the zone -- it slipped out, or was never caught. Try {tries} of {PICK_TRIES}")
-                execute_pick(arms[name], plan, poses[name]["neutral"], kinematics=kinematics[name])
+                execute_pick(arms[name], plan, poses[name]["neutral"], kinematics=kinematics[name],
+                             descent_speed=rig.arms[name].descent_speed)
     except KeyboardInterrupt:
         print("\nstopped; the arms hold where they are")
         return 130

@@ -28,6 +28,7 @@ import numpy as np
 from .kinematics import FINGERTIP_BEYOND_TCP, LEANS_DEG
 from .perception.grasp import GraspPlan, plan_grasp
 from .placement import Placement
+from .rig import DEFAULT_DESCENT_SPEED
 
 ANALYSIS_WIDTH = 320
 # How far above the table the fixed fingertip comes down to grasp, cm (`pick
@@ -39,7 +40,6 @@ FINGERTIPS_CM = 0.5
 LOWEST_FINGERTIPS_CM = 0.2  # any lower and a millimetre of calibration puts them in the table
 GRASP_HEIGHT_CM = FINGERTIPS_CM + FINGERTIP_BEYOND_TCP * 100  # the TCP, above the table
 BACK_OFF_CM = (7.0, 6.0, 5.0, 4.0)
-DESCENT_SPEED = 20.0  # deg/s for the last few centimetres
 # The ring around a base where items are looked for, cm: fingers straight down
 # reach from about 10 cm, fingers leaning 45 degrees to about 42 cm.
 RING_CM = (9.0, 42.0)
@@ -91,17 +91,26 @@ def sheet_points(homography, us, vs) -> np.ndarray:
     return (projected[:2] / projected[2]).T * 100.0
 
 
-def reach_mask(shape: tuple[int, int], scale: float, homography, placements: dict[str, Placement]) -> np.ndarray:
-    """Analysis-resolution mask of table pixels inside some arm's ring."""
+def reach_mask(shape: tuple[int, int], scale: float, homography, placements: dict[str, Placement],
+               *, require_all: bool = False) -> np.ndarray:
+    """Analysis-resolution mask inside any arm's ring, or every ring if requested.
+
+    This is a quick distance check for the camera preview; an actual pick still
+    needs inverse kinematics for its grasp point, jaw direction and approach.
+    """
 
     height, width = shape
     vs, us = np.mgrid[0:height, 0:width]
     points = sheet_points(homography, (us.ravel() + 0.5) * scale, (vs.ravel() + 0.5) * scale)
-    inside = np.zeros(len(points), bool)
+    inside = np.ones(len(points), bool) if require_all and placements else np.zeros(len(points), bool)
     for placement in placements.values():
         base = base_on_sheet(placement)
         distance = np.linalg.norm(points - base, axis=1)
-        inside |= (distance >= RING_CM[0]) & (distance <= RING_CM[1])
+        in_ring = (distance >= RING_CM[0]) & (distance <= RING_CM[1])
+        if require_all:
+            inside &= in_ring
+        else:
+            inside |= in_ring
     return (inside.reshape(height, width) * 255).astype(np.uint8)
 
 
@@ -124,8 +133,13 @@ class Detection:
     code: str = "ok"
 
 
-# Items are looked for this far inside the zone's edge, clear of tape marking it.
-ZONE_INSET_CM = 1.0
+# The tape corners mark its inner edge. Half a centimetre keeps tape and
+# click error out of the search area without wasting room for larger items.
+ZONE_INSET_CM = 0.5
+# A live item needs this many analysis pixels clear of the searched edge.
+# The dataset keeps a wider margin for clean training crops; live picking can
+# use one pixel (~4 mm on this rig) while still refusing a clipped silhouette.
+PICK_EDGE_MARGIN_PX = 1
 
 
 def zone_mask(shape: tuple[int, int], scale: float, homography, zone) -> np.ndarray:
@@ -149,7 +163,7 @@ def zone_mask(shape: tuple[int, int], scale: float, homography, zone) -> np.ndar
 def find_item(frame, background, valid_small) -> Detection:
     import cv2
 
-    from .dataset.autolabel import EDGE_MARGIN_PX, _foreground
+    from .dataset.autolabel import _foreground
     from .perception.regions import find_item_region
 
     height, width = frame.shape[:2]
@@ -162,13 +176,14 @@ def find_item(frame, background, valid_small) -> Detection:
         return Detection(None, scale, "the picture changed too much to compare with the empty table "
                          "(light changed? camera moved?) -- press b to photograph the empty table again", mask,
                          "untrusted")
-    region, reason = find_item_region(mask, edge_margin_px=EDGE_MARGIN_PX, valid_mask=valid_small)
+    region, reason = find_item_region(mask, edge_margin_px=PICK_EDGE_MARGIN_PX, valid_mask=valid_small)
     if region is None:
         changed = int((mask > 0).sum())
         explanation = {
             "nothing_changed": f"no item found where an arm can reach ({changed} changed pixels there). Was it "
                                "on the table when the empty photo was taken? Press b to take it again",
-            "touches_frame_edge": "the item runs out of the reachable area: move it closer to an arm",
+            "touches_frame_edge": "the item touches the search-area edge: move it toward the centre "
+                                  "of the taped zone, leaving 1-2 cm clear around it",
             "more_than_one_object": "two separate things changed: one item at a time, and nothing moving nearby",
         }
         return Detection(None, scale, explanation.get(reason, reason), mask, reason)
@@ -295,7 +310,7 @@ def draw_zone(frame, zone_small, searched_small) -> np.ndarray:
 
 
 def draw_detection(frame, detection: Detection, valid_small) -> np.ndarray:
-    """What the detector saw: changed pixels in red, the searched zone outlined."""
+    """Changed pixels in red, searched zone in green, safe item interior in yellow."""
 
     import cv2
 
@@ -306,6 +321,12 @@ def draw_detection(frame, detection: Detection, valid_small) -> np.ndarray:
     zone = cv2.resize(valid_small, (width, height), interpolation=cv2.INTER_NEAREST)
     contours, _ = cv2.findContours(zone, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cv2.drawContours(view, contours, -1, (60, 220, 60), 3)
+    # The detector rejects an item whose mask reaches this inner boundary.
+    interior = cv2.erode((valid_small != 0).astype(np.uint8),
+                         np.ones((2 * PICK_EDGE_MARGIN_PX + 1,) * 2, np.uint8))
+    safe = cv2.resize(interior, (width, height), interpolation=cv2.INTER_NEAREST)
+    contours, _ = cv2.findContours(safe, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(view, contours, -1, (0, 255, 255), 2)
     return view
 
 
@@ -451,7 +472,7 @@ SETTLE_S = 0.5
 
 
 def execute_pick(arm, plan: PickPlan, neutral: dict[str, float], *, kinematics=None, dry_run: bool = False,
-                 sleep=None, log=print) -> bool:
+                 descent_speed: float = DEFAULT_DESCENT_SPEED, sleep=None, log=print) -> bool:
     """Carry out a PickPlan with a real (or fake) Arm; False for a dry run.
 
     The item, if caught, is released on the arm's side; whether it was is for
@@ -473,7 +494,7 @@ def execute_pick(arm, plan: PickPlan, neutral: dict[str, float], *, kinematics=N
         arm.move(neutral)
         return False
     log(f"{arm.name}: down")
-    arm.move(plan.grasp, speed=DESCENT_SPEED)
+    arm.move(plan.grasp, speed=descent_speed)
     if kinematics is not None and plan.table_cm is not None:
         sleep(SETTLE_S)
         tip_cm = kinematics.fingertip(arm.pose())[2] * 100 - plan.table_cm

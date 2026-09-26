@@ -8,8 +8,8 @@ station.py, next to MAX_GRASP_WIDTH):
   inner face. So the arm lowers the FIXED finger just outside one edge of the
   item, and the moving finger sweeps the item onto it.
 * The fingers are parallel at ~32 mm only. Anything wider sits in a V that
-  squeezes it outward, so of two places to hold an item the narrower one wins
-  even when it is off-centre: a bottle is taken by the neck, not the body.
+  squeezes it outward. A bottle's long narrow neck is worth that trade-off;
+  for other shapes, a central cross-section is less likely to be a flimsy tab.
 
 The planner works on a binary mask and a scale rather than on a camera, so the
 same code runs on live frames, dataset frames and synthetic masks, and needs
@@ -40,10 +40,14 @@ from ..station import (
 
 # How far past the edge the moving finger lands in an edge grasp.
 EDGE_BITE = 0.03
-# Cost of holding an item at its very end, in units of one PARALLEL_GRASP_WIDTH
-# of extra opening. The neck of a bottle beats its body; among equally wide
-# places, the one nearest the centre of the item wins.
-OFFSET_WEIGHT = 0.5
+# Off-centre narrow tabs on miscellaneous plastic often slip out. Prefer a
+# central cross-section unless a long object has a sustained narrow end like
+# a bottle neck. A bottle still favours its neck over its 65 mm body.
+CENTER_OFFSET_WEIGHT = 1.5
+NECK_OFFSET_WEIGHT = 0.5
+NECK_MIN_LENGTH_M = 0.14
+NECK_MIN_ASPECT = 2.5
+NECK_MAX_BODY_RATIO = 0.6
 # Jaw directions tried besides the item's long axis: every 5 degrees.
 ORIENTATIONS = 36
 # Parts of an item thinner than this are not places to grip: to a planner that
@@ -140,6 +144,8 @@ def plan_grasp(
     mean = points.mean(axis=0)
     _, vectors = np.linalg.eigh(np.cov((points - mean).T))
     long_axis = vectors[:, 1]  # eigh sorts ascending
+    offset_weight = (NECK_OFFSET_WEIGHT if _has_bottle_neck(points, mean, long_axis, m_per_px)
+                     else CENTER_OFFSET_WEIGHT)
     side = np.array(fixed_side if fixed_side is not None else (0.0, -1.0), dtype=np.float64)
     span = 2 * max(1, int(np.ceil(JAW_SPAN / m_per_px / 2))) + 1
 
@@ -164,7 +170,7 @@ def plan_grasp(
         offset = np.abs(first + middles) / max(len(low) / 2, 1.0)
         wedge = np.maximum(widths_m - PARALLEL_GRASP_WIDTH, 0.0) / PARALLEL_GRASP_WIDTH
         for pick in np.flatnonzero(usable):
-            score = float(wedge[pick] + OFFSET_WEIGHT * offset[pick])
+            score = float(wedge[pick] + offset_weight * offset[pick])
             candidates.append((score, along, across, float(first + middles[pick])))
 
     candidates.sort(key=lambda candidate: candidate[0])
@@ -198,6 +204,25 @@ def plan_grasp(
         float((high[middle] - low[middle] + 1.0) * m_per_px),
         f"wider than {max_width_m * 1000:.0f} mm everywhere (narrowest {narrowest_text})",
     )
+
+
+def _has_bottle_neck(points: np.ndarray, mean: np.ndarray, long_axis: np.ndarray, m_per_px: float) -> bool:
+    """Recognise a long body with a sustained narrow end, not a short tab."""
+
+    across = np.array([-long_axis[1], long_axis[0]])
+    _, low, high, seen = _slices(points, mean, long_axis, across)
+    length_m = len(low) * m_per_px
+    width_m = (np.max(high[seen]) - np.min(low[seen]) + 1.0) * m_per_px
+    if length_m < NECK_MIN_LENGTH_M or length_m < NECK_MIN_ASPECT * width_m:
+        return False
+    widths = (high - low + 1.0) * m_per_px
+    count = len(widths)
+    middle = widths[count * 3 // 10:count * 7 // 10]
+    end_count = max(4, min(count * 15 // 100, int(round(0.03 / m_per_px))))
+    ends = (widths[:end_count], widths[-end_count:])
+    body_width = float(np.median(middle))
+    end_width = min(float(np.median(end)) for end in ends)
+    return body_width >= 0.045 and MIN_PINCH_WIDTH <= end_width <= NECK_MAX_BODY_RATIO * body_width
 
 
 def _opened(mask: np.ndarray, radius: int) -> np.ndarray:
