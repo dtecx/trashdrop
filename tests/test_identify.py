@@ -163,6 +163,16 @@ class IdentityTests(unittest.TestCase):
         self.assertIs(verdict, False, detail)
         self.assertEqual(wrist.current, {"zoom": 0, "brightness": 0, "saturation": 64})
 
+    def test_no_camera_opening_at_all_points_at_the_camera_permission(self) -> None:
+        camera, _ = fake_camera()
+
+        def open_stream(index: int):
+            raise RuntimeError("not authorized")
+
+        with self.assertRaises(RuntimeError) as caught:
+            find_stream_index(camera, open_stream, log=lambda *_: None)
+        self.assertIn("permission", str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

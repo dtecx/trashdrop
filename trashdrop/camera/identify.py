@@ -139,5 +139,9 @@ def find_stream_index(camera, open_stream, max_index: int = 4, log=print) -> int
             log(f"camera index {index} is {camera.usb_id} ({detail})")
             return index
     raise RuntimeError(
-        f"could not find which camera index shows {camera.usb_id}:\n" + "\n".join(tried or ["  no camera opened"])
+        f"could not find which camera index shows {camera.usb_id}:\n" + "\n".join(tried or [
+            "  no camera opened at all. On macOS that is usually the app running this command having no",
+            "  camera permission (System Settings > Privacy & Security > Camera) -- run it from a",
+            "  terminal that has it.",
+        ])
     )
