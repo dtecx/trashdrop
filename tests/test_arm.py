@@ -429,11 +429,12 @@ class PoseFileTests(unittest.TestCase):
 class ZeroBus(FakeBus):
     """The wrist roll's servo as it counts: its reading is its actual angle less its homing offset."""
 
-    def __init__(self, actual: int, offset: int) -> None:
+    def __init__(self, actual: int, offset: int, *, answers: bool = True, takes: bool = True) -> None:
         super().__init__()
         self.roll = MOTORS[ROLL]
         self.regs[self.roll].update(min_limit=0, max_limit=4095, homing_offset=encode_offset(offset), lock=1)
         self.actual = actual
+        self.answers, self.takes = answers, takes  # to a homing offset written
         self.saved = None  # the offset as it comes back after power off
 
     def read(self, motor: int, register: str) -> int:
@@ -442,9 +443,15 @@ class ZeroBus(FakeBus):
         return super().read(motor, register)
 
     def write(self, motor: int, register: str, value: int) -> None:
+        if motor == self.roll and register == "homing_offset":
+            if self.takes:
+                super().write(motor, register, value)
+                if self.regs[motor]["lock"] == 0:
+                    self.saved = value
+            if not self.answers:
+                raise RuntimeError("motor 5 did not acknowledge writing homing_offset")
+            return
         super().write(motor, register, value)
-        if motor == self.roll and register == "homing_offset" and self.regs[motor]["lock"] == 0:
-            self.saved = value
 
 
 class ZeroRollTests(unittest.TestCase):
@@ -472,6 +479,18 @@ class ZeroRollTests(unittest.TestCase):
                     arm = Arm("left", bus, 45.0)
                     zero_roll(arm, degrees)
                     self.assertAlmostEqual(self.reads(arm, bus), degrees, delta=0.1)
+
+    def test_a_write_the_servo_took_without_answering_counts(self) -> None:
+        bus = ZeroBus(1650, -362, answers=False)  # the venue's left wrist roll
+        arm = Arm("left", bus, 45.0)
+        _, new = zero_roll(arm, 0.0)
+        self.assertAlmostEqual(self.reads(arm, bus), 0.0, delta=0.1)
+        self.assertEqual(decode_offset(bus.saved), new)
+        self.assertEqual(bus.regs[bus.roll]["lock"], 1)
+        refused = ZeroBus(1650, -362, answers=False, takes=False)
+        with self.assertRaises(RuntimeError):
+            zero_roll(Arm("left", refused, 45.0), 0.0)
+        self.assertEqual(refused.regs[refused.roll]["lock"], 1, "locked again, whatever happened")
 
     def test_never_with_torque_on(self) -> None:
         bus = ZeroBus(1650, -362)

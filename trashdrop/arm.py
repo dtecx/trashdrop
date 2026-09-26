@@ -394,6 +394,7 @@ def pick_and_drop(arm: Arm, poses: dict[str, dict[str, float]], *, speed: float 
 
 FULL_TURN = 4096
 ROLL = "wrist_roll"
+EEPROM_SETTLE_S = 0.05  # before the next packet, after one that writes the EEPROM
 
 
 def zero_roll(arm: Arm, degrees: float) -> tuple[int, int]:
@@ -434,7 +435,13 @@ def set_roll_offset(arm: Arm, offset: int) -> int:
     old = decode_offset(arm.bus.read(motor, "homing_offset"))
     arm.bus.write(motor, "lock", 0)
     try:
-        arm.bus.write(motor, "homing_offset", encode_offset(offset))
+        try:
+            arm.bus.write(motor, "homing_offset", encode_offset(offset))
+        except RuntimeError:
+            # At the venue the left wrist roll (firmware 3.10) took the new
+            # offset and never answered: whether it took is read back below.
+            pass
+        arm._sleep(EEPROM_SETTLE_S)
     finally:
         arm.bus.write(motor, "lock", 1)
     if decode_offset(arm.bus.read(motor, "homing_offset")) != offset:
