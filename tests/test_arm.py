@@ -18,6 +18,7 @@ from trashdrop.arm import (
     RATE_HZ,
     Arm,
     load_poses,
+    move_together,
     resolve_arm,
     nudge_joints,
     pick_and_drop,
@@ -159,6 +160,46 @@ class MoveTests(unittest.TestCase):
         present = bus.positions()
         self.assertEqual(last, {MOTORS[joint]: ticks for joint, ticks in present.items()})
         self.assertTrue(all(regs["torque_enable"] for regs in bus.regs.values()), "still holding, not limp")
+
+
+class TogetherTests(unittest.TestCase):
+    def test_two_arms_move_at_once_each_on_its_own_bus(self) -> None:
+        clock = FakeClock()
+        left_bus, right_bus = FakeBus(), FakeBus()
+        left, right = make_arm(left_bus, clock), Arm("right", right_bus, 30.0, clock=clock, sleep=clock.sleep)
+        left.torque_on()
+        right.torque_on()
+        move_together([(left, {"shoulder_pan": 45.0}), (right, {"shoulder_pan": -45.0})])
+        pan = MOTORS["shoulder_pan"]
+        left_path = [goals[pan] for goals in left_bus.goals_streamed()]
+        right_path = [goals[pan] for goals in right_bus.goals_streamed()]
+        self.assertEqual(len(left_path), len(right_path), "one goal each, every tick of the clock")
+        self.assertGreater(left_path[len(left_path) // 2], left_path[0], "both under way at the same time")
+        self.assertLess(right_path[len(right_path) // 2], right_path[0])
+        self.assertLess(clock.now, 2 * 1.875 * 45 / 30, "together, not one after the other")
+
+    def test_ctrl_c_stops_both_and_both_keep_holding(self) -> None:
+        clock = FakeClock(stop_after=20)
+        buses = FakeBus(), FakeBus()
+        arms = [Arm(name, bus, 30.0, clock=clock, sleep=clock.sleep) for name, bus in zip(("left", "right"), buses)]
+        for arm in arms:
+            arm.torque_on()
+        with self.assertRaises(KeyboardInterrupt):
+            move_together([(arm, {"elbow_flex": 40.0}) for arm in arms])
+        for bus in buses:
+            present = bus.positions()
+            self.assertEqual(bus.goals_streamed()[-1], {MOTORS[joint]: ticks for joint, ticks in present.items()})
+
+    def test_a_jaw_closed_on_an_item_ends_the_move_once_it_stops(self) -> None:
+        # Stalled 300 ticks short of closed, the jaw never reaches its goal.
+        bus, clock = FakeBus(sag={"gripper": 300}), FakeClock()
+        arm = make_arm(bus, clock)
+        arm.torque_on()
+        before, start = clock.now, bus.regs[MOTORS["gripper"]]["goal_position"]
+        arm.move({"gripper": 0.0})
+        travel = abs(bus.regs[MOTORS["gripper"]]["goal_position"] - start) * DEG_PER_TICK
+        trajectory = max(1.875 * travel / 30.0, 0.3)
+        self.assertLess(clock.now - before, trajectory + 0.3, "stopped is done: not the 1.5 s wait on top")
 
 
 class NudgeTests(unittest.TestCase):

@@ -39,7 +39,7 @@ FINGERTIPS_CM = 0.5
 LOWEST_FINGERTIPS_CM = 0.2  # any lower and a millimetre of calibration puts them in the table
 GRASP_HEIGHT_CM = FINGERTIPS_CM + FINGERTIP_BEYOND_TCP * 100  # the TCP, above the table
 BACK_OFF_CM = (7.0, 6.0, 5.0, 4.0)
-DESCENT_SPEED = 15.0  # deg/s for the last few centimetres
+DESCENT_SPEED = 20.0  # deg/s for the last few centimetres
 # The ring around a base where items are looked for, cm: fingers straight down
 # reach from about 10 cm, fingers leaning 45 degrees to about 42 cm.
 RING_CM = (9.0, 42.0)
@@ -416,7 +416,12 @@ def draw_plan(frame, item_small, scale: float, plan: PickPlan | None) -> np.ndar
 
 
 def drop_pose(arm: str) -> dict[str, float]:
-    """Turned to the arm's own side -- left for the left arm, right for the right -- and lifted.
+    """Turned to the arm's own side -- left for the left arm, right for the right -- fingers down.
+
+    The TCP ends 25 cm to the side of the base and 15 cm up, the fingers
+    pointing down and 30 degrees outward: the jaw opens downward, so the item
+    falls out. Pointing sideways, as it first did, the open jaw could keep the
+    item lying on its lower finger.
 
     A positive shoulder_pan turns an SO-101 to ITS RIGHT (the calibrated
     joint and the model agree; tests/test_sorter.py checks it on the model).
@@ -424,11 +429,12 @@ def drop_pose(arm: str) -> dict[str, float]:
     between the two arms, swinging towards the other one.
     """
 
-    pan = -80.0 if arm == "left" else 80.0
-    return {"shoulder_pan": pan, "shoulder_lift": 0.0, "elbow_flex": -60.0, "wrist_flex": 60.0, "wrist_roll": 0.0}
+    pan = -87.0 if arm == "left" else 87.0
+    return {"shoulder_pan": pan, "shoulder_lift": 0.0, "elbow_flex": -25.0, "wrist_flex": 85.0, "wrist_roll": 0.0}
 
 
 RELEASE_OPEN = 60.0
+SHAKE_DEG = 20.0  # the wrist turns this far and back once the jaw is open, to shake off what sticks
 # Whether the item was caught is not read off the jaw: a crumpled receipt or
 # a squashed bottle closes it as far as nothing does, and at the venue such
 # items were taken for misses and never let go. Every grasp is carried to
@@ -476,8 +482,11 @@ def execute_pick(arm, plan: PickPlan, neutral: dict[str, float], *, kinematics=N
     log(f"{arm.name}: jaws closed to {held:.0f} % -- lifting and turning to its side")
     carry = {joint: value for joint, value in plan.above.items() if joint != gripper}
     arm.move(carry)
-    arm.move(drop_pose(arm.name))
+    drop = drop_pose(arm.name)
+    arm.move(drop)
     arm.move({gripper: RELEASE_OPEN})
+    arm.move({"wrist_roll": drop["wrist_roll"] + SHAKE_DEG})
+    arm.move({"wrist_roll": drop["wrist_roll"]})
     log(f"{arm.name}: dropped; back to neutral")
     arm.move(neutral)
     return True

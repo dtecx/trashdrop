@@ -37,6 +37,8 @@ LIMIT_MARGIN = 20  # ticks kept clear of each EEPROM limit, ~1.8 degrees
 RATE_HZ = 50
 MIN_JERK_PEAK = 1.875  # peak speed of a minimum-jerk move, relative to its average
 SETTLED_TICKS = 25  # how close a joint must end up to call a move done
+STILL_TICKS = 1  # ... or how little it may move between two readings, 20 ms apart,
+STILL_READINGS = 5  # this many times in a row, to have stopped where it is
 GRIPPER = "gripper"
 POSES_FILE = repository_root() / "poses.toml"
 
@@ -132,40 +134,72 @@ class Arm:
         further down with every move.
         """
 
+        return move_together([(self, targets)], speed=speed)[0]
+
+    def _plan(self, targets: dict[str, float], speed: float | None) -> tuple[dict, dict, float]:
+        """(start ticks, goal ticks, seconds) of one move."""
+
         unknown = set(targets) - set(MOTORS)
         if unknown:
             raise ValueError(f"no such joint: {', '.join(sorted(unknown))}")
         if not self.torque_is_on():
             raise RuntimeError(f"{self.name} arm is limp: turn torque on first")
         speed = min(speed or self.max_speed, self.max_speed)
-
         start = {joint: self.bus.read(motor, "goal_position") for joint, motor in MOTORS.items()}
         goal = dict(start)
         goal.update({joint: self.to_ticks(joint, value) for joint, value in targets.items()})
         travel = max(abs(goal[joint] - start[joint]) for joint in MOTORS) * DEG_PER_TICK
-        duration = max(MIN_JERK_PEAK * travel / speed, 0.3)
+        return start, goal, max(MIN_JERK_PEAK * travel / speed, 0.3)
 
-        began = self._clock()
-        try:
-            while True:
-                s = min((self._clock() - began) / duration, 1.0)
+
+def move_together(moves: list[tuple[Arm, dict[str, float]]], *, speed: float | None = None) -> list[dict[str, float]]:
+    """Move several arms at once, each to its own targets along its own smooth path.
+
+    Returns each arm's pose reached. Ctrl+C stops every one of them where it
+    is, and they all keep holding.
+
+    A move ends when every joint is within SETTLED_TICKS of its goal, or has
+    stopped: a jaw closed on an item never reaches its goal, and used to wait
+    out the whole 1.5 s for it on every grasp.
+    """
+
+    plans = [arm._plan(targets, speed) for arm, targets in moves]
+    clock, sleep = moves[0][0]._clock, moves[0][0]._sleep
+    began = clock()
+    try:
+        while True:
+            elapsed = clock() - began
+            for (arm, _), (start, goal, duration) in zip(moves, plans):
+                s = min(elapsed / duration, 1.0)
                 blend = s**3 * (10 - 15 * s + 6 * s**2)  # minimum jerk
-                self.bus.write_goals(
+                arm.bus.write_goals(
                     {MOTORS[joint]: round(start[joint] + (goal[joint] - start[joint]) * blend) for joint in MOTORS}
                 )
-                if s >= 1.0:
-                    break
-                self._sleep(1.0 / RATE_HZ)
-            deadline = self._clock() + 1.5
-            while self._clock() < deadline:
-                present = self.bus.positions()
+            if all(elapsed >= duration for _, _, duration in plans):
+                break
+            sleep(1.0 / RATE_HZ)
+        deadline = clock() + 1.5
+        pending = {index: (None, 0) for index in range(len(moves))}  # index -> (last reading, still readings)
+        while pending and clock() < deadline:
+            for index, (last, still) in list(pending.items()):
+                present = moves[index][0].bus.positions()
+                goal = plans[index][1]
                 if all(abs(present[joint] - goal[joint]) <= SETTLED_TICKS for joint in MOTORS):
-                    break
-                self._sleep(1.0 / RATE_HZ)
-        except KeyboardInterrupt:
-            self.hold()
-            raise
-        return self.pose()
+                    del pending[index]
+                    continue
+                moved = last is None or any(abs(present[joint] - last[joint]) > STILL_TICKS for joint in MOTORS)
+                still = 0 if moved else still + 1
+                if still >= STILL_READINGS:
+                    del pending[index]
+                else:
+                    pending[index] = (present, still)
+            if pending:
+                sleep(1.0 / RATE_HZ)
+    except KeyboardInterrupt:
+        for arm, _ in moves:
+            arm.hold()
+        raise
+    return [arm.pose() for arm, _ in moves]
 
 
 # A first test on a real arm: from the joint that can do least harm to the one

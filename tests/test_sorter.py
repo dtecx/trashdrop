@@ -337,6 +337,7 @@ class ExecuteTests(unittest.TestCase):
         closed = next(i for i, move in enumerate(arm.moves) if move.get("gripper") == 0.0)
         opened = next(i for i, move in enumerate(arm.moves) if i > closed and "gripper" in move)
         self.assertEqual(arm.moves[opened - 1], drop_pose("right"))
+        self.assertIn("wrist_roll", arm.moves[opened + 1], "a shake of the wrist once the jaw is open")
         self.assertEqual(arm.moves[-1], self.NEUTRAL)
 
     def test_each_arm_drops_on_its_own_outer_side(self) -> None:
@@ -344,10 +345,12 @@ class ExecuteTests(unittest.TestCase):
         # dropped a bottle to its right, between the two arms.
         left = self.kinematics.tcp(drop_pose("left"))
         right = self.kinematics.tcp(drop_pose("right"))
-        self.assertGreater(left[1], 0.15, "the left arm drops to its left")
-        self.assertLess(right[1], -0.15, "the right arm drops to its right")
-        for tcp in (left, right):
-            self.assertGreater(tcp[2], 0.2, "and high enough to drop, not place")
+        self.assertGreater(left[1], 0.2, "the left arm drops to its left")
+        self.assertLess(right[1], -0.2, "the right arm drops to its right")
+        for name, tcp in (("left", left), ("right", right)):
+            self.assertGreater(tcp[2], 0.12, "and high enough to drop, not place")
+            fingers, _ = self.kinematics.pointing(drop_pose(name))
+            self.assertLess(fingers[2], -0.8, "the jaw opens downward, so the item falls out")
 
 
 if __name__ == "__main__":

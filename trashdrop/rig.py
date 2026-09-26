@@ -28,7 +28,7 @@ ARM_NAMES = ("left", "right")
 DEFAULT_LABELS = {"left": "F01", "right": "F02"}
 # Joint speed of every move the tools make, degrees per second: slow enough
 # to reach the power switch before anything is hit.
-DEFAULT_MAX_SPEED = 30.0
+DEFAULT_MAX_SPEED = 45.0
 # A deliberate push by hand, well above servo read noise: ~13 degrees.
 MOVE_TICKS = 150
 # The joints whose angles are kept with each touch, in this order.

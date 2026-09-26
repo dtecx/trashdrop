@@ -691,7 +691,7 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     import cv2
     import numpy as np
 
-    from .arm import connect, load_poses, resolve_arm
+    from .arm import connect, load_poses, move_together, resolve_arm
     from .dataset.capture import open_camera
     from .kinematics import Kinematics
     from .perception.calibration import HomographyCalibration
@@ -761,11 +761,11 @@ def _cmd_pick(args: argparse.Namespace) -> int:
                 frame = latest if ok else frame
             return frame
 
-        input(f"{', '.join(arms)} go to neutral (straight up). Keep clear and press Enter...")
-        for name, arm in arms.items():
+        input(f"{', '.join(arms)} go to neutral (straight up), together. Keep clear and press Enter...")
+        for arm in arms.values():
             if not arm.torque_is_on():
                 arm.torque_on()
-            arm.move(poses[name]["neutral"])
+        move_together([(arm, poses[name]["neutral"]) for name, arm in arms.items()])
         args.out.mkdir(parents=True, exist_ok=True)
 
         def photograph_empty_table():
