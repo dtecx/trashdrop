@@ -410,7 +410,10 @@ def _cmd_rig_touch(args: argparse.Namespace) -> int:
     arm = _open_arm(args.arm)
     kinematics = Kinematics()
     if args.tape:
-        names = ("far left", "far right", "near right", "near left")
+        from .tape import CORNERS, LABELS, ON_CAMERA
+
+        names = tuple(f"{LABELS[key]} ({ON_CAMERA[key]} in the camera picture)" for key in CORNERS)
+        keys = dict(zip(names, CORNERS))
         points = {}
         what = "INNER corner of the taped zone"
     else:
@@ -444,7 +447,7 @@ def _cmd_rig_touch(args: argparse.Namespace) -> int:
         print("at least three points are needed; rig.toml not changed")
         return 1
     if args.tape:
-        rig.arms[arm.name].touches = {name.replace(" ", "_"): tuple(float(v) for v in tip) for name, tip in touched}
+        rig.arms[arm.name].touches = {keys[name]: tuple(float(v) for v in tip) for name, tip in touched}
         print(f"{arm.name}: {len(touched)} corners recorded")
         _apply_tape(rig)
         return 0
@@ -525,10 +528,12 @@ def _cmd_camera_tape(args: argparse.Namespace) -> int:
             ok, frame = capture.read()
     finally:
         capture.release()
-    names = ("far_left", "far_right", "near_right", "near_left")
-    labels = ("far left", "far right", "near right", "near left")
-    print("a window opens: click the taped zone's INNER corners -- far left, far right, near right, near left\n"
-          "(far = away from the arms; left and right as the arms see them)")
+    from .tape import CORNERS, ON_CAMERA
+
+    names = CORNERS
+    labels = tuple(f"{ON_CAMERA[key]} inner corner" for key in CORNERS)
+    print("a window opens: click the taped zone's INNER corners -- top left, top right, bottom right,\n"
+          "bottom left, as the picture shows them")
     corners = _click_corners(frame, labels)
     if corners is None:
         print("cancelled; nothing saved")

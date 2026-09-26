@@ -27,6 +27,8 @@ from .placement import Placement, fit_placement
 
 CORNERS = ("far_left", "far_right", "near_right", "near_left")
 LABELS = {"far_left": "far left", "far_right": "far right", "near_right": "near right", "near_left": "near left"}
+# The same corners as the overhead camera shows them: far is the top of its picture.
+ON_CAMERA = {"far_left": "top left", "far_right": "top right", "near_right": "bottom right", "near_left": "bottom left"}
 SHARED = ("near_right", "near_left")
 
 
