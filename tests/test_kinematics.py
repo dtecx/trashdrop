@@ -45,6 +45,20 @@ class KinematicsTests(unittest.TestCase):
         _, across = self.kinematics.pointing(solution.degrees)
         self.assertGreater(across @ np.array([np.cos(np.radians(60)), np.sin(np.radians(60)), 0.0]), 0.99)
 
+    def test_an_arms_own_wrist_roll_zero_is_added_on_the_way_in_and_taken_off_on_the_way_out(self) -> None:
+        # The venue's left arm: its LeRobot wrist roll zero a quarter turn from the model's.
+        turned = Kinematics(wrist_roll_offset=90.0)
+        pose = dict(NEUTRAL, shoulder_lift=30.0, elbow_flex=-30.0, wrist_flex=70.0, wrist_roll=10.0)
+        self.assertTrue(np.allclose(turned.tcp(pose), self.kinematics.tcp(dict(pose, wrist_roll=100.0))))
+        target = np.array([0.18, -0.06, 0.04])
+        solution = turned.solve(target, yaw_deg=60.0)
+        self.assertTrue(solution.reachable, solution)
+        _, across = turned.pointing(solution.degrees)
+        self.assertGreater(across @ np.array([np.cos(np.radians(60)), np.sin(np.radians(60)), 0.0]), 0.99)
+        plain = self.kinematics.solve(target, yaw_deg=60.0)
+        difference = (solution.degrees["wrist_roll"] - plain.degrees["wrist_roll"] + 180.0) % 360.0 - 180.0
+        self.assertAlmostEqual(difference, -90.0, delta=1.0)
+
     def test_a_point_out_of_reach_is_reported_not_approximated(self) -> None:
         self.assertFalse(self.kinematics.solve(np.array([0.60, 0.0, 0.05])).reachable)
         self.assertFalse(self.kinematics.solve(np.array([0.20, 0.0, 0.14])).reachable, "too high for fingers down")

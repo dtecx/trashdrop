@@ -96,6 +96,17 @@ class PlanTests(unittest.TestCase):
         self.assertAlmostEqual(tip, plan.fingertip_above_table_cm, delta=0.3)
         self.assertGreater(tip, 1.0, "the fingertip clears the table")
 
+    def test_an_arm_with_its_own_wrist_zero_still_closes_its_jaw_across_the_item(self) -> None:
+        # The venue's miss: a screwdriver lying along the table's y, the jaw closing along it.
+        turned = Kinematics(wrist_roll_offset=90.0)
+        item = item_at(self.homography, (-10.0, -8.0), (3.0, 12.0))
+        plan, reason = plan_pick(item, SCALE, self.homography, {"left": LEFT}, {"left": turned}, {})
+        self.assertIsNotNone(plan, reason)
+        _, across = turned.pointing(plan.grasp)
+        angle = np.radians(LEFT.yaw)
+        on_sheet = np.array([[np.cos(angle), np.sin(angle)], [-np.sin(angle), np.cos(angle)]]) @ across[:2]
+        self.assertGreater(abs(on_sheet[0]), 0.99, "square to the item, which lies along the sheet's y")
+
     def test_an_item_in_the_middle_of_the_table_is_taken_with_leaning_fingers(self) -> None:
         # Where the bottle lay at the venue: the sheet's centre, 31.5 cm from the left base.
         item = item_at(self.homography, (0.0, 0.0), (6.5, 20.0))

@@ -45,7 +45,10 @@ repository agrees within a few millimetres. The numbers live in
    height for the whole zone either hits the table near the base or closes
    above the item far out. The hover above the item measures how far the
    loaded joints sag below their goals; the descent is raised by as much,
-   and the pick prints where the fingertips really ended up.
+   and the pick prints where the fingertips really ended up. The jaw is
+   turned to close across the item with each arm's own wrist roll zero
+   (`rig roll`): at the venue the left arm's was a quarter turn from the
+   model's, and its first grasp closed along a screwdriver, beside it.
 4. Close with a torque limit and read the gripper position. Closed all the way
    means nothing is between the fingers: a miss.
 5. Lift 2 cm and look again. If the item is still in the pick zone, try the

@@ -31,6 +31,8 @@ DEFAULT_LABELS = {"left": "F01", "right": "F02"}
 DEFAULT_MAX_SPEED = 30.0
 # A deliberate push by hand, well above servo read noise: ~13 degrees.
 MOVE_TICKS = 150
+# The joints whose angles are kept with each touch, in this order.
+TOUCH_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
 
 
 @dataclass
@@ -45,6 +47,11 @@ class ArmDevices:
     sheet: tuple[float, ...] | None = None
     # Tape corners this arm touched: name -> (x, y, z) cm in its own frame.
     touches: dict[str, tuple[float, float, float]] = field(default_factory=dict)
+    # The joint degrees each touch was made with, so that the touches can be
+    # worked out again when the kinematics are corrected.
+    touch_poses: dict[str, dict[str, float]] = field(default_factory=dict)
+    # model wrist roll = LeRobot wrist roll + this, degrees (from `trashdrop rig roll`).
+    wrist_roll_offset: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -112,6 +119,9 @@ def load_rig(path: Path = RIG_FILE) -> Rig:
                 if "sheet" in section else None
             ),
             touches={name: tuple(float(v) for v in point) for name, point in section.get("touches", {}).items()},
+            touch_poses={name: dict(zip(TOUCH_JOINTS, (float(v) for v in angles)))
+                         for name, angles in section.get("touch_poses", {}).items()},
+            wrist_roll_offset=float(section.get("wrist_roll_offset", 0.0)),
         )
     return rig
 
@@ -147,9 +157,19 @@ def render(rig: Rig) -> str:
         lines.append(f'bus = "{arm.bus}"       # servo adapter serial number' if arm.bus else "# bus = unknown")
         lines.append(f'camera = "{arm.camera}"      # wrist camera' if arm.camera else "# camera = unknown")
         lines.append(f"max_speed = {arm.max_speed:g}             # degrees per second, every move")
+        if arm.wrist_roll_offset:
+            lines.append(f"wrist_roll_offset = {arm.wrist_roll_offset:.1f}  # model roll = LeRobot roll + this "
+                         "(from `rig roll`)")
         if arm.touches:
             points = ", ".join(f"{name} = [{x:.2f}, {y:.2f}, {z:.2f}]" for name, (x, y, z) in arm.touches.items())
             lines.append(f"touches = {{ {points} }}  # tape corners touched, cm in the arm's frame")
+        if arm.touch_poses:
+            poses = ", ".join(
+                f"{name} = [{', '.join(f'{pose[joint]:.1f}' for joint in TOUCH_JOINTS)}]"
+                for name, pose in arm.touch_poses.items()
+            )
+            lines.append(f"touch_poses = {{ {poses} }}  # joint degrees of each touch: pan, lift, elbow, "
+                         "wrist flex, wrist roll")
         if arm.sheet:
             x, y, yaw, table_z, dz_dx, dz_dy = (tuple(arm.sheet) + (0.0, 0.0))[:6]
             lines.append(

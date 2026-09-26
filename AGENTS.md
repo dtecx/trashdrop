@@ -79,6 +79,11 @@ simulator.py  probe.py
   every goal register holds the present position (the servos power up with
   goal 0); moves are streamed minimum-jerk trajectories capped at `max_speed`;
   targets are clamped inside the EEPROM limits. Keep all three.
+- `kinematics.py`, `wrist.py` — the real arms' IK, in LeRobot's degrees, except
+  that each arm's wrist roll has its own zero (LeRobot calibrates it as a full
+  turn around wherever a hand held it). `rig roll` measures that offset into
+  rig.toml; build a `Kinematics(wrist_roll_offset)` per arm, never one bare
+  `Kinematics()` for a real arm, or the jaw closes along the item.
 - `api.py` — the open intake API. Standard library only, on purpose: no team
   should install anything to talk to us, and it must not break on venue wifi.
   Collaboration is a judging criterion, so treat this as product surface, not

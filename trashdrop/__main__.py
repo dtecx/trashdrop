@@ -376,6 +376,7 @@ def _apply_tape(rig) -> None:
     from .station import repository_root
     from .tape import LABELS, solve
 
+    _touches_from_poses(rig)
     solution = solve({arm: devices.touches for arm, devices in rig.arms.items() if devices.touches},
                      rig.tape_pixels or None)
     for arm, placement in solution.placements.items():
@@ -395,6 +396,18 @@ def _apply_tape(rig) -> None:
         print("  calibrated: camera, zone and every touched arm. Next: uv run trashdrop pick --dry-run")
 
 
+def _touches_from_poses(rig) -> None:
+    """Work each touched corner out again from its joint angles, with the arm's current wrist roll offset."""
+
+    from .kinematics import Kinematics
+
+    for devices in rig.arms.values():
+        if devices.touch_poses:
+            kinematics = Kinematics(devices.wrist_roll_offset)
+            for name, pose in devices.touch_poses.items():
+                devices.touches[name] = tuple(float(v) for v in kinematics.fingertip(pose) * 100)
+
+
 def _cmd_rig_touch(args: argparse.Namespace) -> int:
     """Touch the sheet's markers with the fixed fingertip; learn where the arm stands."""
 
@@ -405,11 +418,11 @@ def _cmd_rig_touch(args: argparse.Namespace) -> int:
     from .camera.markers import MARKER_SHEET_CM
     from .kinematics import Kinematics
     from .placement import Placement, fit_placement, fit_table
-    from .rig import load_rig, save_rig
+    from .rig import TOUCH_JOINTS, load_rig, save_rig
 
     rig = load_rig()
     arm = _open_arm(args.arm)
-    kinematics = Kinematics()
+    kinematics = Kinematics(rig.arms[arm.name].wrist_roll_offset)
     if args.tape:
         from .tape import CORNERS, LABELS, ON_CAMERA
 
@@ -436,8 +449,9 @@ def _cmd_rig_touch(args: argparse.Namespace) -> int:
         for name in names:
             if input(f"  {name}: ").strip().lower() == "s":
                 continue
-            tip = kinematics.fingertip(arm.pose()) * 100
-            touched.append((name, tip))
+            pose = arm.pose()
+            tip = kinematics.fingertip(pose) * 100
+            touched.append((name, tip, {joint: pose[joint] for joint in TOUCH_JOINTS}))
             print(f"      fingertip at x {tip[0]:.1f}  y {tip[1]:.1f}  z {tip[2]:.1f} cm")
     except KeyboardInterrupt:
         print("\nstopped; rig.toml not changed")
@@ -448,16 +462,17 @@ def _cmd_rig_touch(args: argparse.Namespace) -> int:
         print("at least three points are needed; rig.toml not changed")
         return 1
     if args.tape:
-        rig.arms[arm.name].touches = {keys[name]: tuple(float(v) for v in tip) for name, tip in touched}
+        rig.arms[arm.name].touches = {keys[name]: tuple(float(v) for v in tip) for name, tip, _ in touched}
+        rig.arms[arm.name].touch_poses = {keys[name]: pose for name, _, pose in touched}
         print(f"{arm.name}: {len(touched)} corners recorded")
         _apply_tape(rig)
         return 0
 
-    placement, residuals = fit_placement([points[name] for name, _ in touched], [tip[:2] for _, tip in touched])
-    table_z, dz_dx, dz_dy = fit_table([tip for _, tip in touched])
+    placement, residuals = fit_placement([points[name] for name, _, _ in touched], [tip[:2] for _, tip, _ in touched])
+    table_z, dz_dx, dz_dy = fit_table([tip for _, tip, _ in touched])
     placement = Placement(placement.x, placement.y, placement.yaw, table_z, dz_dx, dz_dy)
     print()
-    for (name, _), residual in zip(touched, residuals):
+    for (name, _, _), residual in zip(touched, residuals):
         print(f"  {name}: the fit misses it by {residual:.1f} cm")
     if max(residuals) > 1.5:
         print("  more than 1.5 cm off: a fingertip was not on its point, the zone's size in rig.toml is wrong,\n"
@@ -469,6 +484,84 @@ def _cmd_rig_touch(args: argparse.Namespace) -> int:
         f"{arm.name}: the sheet's centre is {placement.x:.1f} cm forward, {placement.y:.1f} cm left of the arm, "
         f"turned {placement.yaw:.0f} deg. Saved to rig.toml."
     )
+    return 0
+
+
+def _cmd_rig_roll(args: argparse.Namespace) -> int:
+    """Find where this arm's wrist roll really has its zero (see trashdrop/wrist.py)."""
+
+    from .arm import load_poses
+    from .kinematics import Kinematics
+    from .placement import Placement
+    from .rig import load_rig, save_rig
+    from .wrist import HOVER_CM, KEYS, NUDGE_DEG, hover_pose, settled_offset, turned_by, wrap
+
+    rig = load_rig()
+    arm = _open_arm(args.arm)
+    devices = rig.arms[arm.name]
+    if not devices.sheet:
+        arm.bus.close()
+        print(f"{arm.name}: the arm has not touched the tape yet: uv run trashdrop rig touch {arm.name} --tape")
+        return 1
+    placement = Placement(*devices.sheet)
+    neutral = load_poses().get(arm.name, {}).get("neutral")
+    before = offset = devices.wrist_roll_offset
+    try:
+        input(f"{arm.name}: it will hold its fingers down {HOVER_CM:g} cm over the middle of the pick zone and open "
+              "the jaw.\nClear the zone, keep a hand near Ctrl+C and press Enter...")
+        if not arm.torque_is_on():
+            arm.torque_on()
+        if neutral:
+            arm.move(neutral)
+        while True:
+            kinematics = Kinematics(offset)
+            pose = hover_pose(kinematics, placement, arm.limits_degrees())
+            if pose is None:
+                print(f"{arm.name}: the middle of the pick zone is out of its reach with this wrist; nothing saved")
+                return 1
+            arm.move(pose)
+            arm.move({"gripper": 50.0})
+            answer = input(
+                "Which tape edge did the MOVING jaw (the one that just opened) go towards?\n"
+                "  f = far (top of the camera picture), n = near (the arms), l = left, r = right: "
+            ).strip().lower()[:1]
+            if answer not in KEYS:
+                continue
+            delta = turned_by(kinematics, pose, placement, KEYS[answer])
+            if delta == 0.0:
+                break
+            offset = wrap(offset + delta)
+            print(f"  the wrist is turned {delta:+.0f} deg from what the model thought; trying again with that")
+        roll = pose["wrist_roll"]
+        while True:
+            answer = input(
+                "Look from above: the fixed and the moving fingertip should line up straight towards the far edge,\n"
+                f"  square to the near tape. Enter = they do; a / d = turn the wrist {NUDGE_DEG:g} deg one way / the other: "
+            ).strip().lower()[:1]
+            if answer == "":
+                break
+            if answer in ("a", "d"):
+                roll += NUDGE_DEG if answer == "a" else -NUDGE_DEG
+                arm.move({"wrist_roll": roll})
+        offset = round(settled_offset(kinematics, pose, placement, roll - pose["wrist_roll"]), 1)
+        if neutral:
+            arm.move(neutral)
+    except KeyboardInterrupt:
+        print("\nstopped; the arm holds where it is; rig.toml not changed")
+        return 130
+    finally:
+        arm.bus.close()
+
+    devices.wrist_roll_offset = offset
+    print(f"{arm.name}: model wrist roll = LeRobot roll {offset:+.1f} deg (was {before:+.1f}). Saved to rig.toml.")
+    if devices.touches and all(name in devices.touch_poses for name in devices.touches):
+        _apply_tape(rig)  # the touches worked out again with the new offset
+        return 0
+    save_rig(rig)
+    if devices.touches and abs(wrap(offset - before)) >= 5.0:
+        # Worked out with the old roll: the fingertip is off the roll axis.
+        print(f"  its tape corners were touched with the old wrist roll and are now off by up to 1.6 cm.\n"
+              f"  Touch them again: uv run trashdrop rig touch {arm.name} --tape")
     return 0
 
 
@@ -617,7 +710,7 @@ def _cmd_pick(args: argparse.Namespace) -> int:
         return 1
     homography = HomographyCalibration.load(sheet_file)
     poses = load_poses()
-    kinematics = Kinematics()
+    kinematics = {name: Kinematics(rig.arms[name].wrist_roll_offset) for name in placements}
     arms = {name: connect(name, rig) for name in placements}
     capture = None
     try:
@@ -683,7 +776,7 @@ def _cmd_pick(args: argparse.Namespace) -> int:
             )
             if input("  Enter = go, s = skip: ").strip().lower() == "s":
                 continue
-            execute_pick(arms[plan.arm], plan, poses[plan.arm]["neutral"], kinematics=kinematics,
+            execute_pick(arms[plan.arm], plan, poses[plan.arm]["neutral"], kinematics=kinematics[plan.arm],
                          dry_run=args.dry_run)
     except KeyboardInterrupt:
         print("\nstopped; the arms hold where they are")
@@ -842,12 +935,14 @@ def _cmd_arm_pick(args: argparse.Namespace) -> int:
 def _cmd_arm_where(args: argparse.Namespace) -> int:
     from .kinematics import Kinematics
 
+    from .rig import load_rig
+
     arm = _open_arm(args.arm)
     try:
         pose = arm.pose()
     finally:
         arm.bus.close()
-    kinematics = Kinematics()
+    kinematics = Kinematics(load_rig().arms[arm.name].wrist_roll_offset)
     x, y, z = kinematics.tcp(pose) * 100
     fingers, _ = kinematics.pointing(pose)
     print(f"{arm.name}: TCP at x {x:.1f}  y {y:.1f}  z {z:.1f} cm   (the arm's own frame: x forward, y left, z up)")
@@ -864,9 +959,11 @@ def _cmd_arm_reach(args: argparse.Namespace) -> int:
     if args.z < 3.0 and not args.low:
         print("below 3 cm the fingertips are within 2 cm of the table; add --low if that is meant")
         return 1
-    kinematics = Kinematics()
+    from .rig import load_rig
+
     arm = _open_arm(args.arm)
     try:
+        kinematics = Kinematics(load_rig().arms[arm.name].wrist_roll_offset)
         solution = kinematics.solve(
             np.array([args.x, args.y, args.z]) / 100, yaw_deg=args.yaw, start=arm.pose(), limits=arm.limits_degrees()
         )
@@ -1247,6 +1344,9 @@ def build_parser() -> argparse.ArgumentParser:
     rig_touch.add_argument("arm")
     rig_touch.add_argument("--tape", action="store_true", help="the tape square's inner corners, not the sheet's markers")
     rig_touch.set_defaults(func=_cmd_rig_touch)
+    rig_roll = rig_sub.add_parser("roll", help="find where the arm's wrist roll really has its zero")
+    rig_roll.add_argument("arm")
+    rig_roll.set_defaults(func=_cmd_rig_roll)
 
     pick = sub.add_parser("pick", help="the overhead camera finds an item; an arm picks it and drops it aside")
     pick.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")

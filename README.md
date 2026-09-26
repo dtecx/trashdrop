@@ -38,6 +38,10 @@ The real arms and cameras (`rig.toml` says which USB device is which):
 uv sync --inexact --extra rig --extra arm
 uv run trashdrop rig identify            # move each joint of each arm by hand when asked
 uv run trashdrop rig check               # every arm and camera answering, a snapshot each
+uv run trashdrop rig touch left --tape   # the fixed fingertip on each taped corner it reaches
+uv run trashdrop camera tape             # click the same corners in the overhead picture
+uv run trashdrop rig roll left           # where the wrist roll's zero really is (jaw across, not along)
+uv run trashdrop pick --dry-run          # find an item, plan, hover over it; drop --dry-run to grasp
 uv run trashdrop arm status              # both arms, every joint in degrees; moves nothing
 uv run trashdrop arm save left rest      # pose the limp arm by hand, record it in poses.toml
 uv run trashdrop arm go left rest        # play it back slowly (max_speed in rig.toml)

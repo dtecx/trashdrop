@@ -82,6 +82,17 @@ class RigFileTests(unittest.TestCase):
             older = load_rig(path)
         self.assertEqual(older.arms["left"].sheet, (19.12, -21.7, -95.36, 0.88, 0.0, 0.0), "a level table")
 
+    def test_the_wrist_zero_and_the_touch_poses_survive_the_file(self) -> None:
+        rig = Rig()
+        pose = {"shoulder_pan": 20.0, "shoulder_lift": 45.5, "elbow_flex": -35.0, "wrist_flex": 80.0, "wrist_roll": 5.2}
+        rig.arms["left"] = ArmDevices(bus="5AAF219965", touches={"far_left": (33.84, -9.56, -3.33)},
+                                      touch_poses={"far_left": pose}, wrist_roll_offset=90.0)
+        with tempfile.TemporaryDirectory() as directory:
+            loaded = load_rig(save_rig(rig, Path(directory) / "rig.toml"))
+        self.assertEqual(loaded.arms["left"].touch_poses, {"far_left": pose})
+        self.assertEqual(loaded.arms["left"].wrist_roll_offset, 90.0)
+        self.assertEqual(loaded.arms["right"].wrist_roll_offset, 0.0)
+
     def test_no_rig_toml_means_nothing_identified(self) -> None:
         rig = load_rig(Path("/nonexistent/rig.toml"))
         self.assertTrue(all(arm.bus is None for arm in rig.arms.values()))

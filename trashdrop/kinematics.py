@@ -4,7 +4,10 @@ The model is TheRobotStudio's official SO-101 cut down to its kinematic chain
 (trashdrop/models/so101_kinematics.xml). Its joint angles are LeRobot's
 calibrated degrees -- the upright pose (0, 0, -90, 0, 0) stands it straight up,
 as it does the real arms -- so what this module solves goes to Arm.move()
-unchanged.
+unchanged. All but one: LeRobot calibrates the wrist roll as a full turn
+around wherever a hand held it, so its zero is that arm's own. Each arm's
+``wrist_roll_offset`` (rig.toml, from `trashdrop rig roll`) is added on the
+way into the model and taken off on the way out.
 
 Positions are metres in the arm's own frame: x forward (where it reaches at
 shoulder_pan 0), y to the arm's left, z up from the bottom of its base. The
@@ -46,10 +49,13 @@ class Solution:
 
 
 class Kinematics:
-    def __init__(self) -> None:
+    def __init__(self, wrist_roll_offset: float = 0.0) -> None:
+        """``wrist_roll_offset``: model roll = this arm's LeRobot roll + this, degrees."""
+
         import mujoco
 
         self._mujoco = mujoco
+        self.wrist_roll_offset = 0.0  # the model's own frame while the axes are read off below
         self.model = mujoco.MjModel.from_xml_path(str(MODEL_FILE))
         self.data = mujoco.MjData(self.model)
         ids = {joint: mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint) for joint in ARM_JOINTS}
@@ -75,6 +81,15 @@ class Kinematics:
         self._across_local = rotation.T @ across
         shoulder = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "shoulder")
         self.pan_axis = self.data.xpos[shoulder][:2].copy()  # where the base turns, in xy
+        self.wrist_roll_offset = float(wrist_roll_offset)
+
+    def own_limits(self) -> dict[str, tuple[float, float]]:
+        """The model's joint ranges, in this arm's degrees."""
+
+        return {
+            joint: (low - self.wrist_roll_offset, high - self.wrist_roll_offset) if joint == "wrist_roll" else (low, high)
+            for joint, (low, high) in self.model_limits.items()
+        }
 
     # --- forward ---------------------------------------------------------------
 
@@ -82,6 +97,8 @@ class Kinematics:
         self.data.qpos[:] = 0.0
         for joint, value in degrees.items():
             if joint in self._qpos:
+                if joint == "wrist_roll":
+                    value = value + self.wrist_roll_offset
                 self.data.qpos[self._qpos[joint]] = np.radians(value)
         self._mujoco.mj_kinematics(self.model, self.data)
 
@@ -129,10 +146,11 @@ class Kinematics:
         target = np.asarray(target, dtype=float)
         wanted_approach = self.approach_for(target, lean_deg)
         # The tighter of the model's design range and the real joint's limits.
+        own = self.own_limits()
         limits = {
             joint: (
-                max(self.model_limits[joint][0], (limits or {}).get(joint, self.model_limits[joint])[0]),
-                min(self.model_limits[joint][1], (limits or {}).get(joint, self.model_limits[joint])[1]),
+                max(own[joint][0], (limits or {}).get(joint, own[joint])[0]),
+                min(own[joint][1], (limits or {}).get(joint, own[joint])[1]),
             )
             for joint in ARM_JOINTS
         }

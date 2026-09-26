@@ -207,7 +207,11 @@ def draw_detection(frame, detection: Detection, valid_small) -> np.ndarray:
 
 def plan_pick(item_small, scale: float, homography, placements: dict[str, Placement], kinematics,
               limits: dict[str, dict[str, tuple[float, float]]], prefer: str | None = None):
-    """A PickPlan for the item, or (None, reason)."""
+    """A PickPlan for the item, or (None, reason).
+
+    ``kinematics`` is one Kinematics for every arm, or one per arm by name:
+    each arm's wrist roll has its own zero.
+    """
 
     centre = np.argwhere(item_small).mean(axis=0)[::-1] * scale  # (u, v) full resolution
     u0, v0 = centre
@@ -218,46 +222,54 @@ def plan_pick(item_small, scale: float, homography, placements: dict[str, Placem
     order = sorted(placements, key=lambda name: name != prefer)
     for name in order:
         placement = placements[name]
+        arm_kinematics = kinematics[name] if isinstance(kinematics, dict) else kinematics
         base = base_on_sheet(placement)
-        # The fixed finger on the side of the item facing this arm's base.
-        side_px = sheet_to_pixel_direction(homography, centre, base - sheet_points(homography, np.array([u0]), np.array([v0]))[0])
-        grasp = plan_grasp(item_small, m_per_px_small, fixed_side=tuple(side_px))
+        # The fixed finger on the side of the item facing this arm's base; the
+        # other side when the wrist cannot turn that far.
+        towards_base = sheet_to_pixel_direction(homography, centre, base - sheet_points(homography, np.array([u0]), np.array([v0]))[0])
+        grasp = None
+        for side_px in (towards_base, -towards_base):
+            grasp = plan_grasp(item_small, m_per_px_small, fixed_side=tuple(side_px))
+            if grasp.mode != "pinch":
+                break
+            fixed_px = np.array(grasp.fixed_finger(m_per_px_small)) * scale
+            moving_px = np.array(grasp.moving_finger(m_per_px_small)) * scale
+            across_px = np.array(grasp.across)
+            ends = sheet_points(homography, np.array([fixed_px[0], fixed_px[0] + across_px[0] * 20]),
+                                np.array([fixed_px[1], fixed_px[1] + across_px[1] * 20]))
+            target_sheet, direction_sheet = ends[0], ends[1] - ends[0]
+            yaw = placement.direction_to_arm(float(np.degrees(np.arctan2(direction_sheet[1], direction_sheet[0]))))
+            x, y = placement.to_arm(target_sheet)
+            table_cm = placement.table_height(x, y)
+            target = np.array([x, y, table_cm + GRASP_HEIGHT_CM]) / 100
+            found = _approach(arm_kinematics, target, yaw, limits.get(name))
+            if found is not None:
+                above, down, lean = found
+                return PickPlan(name, above.degrees, down.degrees, gripper_percent_for(grasp.opening_m), grasp,
+                                (float(x), float(y)), (float(fixed_px[0]), float(fixed_px[1])), lean,
+                                (float(moving_px[0]), float(moving_px[1])), table_cm), None
         if grasp.mode != "pinch":
             reasons.append(f"{name}: {grasp.reason}")
-            continue
-        fixed_px = np.array(grasp.fixed_finger(m_per_px_small)) * scale
-        moving_px = np.array(grasp.moving_finger(m_per_px_small)) * scale
-        across_px = np.array(grasp.across)
-        ends = sheet_points(homography, np.array([fixed_px[0], fixed_px[0] + across_px[0] * 20]),
-                            np.array([fixed_px[1], fixed_px[1] + across_px[1] * 20]))
-        target_sheet, direction_sheet = ends[0], ends[1] - ends[0]
-        yaw = placement.direction_to_arm(float(np.degrees(np.arctan2(direction_sheet[1], direction_sheet[0]))))
-        x, y = placement.to_arm(target_sheet)
-        table_cm = placement.table_height(x, y)
-        target = np.array([x, y, table_cm + GRASP_HEIGHT_CM]) / 100
-        found = None
-        for lean in LEANS_DEG:
-            down = kinematics.solve(target, yaw_deg=yaw, limits=limits.get(name), lean_deg=lean)
-            if not down.reachable:
-                continue
-            # Start the approach back along the fingers, so the last move is along them.
-            approach = kinematics.approach_for(target, lean)
-            for back in BACK_OFF_CM:
-                above = kinematics.solve(target - approach * back / 100, yaw_deg=yaw, start=down.degrees,
-                                         limits=limits.get(name), lean_deg=lean)
-                if above.reachable:
-                    found = (above, down, lean)
-                    break
-            if found:
-                break
-        if found is None:
+        else:
             reasons.append(f"{name}: out of reach, {np.hypot(x, y):.0f} cm from its base (it reaches 10-42 cm)")
-            continue
-        above, down, lean = found
-        return PickPlan(name, above.degrees, down.degrees, gripper_percent_for(grasp.opening_m), grasp,
-                        (float(x), float(y)), (float(fixed_px[0]), float(fixed_px[1])), lean,
-                        (float(moving_px[0]), float(moving_px[1])), table_cm), None
     return None, "; ".join(reasons) or "no calibrated arm"
+
+
+def _approach(kinematics, target, yaw: float, limits):
+    """(above, down, lean) solutions for a grasp at ``target``, or None."""
+
+    for lean in LEANS_DEG:
+        down = kinematics.solve(target, yaw_deg=yaw, limits=limits, lean_deg=lean)
+        if not down.reachable:
+            continue
+        # Start the approach back along the fingers, so the last move is along them.
+        approach = kinematics.approach_for(target, lean)
+        for back in BACK_OFF_CM:
+            above = kinematics.solve(target - approach * back / 100, yaw_deg=yaw, start=down.degrees,
+                                     limits=limits, lean_deg=lean)
+            if above.reachable:
+                return above, down, lean
+    return None
 
 
 def sheet_to_pixel_direction(homography, pixel, sheet_direction) -> np.ndarray:
