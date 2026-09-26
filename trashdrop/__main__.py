@@ -478,7 +478,7 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     from .perception.calibration import HomographyCalibration
     from .placement import Placement
     from .rig import load_rig
-    from .sorter import draw_plan, execute_pick, find_item, plan_pick, reach_mask
+    from .sorter import draw_detection, draw_plan, execute_pick, find_item, plan_pick, reach_mask, table_mask
     from .station import repository_root
 
     rig = load_rig()
@@ -511,23 +511,36 @@ def _cmd_pick(args: argparse.Namespace) -> int:
             if not arm.torque_is_on():
                 arm.torque_on()
             arm.move(poses[name]["neutral"])
-        input("Clear the table where the arms reach, press Enter to photograph it empty...")
-        background = grab()
-        small_shape = (round(background.shape[0] * 320 / background.shape[1]), 320)
-        valid = reach_mask(small_shape, background.shape[1] / 320, homography, placements)
-        print("ready. The camera looks only where an arm can reach, fingers down.")
+        args.out.mkdir(parents=True, exist_ok=True)
+
+        def photograph_empty_table():
+            input("Take EVERYTHING off the table where the arms reach, press Enter to photograph it empty...")
+            empty = grab()
+            small_shape = (round(empty.shape[0] * 320 / empty.shape[1]), 320)
+            rings = reach_mask(small_shape, empty.shape[1] / 320, homography, placements)
+            zone = table_mask(empty, rings)
+            cv2.imwrite(str(args.out / "pick_background.jpg"), empty)
+            return empty, zone
+
+        background, valid = photograph_empty_table()
+        print("ready. The camera looks only at the table, where an arm can reach (green in out/pick_seen.jpg).")
 
         while True:
-            if input("\nPut an item within reach, then Enter (q = quit): ").strip().lower() == "q":
+            answer = input("\nPut an item within reach, then Enter (b = photograph the empty table again, q = quit): ")
+            if answer.strip().lower() == "q":
                 break
-            frame = grab()
-            item, detail = find_item(frame, background, valid)
-            if item is None:
-                print(f"  {detail}")
+            if answer.strip().lower() == "b":
+                background, valid = photograph_empty_table()
                 continue
-            plan, reason = plan_pick(item, detail, homography, placements, kinematics, limits)
-            args.out.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(args.out / "pick_plan.jpg"), draw_plan(frame, item, detail, plan))
+            frame = grab()
+            detection = find_item(frame, background, valid)
+            cv2.imwrite(str(args.out / "pick_frame.jpg"), frame)
+            cv2.imwrite(str(args.out / "pick_seen.jpg"), draw_detection(frame, detection, valid))
+            if detection.item is None:
+                print(f"  {detection.reason}  (out/pick_seen.jpg shows what changed)")
+                continue
+            plan, reason = plan_pick(detection.item, detection.scale, homography, placements, kinematics, limits)
+            cv2.imwrite(str(args.out / "pick_plan.jpg"), draw_plan(frame, detection.item, detection.scale, plan))
             if plan is None:
                 print(f"  cannot pick it: {reason}")
                 continue

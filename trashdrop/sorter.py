@@ -95,9 +95,44 @@ def base_on_sheet(placement: Placement) -> np.ndarray:
     return rotation.T @ (-np.array([placement.x, placement.y]))
 
 
-def find_item(frame, background, valid_small):
-    """(item mask at analysis resolution, scale to full resolution) or (None, reason)."""
+@dataclass
+class Detection:
+    """What the camera found: the item's mask, or why there is none."""
 
+    item: np.ndarray | None  # analysis-resolution mask of the item
+    scale: float  # full-resolution pixels per analysis pixel
+    reason: str
+    changed: np.ndarray  # everything that differs from the empty table, for a look
+
+
+def table_mask(background, valid_small) -> np.ndarray:
+    """The reachable zone cut down to the table: its bright, flat surface.
+
+    The rings around the bases spill onto the floor, where legs pass by. The
+    floor is dark and the table white, so the bright part of the empty-table
+    photograph, in one piece, is the table.
+    """
+
+    import cv2
+
+    height, width = valid_small.shape
+    small = cv2.resize(background, (width, height), interpolation=cv2.INTER_AREA)
+    value = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)[..., 2]
+    # Relative to the table's own brightness, so it holds whether the floor
+    # fills half the ring or none of it.
+    bright = (value > 0.6 * np.percentile(value[valid_small > 0], 90)).astype(np.uint8)
+    bright = cv2.morphologyEx(bright, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(bright & (valid_small > 0).astype(np.uint8))
+    if count <= 1:
+        return valid_small
+    biggest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    table = (labels == biggest).astype(np.uint8)
+    # Fill what sits on the table in the empty photo too (the arms' own bases).
+    table = cv2.morphologyEx(table, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    return (table * 255).astype(np.uint8) & valid_small
+
+
+def find_item(frame, background, valid_small) -> Detection:
     import cv2
 
     from .dataset.autolabel import EDGE_MARGIN_PX, _foreground
@@ -110,11 +145,18 @@ def find_item(frame, background, valid_small):
     reference = cv2.resize(background, size, interpolation=cv2.INTER_AREA)
     mask, fit = _foreground(small, reference, 28, valid_small)
     if not fit.trusted:
-        return None, "the picture changed too much to compare with the empty table (light? camera moved?)"
+        return Detection(None, scale, "the picture changed too much to compare with the empty table "
+                         "(light changed? camera moved?) -- press b to photograph the empty table again", mask)
     region, reason = find_item_region(mask, edge_margin_px=EDGE_MARGIN_PX, valid_mask=valid_small)
     if region is None:
-        return None, {"nothing_changed": "no item found where an arm can reach",
-                      "touches_frame_edge": "the item sticks out of the reachable area"}.get(reason, reason)
+        changed = int((mask > 0).sum())
+        explanation = {
+            "nothing_changed": f"no item found where an arm can reach ({changed} changed pixels there). Was it "
+                               "on the table when the empty photo was taken? Press b to take it again",
+            "touches_frame_edge": "the item runs out of the reachable area: move it closer to an arm",
+            "more_than_one_object": "two separate things changed: one item at a time, and nothing moving nearby",
+        }
+        return Detection(None, scale, explanation.get(reason, reason), mask)
     hull = np.zeros(mask.shape, np.uint8)
     cv2.fillPoly(hull, [region.hull.reshape(-1, 2)], 255)
     item = ((mask > 0) & (hull > 0)).astype(np.uint8) * 255
@@ -125,7 +167,22 @@ def find_item(frame, background, valid_small):
     # A clear item shows up as scattered fragments; its hull is then the honest outline.
     if (filled > 0).sum() < 0.6 * max((hull > 0).sum(), 1):
         filled = hull
-    return filled > 0, scale
+    return Detection(filled > 0, scale, "ok", mask)
+
+
+def draw_detection(frame, detection: Detection, valid_small) -> np.ndarray:
+    """What the detector saw: changed pixels in red, the searched zone outlined."""
+
+    import cv2
+
+    height, width = frame.shape[:2]
+    view = frame.copy()
+    changed = cv2.resize(detection.changed, (width, height), interpolation=cv2.INTER_NEAREST) > 0
+    view[changed] = (0.4 * view[changed] + 0.6 * np.array([0, 0, 255])).astype(np.uint8)
+    zone = cv2.resize(valid_small, (width, height), interpolation=cv2.INTER_NEAREST)
+    contours, _ = cv2.findContours(zone, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(view, contours, -1, (60, 220, 60), 3)
+    return view
 
 
 def plan_pick(item_small, scale: float, homography, placements: dict[str, Placement], kinematics,

@@ -21,6 +21,9 @@ from trashdrop.perception.calibration import HomographyCalibration  # noqa: E402
 from trashdrop.placement import Placement  # noqa: E402
 from trashdrop.sorter import (  # noqa: E402
     GRASP_HEIGHT_CM,
+    draw_detection,
+    find_item,
+    table_mask,
     base_on_sheet,
     draw_plan,
     drop_pose,
@@ -110,6 +113,39 @@ class PlanTests(unittest.TestCase):
         base_u, base_v = self.homography.world_to_pixel(*(base_on_sheet(LEFT) / 100))
         self.assertEqual(mask[int(base_v / SCALE), int(base_u / SCALE)], 0, "not at the base itself")
         self.assertGreater(mask.sum(), 0)
+
+
+class DetectionTests(unittest.TestCase):
+    """The venue's empty-table photo: a white table on a dark floor."""
+
+    @staticmethod
+    def empty_table() -> np.ndarray:
+        frame = np.full((1080, 1920, 3), (40, 55, 70), np.uint8)  # the floor
+        frame[:, 600:1500] = (215, 220, 218)  # the table
+        noise = np.random.default_rng(0).normal(0, 2, frame.shape)
+        return np.clip(frame + noise, 0, 255).astype(np.uint8)
+
+    def test_the_floor_is_left_out_of_the_zone(self) -> None:
+        zone = table_mask(self.empty_table(), np.full((180, 320), 255, np.uint8))
+        self.assertEqual(zone[90, 40], 0, "floor")
+        self.assertEqual(zone[90, 170], 255, "table")
+
+    def test_an_item_put_down_after_the_empty_photo_is_found(self) -> None:
+        empty = self.empty_table()
+        zone = table_mask(empty, np.full((180, 320), 255, np.uint8))
+        frame = empty.copy()
+        cv2.rectangle(frame, (900, 400), (1200, 520), (60, 90, 170), -1)
+        detection = find_item(frame, empty, zone)
+        self.assertIsNotNone(detection.item, detection.reason)
+        self.assertEqual(draw_detection(frame, detection, zone).shape, frame.shape)
+
+    def test_an_item_already_there_in_the_empty_photo_is_explained(self) -> None:
+        with_item = self.empty_table()
+        cv2.rectangle(with_item, (900, 400), (1200, 520), (60, 90, 170), -1)
+        zone = table_mask(with_item, np.full((180, 320), 255, np.uint8))
+        detection = find_item(with_item, with_item, zone)
+        self.assertIsNone(detection.item)
+        self.assertIn("press b", detection.reason.lower())
 
 
 class GripperTests(unittest.TestCase):
