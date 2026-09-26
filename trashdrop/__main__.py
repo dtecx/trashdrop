@@ -805,6 +805,10 @@ def _cmd_pick(args: argparse.Namespace) -> int:
                 continue
             item, item_scale = refine_item(frame, background, detection, valid)
             upright, short_cm, long_cm = looks_upright(item, item_scale, homography)
+            if upright and not args.push_over:
+                print(f"  it looks upright ({short_cm:.0f} x {long_cm:.0f} cm from above): the jaw cannot take it "
+                      "standing. Lay it on its side (--push-over tries pushing it over)")
+                continue
             if upright and not just_pushed:
                 knock, why = plan_knock(item, item_scale, homography, placements, kinematics, limits,
                                         np.mean(rig.pick_zone.corners(), axis=0))
@@ -1473,6 +1477,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="do not sort: the nearer arm takes every item and drops it on its own side")
     pick.add_argument("--min-confidence", type=float, default=None,
                       help="how sure the classifier must be before an item is sorted (default 0.8)")
+    pick.add_argument("--push-over", action="store_true",
+                      help="push an item that looks upright over instead of asking for it to be laid down "
+                           "(it tends to slide rather than fall)")
     pick.add_argument("--fingertips", type=float, default=None,
                       help="how far above the table the fixed fingertip comes down, cm (default 0.5, at least 0.2)")
     pick.set_defaults(func=_cmd_pick)

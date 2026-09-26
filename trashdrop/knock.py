@@ -12,6 +12,12 @@ it falls inside. Then it is found again and picked up like everything else.
 Either arm may push, towards or away from its base: whichever lets the item
 fall nearest the middle of the zone. The pick that follows is still made by
 the arm on its material's side.
+
+At the venue it did not work, and physics says why: a push tips a bottle
+rather than sliding it only above about radius / friction -- 11-16 cm for a
+6.5 cm bottle on a smooth table -- and fingers down reach 8-9 cm there. So
+it is opt-in (`pick --push-over`); by default a standing item is reported
+and left to be laid down.
 """
 
 from __future__ import annotations
