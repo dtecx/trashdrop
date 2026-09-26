@@ -2,9 +2,11 @@
 
 What is pinned down, on the model at the venue's placements and on fake
 arms: it starts where the arms stand and ends in neutral, never jumping;
-each move does what the team's photos show; the arms keep clear of each
-other and of the table; no joint is asked for more than the servos manage
-or past the venue arms' limits; and every tick writes both arms.
+each move does what the team's photos show; between moves both arms stand
+up straight; the arms keep clear of each other and of the table, and
+nothing goes behind their bases; no joint is asked for more than the
+servos manage or past the venue arms' limits; and every tick writes both
+arms.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from tests.test_arm import FakeBus, FakeClock
 from trashdrop.arm import Arm, Stopped
 from trashdrop.groove import (
     LEAD_BEATS,
+    MAX_BEHIND_CM,
     MAX_JOINT_SPEED,
     MIN_ABOVE_TABLE_CM,
     MIN_APART_CM,
@@ -62,11 +65,20 @@ class RoutineTests(unittest.TestCase):
         biggest = max(abs(b[arm][joint] - a[arm][joint]) for a, b in zip(ticks, ticks[1:]) for arm in a for joint in a[arm])
         self.assertLess(biggest, 3.5, "a few degrees (or percent) at most between two ticks")
 
-    def test_every_move_in_order_each_eased_into(self) -> None:
-        routine = build(NEUTRAL, NEUTRAL, reps=2, bpm=60)
-        self.assertEqual(routine.labels, ["start"] + [name for name in ORDER for _ in range(4)] + ["neutral"])
-        firsts = [index for index, label in enumerate(routine.labels[1:]) if routine.labels[index] != label]
-        self.assertTrue(all(routine.seconds[index] == LEAD_BEATS for index in firsts), "two beats into each move")
+    def test_every_move_in_order_each_eased_into_from_upright(self) -> None:
+        trims = {"left": 7.8, "right": -7.8}
+        routine = build(NEUTRAL, NEUTRAL, reps=2, bpm=60, trims=trims)
+        expected = ["start"]
+        for number, name in enumerate(ORDER):
+            expected += (["upright"] if number else []) + [name] * 4
+        self.assertEqual(routine.labels, expected + ["neutral"])
+        for index, label in enumerate(routine.labels[1:]):
+            if label in ORDER and routine.labels[index] != label:
+                self.assertEqual(routine.seconds[index], LEAD_BEATS, "two beats into each move")
+            if label == "upright":
+                upright = {arm: dict(NEUTRAL[arm], shoulder_pan=NEUTRAL[arm]["shoulder_pan"] + trims[arm])
+                           for arm in NEUTRAL}
+                self.assertEqual(routine.keyframes[index + 1], upright, "both straight up, facing the same way")
 
     def test_the_servos_keep_up_and_a_beat_too_fast_is_caught(self) -> None:
         speed, _ = fastest(build(NEUTRAL, NEUTRAL))
@@ -103,8 +115,8 @@ class ModelTests(unittest.TestCase):
             "left": Body(Kinematics(-80.0), Placement(11.34, -22.40, -95.14, -0.36, -0.0318, 0.0617)),
             "right": Body(Kinematics(5.0), Placement(10.98, 19.12, -79.47, -1.02, -0.0315, -0.0252)),
         }
-        cls.trims, heading = facing(cls.bodies, NEUTRAL)
-        cls.ahead = np.array([np.cos(np.radians(heading)), np.sin(np.radians(heading))])
+        cls.trims, cls.heading = facing(cls.bodies, NEUTRAL)
+        cls.ahead = np.array([np.cos(np.radians(cls.heading)), np.sin(np.radians(cls.heading))])
 
     def poses(self, move: str) -> list[dict[str, dict[str, float]]]:
         return build(NEUTRAL, NEUTRAL, moves=(move,), reps=1, trims=self.trims).keyframes[1:3]
@@ -173,12 +185,22 @@ class ModelTests(unittest.TestCase):
             turns.append(left)
         self.assertEqual(turns[0], -turns[1], "back and forth")
 
-    def test_the_arms_keep_clear_of_each_other_and_of_the_table(self) -> None:
+    def test_the_arms_keep_clear_of_each_other_the_table_and_what_is_behind_them(self) -> None:
         from trashdrop.groove import check
 
-        apart, above = check(build(NEUTRAL, NEUTRAL, reps=1, trims=self.trims), self.bodies, step_s=0.1)
-        self.assertGreaterEqual(apart, MIN_APART_CM)
-        self.assertGreaterEqual(above, MIN_ABOVE_TABLE_CM)
+        room = check(build(NEUTRAL, NEUTRAL, reps=1, trims=self.trims), self.bodies, self.heading, step_s=0.1)
+        self.assertGreaterEqual(room.apart, MIN_APART_CM)
+        self.assertGreaterEqual(room.above, MIN_ABOVE_TABLE_CM)
+        self.assertLessEqual(room.behind, MAX_BEHIND_CM, "nothing behind the bases")
+        self.assertLess(room.out, 25.0, "a hand's reach to the sides")
+        self.assertGreater(room.ahead, 35.0, "the lowered arm reaches out in front")
+
+    def test_a_hand_bent_back_over_the_base_is_caught(self) -> None:
+        from trashdrop.groove import Routine, check
+
+        bent = {"left": dict(NEUTRAL["left"], wrist_flex=-90.0), "right": dict(NEUTRAL["right"])}
+        room = check(Routine([NEUTRAL, bent], [1.0], ["start", "bent"]), self.bodies, self.heading, step_s=0.25)
+        self.assertGreater(room.behind, MAX_BEHIND_CM)
 
     def test_a_speed_the_servos_cannot_keep_up_with_is_refused(self) -> None:
         from trashdrop.groove import main

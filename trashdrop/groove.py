@@ -24,9 +24,11 @@ held up, its gripper for the hand:
 Every pose is an offset from each arm's neutral (straight up) -- the gripper
 alone is absolute, percent open -- so each arm's own zeros do not matter. A
 pose is reached on the beat, each move is eased into over two beats, and the
-dance ends where it began. The arms face about 16 degrees apart at the venue;
-for the dance each base turns half of that, so that both stand, lean and
-point the same way.
+dance ends where it began. Between moves both arms first stand up straight:
+at the venue an arm hit the wall on the way into raise, its base turning
+back while it went down, and one move now never sweeps into the next. The
+arms face about 16 degrees apart at the venue; for the dance each base turns
+half of that, so that both stand, lean and point the same way.
 """
 
 from __future__ import annotations
@@ -36,16 +38,19 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
 BPM = 60.0  # slow, to begin with
 REPS = 4  # times through each move
 LEAD_BEATS = 2.0  # into each move, and back to neutral at the end
+BETWEEN_BEATS = 1.5  # from the end of one move to standing straight up, before the next
 MAX_JOINT_SPEED = 220.0  # deg/s at the fastest moment of any step; an STS3215 manages about 270
 DANCE_SPEED = 150.0  # the servos' own limit while dancing is twice this, the same for both arms
 MIN_APART_CM = 8.0  # between the two arms' centre lines, anywhere along them
 MIN_ABOVE_TABLE_CM = 10.0  # the lowest point of either arm past its shoulder
+MAX_BEHIND_CM = 2.0  # no part of either arm behind where its base stands: out of sight, and near the wall
 GRIPPER_DEG_PER_PERCENT = 1.3  # the jaw swings about 128 degrees over 0..100 %
 ARMS = ("left", "right")
 ARM_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
@@ -132,7 +137,11 @@ def build(start: dict[str, dict[str, float]], neutral: dict[str, dict[str, float
     keyframes = [{arm: dict(start[arm]) for arm in ARMS}]
     seconds: list[float] = []
     labels = ["start"]
-    for name in moves:
+    for number, name in enumerate(moves):
+        if number:  # straight up between moves: nothing sweeps from one move's last pose into the next's first
+            keyframes.append({arm: _absolute(neutral[arm], {}, trims.get(arm, 0.0)) for arm in ARMS})
+            seconds.append(BETWEEN_BEATS * beat)
+            labels.append("upright")
         for rep in range(reps):
             for index, (pose, beats) in enumerate(MOVES[name]):
                 keyframes.append({arm: _absolute(neutral[arm], pose[arm], trims.get(arm, 0.0)) for arm in ARMS})
@@ -288,20 +297,38 @@ def _segment_gap(p1, q1, p2, q2) -> float:
     return float(np.linalg.norm(p1 + d1 * s - (p2 + d2 * t)))
 
 
-def check(routine: Routine, bodies: dict[str, Body], step_s: float = 0.05) -> tuple[float, float]:
-    """(the closest the two arms' centre lines come, cm; the lowest either comes above the table, cm)."""
+class Clearance(NamedTuple):
+    """Over the whole dance, on the model, cm."""
 
+    apart: float  # the closest the two arms' centre lines come
+    above: float  # the lowest either comes above the table, past its shoulder
+    behind: float  # the furthest any part goes behind where its base stands
+    out: float  # the furthest either reaches out to its own side
+    ahead: float  # the furthest either reaches ahead of where its base stands
+
+
+def check(routine: Routine, bodies: dict[str, Body], heading: float, step_s: float = 0.05) -> Clearance:
+    """How close the arms come to each other and the table, and how far they reach; ``heading`` is ahead."""
+
+    forward = np.array([math.cos(math.radians(heading)), math.sin(math.radians(heading))])
+    outwards = {"left": np.array([-forward[1], forward[0]]), "right": np.array([forward[1], -forward[0]])}
+    bases = {arm: body.to_table(np.zeros(2)) for arm, body in bodies.items()}
     apart = above = math.inf
+    behind = out = ahead = -math.inf
     for t in np.arange(0.0, routine.total + step_s, step_s):
         now = routine.at(t)
         shapes = {}
         for arm, body in bodies.items():
             shapes[arm], heights = body.points(now[arm])
             above = min(above, float(heights[2:].min()))  # base and shoulder stand on the table
+            flat = shapes[arm][:, :2] - bases[arm]
+            behind = max(behind, float(-(flat @ forward).min()))
+            ahead = max(ahead, float((flat @ forward).max()))
+            out = max(out, float((flat @ outwards[arm]).max()))
         left, right = shapes["left"], shapes["right"]
         apart = min(apart, min(_segment_gap(left[i], left[j], right[k], right[m])
                                for i, j in SEGMENTS for k, m in SEGMENTS))
-    return apart, above
+    return Clearance(apart, above, behind, out, ahead)
 
 
 def storyboard(bodies: dict[str, Body], neutral: dict[str, dict[str, float]], trims: dict[str, float],
@@ -430,11 +457,13 @@ def main(argv: list[str] | None = None) -> int:
     if bodies:
         print("the bases turn " + ", ".join(f"{arm} {trim:+.1f} deg" for arm, trim in trims.items())
               + " so that both face the same way")
-        apart, above = check(routine, bodies)
-        print(f"on the model the arms come {apart:.0f} cm apart at the closest, "
-              f"{above:.0f} cm above the table at the lowest")
-        if apart < MIN_APART_CM or above < MIN_ABOVE_TABLE_CM:
-            print(f"too close: at least {MIN_APART_CM:g} cm apart and {MIN_ABOVE_TABLE_CM:g} cm above the table")
+        room = check(routine, bodies, heading)
+        print(f"on the model the arms come {room.apart:.0f} cm apart at the closest, {room.above:.0f} cm above "
+              f"the table at the lowest; they reach {room.out:.0f} cm out to the sides, {room.ahead:.0f} cm ahead "
+              f"and {max(0.0, room.behind):.0f} cm behind their bases")
+        if room.apart < MIN_APART_CM or room.above < MIN_ABOVE_TABLE_CM or room.behind > MAX_BEHIND_CM:
+            print(f"too close: at least {MIN_APART_CM:g} cm apart and {MIN_ABOVE_TABLE_CM:g} cm above the table, "
+                  f"at most {MAX_BEHIND_CM:g} cm behind the bases")
             return 1
         print(f"poses drawn: {storyboard(bodies, neutral, trims, heading, moves, repository_root() / 'out' / 'groove.png')}")
     else:
