@@ -118,8 +118,8 @@ def make_handler(cell):
                     cell.set_options(body)
                     return self._json({"ok": True})
                 if path == "/api/speeds":
-                    cell.set_speeds(body["arm"], float(body["max_speed"]), float(body["descent_speed"]))
-                    return self._json({"ok": True})
+                    message = cell.set_speeds(body["arm"], float(body["max_speed"]), float(body["descent_speed"]))
+                    return self._json({"ok": True, "message": message})
             except (ValueError, KeyError, TypeError) as error:
                 return self._json({"ok": False, "error": str(error)}, 400)
             self._send(404, b"not found", "text/plain")

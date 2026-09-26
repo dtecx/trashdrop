@@ -102,11 +102,16 @@ class SideTests(unittest.TestCase):
         self.assertEqual(side, "left")
         self.assertAlmostEqual(sure, 0.95)
 
-    def test_an_unsure_answer_or_other_sends_it_nowhere(self) -> None:
-        self.assertIsNone(side_for({"plastic": 0.6, "paper": 0.4})[0])
-        self.assertIsNone(side_for({"other": 0.9, "paper": 0.1})[0])
-        self.assertEqual(side_for({"plastic": 0.6, "paper": 0.4}, min_confidence=0.5)[0], "left")
-        self.assertGreaterEqual(MIN_CONFIDENCE, 0.7, "below 0.7 unseen objects went to the wrong side")
+    def test_the_likelier_side_wins_by_default(self) -> None:
+        # The venue: an unsure item standing still stopped the demo.
+        self.assertEqual(MIN_CONFIDENCE, 0.0)
+        self.assertEqual(side_for({"plastic": 0.55, "paper": 0.45}), ("left", 0.55))
+        self.assertEqual(side_for({"paper": 0.3, "plastic": 0.2, "other": 0.5})[0], "right")
+
+    def test_a_threshold_leaves_unsure_items_where_they_are(self) -> None:
+        self.assertIsNone(side_for({"plastic": 0.6, "paper": 0.4}, min_confidence=0.8)[0])
+        self.assertIsNone(side_for({"other": 0.9, "paper": 0.1}, min_confidence=0.8)[0])
+        self.assertEqual(side_for({"plastic": 0.85, "paper": 0.15}, min_confidence=0.8)[0], "left")
 
     def test_the_crop_holds_the_item_and_a_little_table(self) -> None:
         frame = np.zeros((1080, 1920, 3), np.uint8)

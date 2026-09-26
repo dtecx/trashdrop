@@ -132,8 +132,8 @@
         <select id="only_arm"><option value="">both</option><option value="left">left only</option><option value="right">right only</option></select></div>
       <div class="row"><label for="fingertips">Fingertips above the table</label><output id="fingertips_v"></output>
         <input type="range" id="fingertips" min="0.2" max="2.5" step="0.1"></div>
-      <div class="row"><label for="confidence">Sure enough to sort</label><output id="confidence_v"></output>
-        <input type="range" id="confidence" min="0.5" max="0.99" step="0.01"></div>
+      <div class="row"><label for="confidence">Sure enough to sort (0: the likelier side, always)</label><output id="confidence_v"></output>
+        <input type="range" id="confidence" min="0" max="0.99" step="0.01"></div>
       <div id="arms"></div>
     </div>
     <div class="card">
@@ -272,18 +272,24 @@ function renderSettings(s) {
     box.dataset.arms = Object.keys(s.arms).join();
     box.innerHTML = Object.keys(s.arms).map((name) => `
       <div class="armbox" data-arm="${name}">
-        <h3>${name} arm <button class="save" data-arm="${name}" style="padding:4px 10px;font-size:12px">Save to rig.toml</button></h3>
+        <h3>${name} arm <span style="color:var(--muted);font-weight:400;font-size:12px">applies at once, saved to rig.toml</span></h3>
         <div class="row"><label>Travel speed</label><output data-out="max"></output><input type="range" min="5" max="120" step="1" data-in="max"></div>
         <div class="row"><label>Last approach speed</label><output data-out="descent"></output><input type="range" min="2" max="120" step="1" data-in="descent"></div>
       </div>`).join('');
     for (const el of box.querySelectorAll('input')) {
-      el.addEventListener('input', () => { editing = `speed-${el.closest('.armbox').dataset.arm}`; updateSpeedLabels(); });
+      const armbox = el.closest('.armbox'), arm = armbox.dataset.arm;
+      el.addEventListener('input', () => {
+        editing = `speed-${arm}`;
+        const travel = armbox.querySelector('[data-in=max]'), descent = armbox.querySelector('[data-in=descent]');
+        if (Number(descent.value) > Number(travel.value)) descent.value = travel.value;  // never faster than travel
+        updateSpeedLabels();
+      });
+      el.addEventListener('change', async () => {  // let go of the slider: the arm takes it now
+        await post('/api/speeds', { arm, max_speed: Number(armbox.querySelector('[data-in=max]').value),
+                                    descent_speed: Number(armbox.querySelector('[data-in=descent]').value) });
+        editing = null;
+      });
     }
-    for (const el of box.querySelectorAll('button.save')) el.addEventListener('click', async () => {
-      const armbox = el.closest('.armbox');
-      const reply = await post('/api/speeds', { arm: el.dataset.arm, max_speed: Number(armbox.querySelector('[data-in=max]').value), descent_speed: Number(armbox.querySelector('[data-in=descent]').value) });
-      if (reply && reply.ok) { editing = null; toast(`${el.dataset.arm} arm: saved`); }
-    });
   }
   for (const [name, arm] of Object.entries(s.arms)) {
     const armbox = box.querySelector(`[data-arm="${name}"]`);

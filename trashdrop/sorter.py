@@ -257,18 +257,21 @@ def refine_item(frame, background, detection: Detection, valid_small) -> tuple[n
 
 # Which side each material goes to, and so which arm takes it: each arm drops
 # only on its own side. Metal goes with plastic, as in Poland's yellow bin
-# ("metale i tworzywa sztuczne"). Anything else is left for a person.
+# ("metale i tworzywa sztuczne").
 SIDE_OF = {"plastic": "left", "metal": "left", "paper": "right"}
-# The classifier's certainty an item needs before it is sorted. On 17 of our
-# objects it had never seen (training/evaluate.py, one object left out at a
-# time), this rule sent nothing to the wrong side from 0.7 up; at 0.8 it
-# sorted 380 of 407 frames and left the other 27.
-MIN_CONFIDENCE = 0.8
+# How sure the classifier must be of a side before an item goes there. 0:
+# always the likelier side, whatever else it might be -- the team's choice at
+# the venue, where an unsure item standing still stopped the demo. The
+# evaluation (training/evaluate.py, 17 of our objects it had never seen, one
+# left out at a time) sent nothing to the wrong side from 0.7 up, sorting 380
+# of 407 frames at 0.8: raise it (pick --min-confidence, the page's slider)
+# when a wrong side costs more than a pause.
+MIN_CONFIDENCE = 0.0
 CROP_PADDING_PX = 10  # table kept around the item, as around the training crops
 
 
 def side_for(probabilities: dict[str, float], min_confidence: float = MIN_CONFIDENCE) -> tuple[str | None, float]:
-    """(which side the item goes to, how sure of that side); the side is None when not sure enough."""
+    """(the likelier side, how sure of it); the side is None only when less sure than ``min_confidence``."""
 
     sure: dict[str, float] = {}
     for material, probability in probabilities.items():

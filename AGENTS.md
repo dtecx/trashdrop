@@ -144,8 +144,10 @@ this list fails, fix the code, not the test.
    flags what it cannot handle instead of guessing; that promise lives in
    `TwoArmDispatcher.dispatch` and `station.is_graspable` -- and, on the real
    arms, in `sorter.side_for`: below `MIN_CONFIDENCE` an item is left on the
-   table for a person, never sent to a side. Lowering it trades wrong sides
-   for coverage; training/evaluate.py says where the wrong sides start.
+   table for a person, never sent to a side. The team runs it at 0 -- the
+   likelier side, always -- because an unsure item standing still stopped
+   the demo; training/evaluate.py says wrong sides stop from 0.7 up. Raise
+   it (the page's slider, `pick --min-confidence`) for a zero-error run.
 
 ## Commands
 

@@ -49,6 +49,7 @@ class StandInCell:
 
     def set_speeds(self, arm, max_speed, descent_speed):
         self.options["speeds"] = (arm, max_speed, descent_speed)
+        return f"{arm} arm: {max_speed:g} deg/s"
 
 
 class ServerTests(unittest.TestCase):

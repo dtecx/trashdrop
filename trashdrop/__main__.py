@@ -1503,7 +1503,8 @@ def build_parser() -> argparse.ArgumentParser:
     pick.add_argument("--any-arm", action="store_true",
                       help="do not sort: the nearer arm takes every item and drops it on its own side")
     pick.add_argument("--min-confidence", type=float, default=None,
-                      help="how sure the classifier must be before an item is sorted (default 0.8)")
+                      help="how sure the classifier must be before an item is sorted "
+                           "(default 0: the likelier side, always; 0.7-0.8 leaves unsure items instead)")
     pick.add_argument("--fingertips", type=float, default=None,
                       help="how far above the table the fixed fingertip comes down, cm (default 0.5, at least 0.2)")
     pick.set_defaults(func=_cmd_pick)

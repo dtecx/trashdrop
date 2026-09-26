@@ -565,11 +565,14 @@ class Cell:
             setattr(self.options, key, value)
         self.version += 1
 
-    def set_speeds(self, arm: str, max_speed: float, descent_speed: float, *, save: bool = True) -> None:
+    def set_speeds(self, arm: str, max_speed: float, descent_speed: float, *, save: bool = True) -> str:
+        """Change an arm's speeds at once, running or not: the next move uses them. What was set, in words."""
+
         if arm not in self.arms:
             raise ValueError(f"no arm {arm!r}")
-        if not (5.0 <= max_speed <= 120.0 and 2.0 <= descent_speed <= max_speed):
-            raise ValueError("speeds: max 5-120 deg/s, descent 2 deg/s up to max")
+        if not 5.0 <= max_speed <= 120.0:
+            raise ValueError("travel speed: 5-120 deg/s")
+        descent_speed = min(max(descent_speed, 2.0), max_speed)  # never faster than travel
         devices = self.rig.arms[arm]
         devices.max_speed = float(max_speed)
         if hasattr(devices, "descent_speed"):
@@ -582,7 +585,10 @@ class Cell:
         if save and self._save_rig is not None:
             self._save_rig(self.rig)
         self.version += 1
-        self.log(f"{arm}: {max_speed:g} deg/s, descent {descent_speed:g} deg/s" + (", saved to rig.toml" if save else ""))
+        message = f"{arm} arm: {max_speed:g} deg/s, last approach {descent_speed:g} deg/s" + (
+            ", saved to rig.toml" if save and self._save_rig is not None else "")
+        self.log(message)
+        return message
 
     # --- what the page shows ------------------------------------------------------
 

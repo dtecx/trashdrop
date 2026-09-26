@@ -119,9 +119,12 @@ class CellTests(unittest.TestCase):
         self.assertGreater(len(look.outline), 3)
         self.assertIsNotNone(look.fixed)
 
-    def test_an_unsure_item_goes_nowhere(self) -> None:
-        self.cell, scene = make_cell({"plastic": 0.55, "paper": 0.45})
-        scene.frame = with_item()
+    def test_an_unsure_item_goes_to_the_likelier_side_unless_a_threshold_says_wait(self) -> None:
+        self.cell, scene = make_cell({"plastic": 0.45, "paper": 0.55})
+        scene.frame = with_item((5.0, -3.0))
+        look = self.cell.look()
+        self.assertEqual((look.code, look.side, look.arm), ("ok", "right", "right"))
+        self.cell.set_options({"min_confidence": 0.8})
         look = self.cell.look()
         self.assertEqual(look.code, "unsure")
         self.assertIsNone(look.arm)
@@ -192,8 +195,9 @@ class CellTests(unittest.TestCase):
             self.cell.set_options({"material": "glass"})
         with self.assertRaises(ValueError):
             self.cell.set_speeds("left", 500.0, 20.0, save=False)
-        self.cell.set_speeds("left", 60.0, 30.0, save=False)
+        self.assertIn("60 deg/s, last approach 60 deg/s", self.cell.set_speeds("left", 60.0, 90.0, save=False))
         self.assertEqual(self.cell.arms["left"].max_speed, 60.0)
+        self.assertEqual(self.cell.rig.arms["left"].descent_speed, 60.0, "never faster than travel")
 
 
 if __name__ == "__main__":
