@@ -9,8 +9,10 @@ changes none of it.
     uv run python -m trashdrop.groove --speed 0.5 # everything half as fast; 1.5 half again as fast
 
 groove.toml, beside rig.toml, says which moves in what order, and for each
-how many times through it and how fast; --speed scales them all, and
---reps and --moves stand in for the file's for one run.
+how many times through it, how fast and how big; --speed scales them all,
+and --reps and --moves stand in for the file's for one run. The servos turn
+at most about 270 deg/s: a move too fast for them is refused, and a smaller
+one can go faster.
 
 The team acted the four moves out with their own hands (photos, 2026-09-26),
 and then said how the arms should do them. Each arm stands in for a forearm
@@ -27,8 +29,9 @@ held up, its gripper for the hand:
 
 Every pose is an offset from each arm's neutral (straight up) -- the gripper
 alone is absolute, percent open -- so each arm's own zeros do not matter. A
-pose is reached on the beat, each move is eased into over two beats, and the
-dance ends where it began. Between moves both arms first stand up straight:
+pose is reached on the beat. The ways into a move, up between moves and
+back to neutral at the end take as long as the servos comfortably need,
+whatever the moves' own speeds, and the dance ends where it began. Between moves both arms first stand up straight:
 at the venue an arm hit the wall on the way into raise, its base turning
 back while it went down, and one move now never sweeps into the next. The
 arms face about 16 degrees apart at the venue; for the dance each base turns
@@ -48,11 +51,12 @@ import numpy as np
 
 BPM = 60.0  # slow, to begin with
 REPS = 4  # times through each move
-MAX_SPEED = 3.0  # a move's speed, times the usual tempo; the servos' own limit usually comes first
+MAX_SPEED = 4.0  # a move's speed, times the usual tempo; the servos' own limit usually comes first
+MAX_SIZE = 1.2  # a move's size, times as designed: how far what it swings swings
 SETTINGS_FILE = "groove.toml"  # at the repository's root
-LEAD_BEATS = 2.0  # into each move, and back to neutral at the end
-BETWEEN_BEATS = 1.5  # from the end of one move to standing straight up, before the next
-MAX_JOINT_SPEED = 220.0  # deg/s at the fastest moment of any step; an STS3215 manages about 270
+MAX_JOINT_SPEED = 270.0  # deg/s at the fastest moment of any step: an STS3215's rated speed at 12 V
+TRANSIT_SPEED = 180.0  # deg/s at the peak on the ways into, between and out of the moves
+MIN_TRANSIT_S = 0.4
 DANCE_SPEED = 150.0  # the servos' own limit while dancing is twice this, the same for both arms
 MIN_APART_CM = 8.0  # between the two arms' centre lines, anywhere along them
 MIN_ABOVE_TABLE_CM = 10.0  # the lowest point of either arm past its shoulder
@@ -129,17 +133,18 @@ class Routine:
 
 @dataclass(frozen=True)
 class Part:
-    """One move of the dance: which, how many times through it, and how fast (1: the usual tempo)."""
+    """One move of the dance: which, how many times, how fast (1: the usual tempo), how big (1: as designed)."""
 
     move: str
     reps: int = REPS
     speed: float = 1.0
+    size: float = 1.0
 
 
-def plan(moves=ORDER, reps: int = REPS, speed: float = 1.0) -> list[Part]:
-    """``moves`` in order, each ``reps`` times at ``speed``."""
+def plan(moves=ORDER, reps: int = REPS, speed: float = 1.0, size: float = 1.0) -> list[Part]:
+    """``moves`` in order, each ``reps`` times at ``speed`` and ``size``."""
 
-    return [Part(name, reps, speed) for name in moves]
+    return [Part(name, reps, speed, size) for name in moves]
 
 
 def load_parts(path: Path) -> tuple[list[Part], float]:
@@ -150,8 +155,8 @@ def load_parts(path: Path) -> tuple[list[Part], float]:
     if not path.is_file():
         return plan(), BPM
     settings = tomllib.loads(path.read_text(encoding="utf-8"))
-    parts = [Part(name, int(settings.get(name, {}).get("reps", REPS)), float(settings.get(name, {}).get("speed", 1.0)))
-             for name in settings.get("order", ORDER)]
+    parts = [Part(name, int(own.get("reps", REPS)), float(own.get("speed", 1.0)), float(own.get("size", 1.0)))
+             for name, own in ((name, settings.get(name, {})) for name in settings.get("order", ORDER))]
     return parts, float(settings.get("bpm", BPM))
 
 
@@ -160,43 +165,77 @@ def build(start: dict[str, dict[str, float]], neutral: dict[str, dict[str, float
     """The dance from ``start`` back to ``neutral``, part by part, at ``bpm`` times each part's speed.
 
     ``trims`` turn each base by that many degrees throughout, so that both
-    arms face the same way (see facing()). The way up between two moves goes
-    at the pace of the one that ends, the way into a move at its own.
+    arms face the same way (see facing()). The ways into a move, up between
+    two and back to neutral go at TRANSIT_SPEED, not at any move's pace.
     """
 
     unknown = [part.move for part in parts if part.move not in MOVES]
     if unknown or not parts:
         raise ValueError(f"the moves are {', '.join(MOVES)}; not {', '.join(unknown) or 'none'}")
     for part in parts:
-        if not (1 <= part.reps <= 32 and 0 < part.speed <= MAX_SPEED):
-            raise ValueError(f"{part.move}: reps 1-32, and a speed above 0 and at most {MAX_SPEED:g}")
+        if not (1 <= part.reps <= 32 and 0 < part.speed <= MAX_SPEED and 0 < part.size <= MAX_SIZE):
+            raise ValueError(f"{part.move}: reps 1-32, a speed above 0 and at most {MAX_SPEED:g}, "
+                             f"a size above 0 and at most {MAX_SIZE:g}")
     if not 0 < bpm <= 200:
         raise ValueError("bpm 1-200")
     trims = trims or {}
     routine = Routine([{arm: dict(start[arm]) for arm in ARMS}], [], ["start"])
 
-    def step(keyframe: dict[str, dict[str, float]], beats: float, label: str, pace: Part) -> None:
+    def step(keyframe: dict[str, dict[str, float]], label: str, pace: Part | None, beats: float = 0.0) -> None:
+        """To ``keyframe``: ``beats`` at ``pace``'s speed, or with no pace, as a transit."""
+
+        seconds = beats * 60.0 / (bpm * pace.speed) if pace else _transit_s(routine.keyframes[-1], keyframe)
         routine.keyframes.append(keyframe)
-        routine.seconds.append(beats * 60.0 / (bpm * pace.speed))
+        routine.seconds.append(seconds)
         routine.labels.append(label)
-        routine.paces.append(pace.move)
+        routine.paces.append(pace.move if pace else "")
 
     for number, part in enumerate(parts):
         if number:  # straight up between moves: nothing sweeps from one move's last pose into the next's first
-            step({arm: _absolute(neutral[arm], {}, trims.get(arm, 0.0)) for arm in ARMS}, BETWEEN_BEATS, "upright",
-                 parts[number - 1])
+            step({arm: _absolute(neutral[arm], {}, trims.get(arm, 0.0)) for arm in ARMS}, "upright", None)
+        swinging = _swinging(part.move)
         for rep in range(part.reps):
             for index, (pose, beats) in enumerate(MOVES[part.move]):
-                step({arm: _absolute(neutral[arm], pose[arm], trims.get(arm, 0.0)) for arm in ARMS},
-                     LEAD_BEATS if rep == 0 and index == 0 else beats, part.move, part)
-    step({arm: dict(neutral[arm]) for arm in ARMS}, LEAD_BEATS, "neutral", parts[-1])
+                keyframe = {arm: _absolute(neutral[arm], pose[arm], trims.get(arm, 0.0), part.size, swinging[arm])
+                            for arm in ARMS}
+                first = rep == 0 and index == 0
+                step(keyframe, part.move, None if first else part, beats)
+    step({arm: dict(neutral[arm]) for arm in ARMS}, "neutral", None)
     return routine
 
 
-def _absolute(neutral: dict[str, float], offsets: dict[str, float], trim: float) -> dict[str, float]:
-    pose = {joint: neutral[joint] + offsets.get(joint, 0.0) for joint in ARM_JOINTS}
+def _turn(a: dict[str, dict[str, float]], b: dict[str, dict[str, float]]) -> float:
+    """The most any joint turns from ``a`` to ``b``, degrees (the gripper's percent as its jaw's degrees)."""
+
+    return max(abs(b[arm][joint] - a[arm][joint]) * (GRIPPER_DEG_PER_PERCENT if joint == "gripper" else 1.0)
+               for arm in a for joint in a[arm])
+
+
+def _transit_s(a: dict[str, dict[str, float]], b: dict[str, dict[str, float]]) -> float:
+    """Long enough from ``a`` to ``b`` that no joint's eased peak passes TRANSIT_SPEED."""
+
+    return max(MIN_TRANSIT_S, math.pi / 2 * _turn(a, b) / TRANSIT_SPEED)
+
+
+def _swinging(move: str) -> dict[str, set[str]]:
+    """Per arm, what a move swings: the joints its poses do not all agree on. What they share -- the
+    mouth held level, say -- is the move's posture, and a size leaves it be."""
+
+    poses = [pose for pose, _ in MOVES[move]]
+    return {arm: {joint for joint in set().union(*(pose[arm] for pose in poses))
+                  if len({pose[arm].get(joint) for pose in poses}) > 1} for arm in ARMS}
+
+
+def _absolute(neutral: dict[str, float], offsets: dict[str, float], trim: float, size: float = 1.0,
+              swinging: set[str] = frozenset()) -> dict[str, float]:
+    """A pose from neutral and its offsets; what swings, scaled by ``size`` (the gripper from shut)."""
+
+    def scaled(joint: str) -> float:
+        return size if joint in swinging else 1.0
+
+    pose = {joint: neutral[joint] + offsets.get(joint, 0.0) * scaled(joint) for joint in ARM_JOINTS}
     pose["shoulder_pan"] += trim
-    pose["gripper"] = offsets.get("gripper", neutral["gripper"])
+    pose["gripper"] = offsets["gripper"] * scaled("gripper") if "gripper" in offsets else neutral["gripper"]
     return pose
 
 
@@ -217,6 +256,16 @@ def fastest(routine: Routine) -> tuple[float, str, str]:
                     top, where = speed, f"the {arm} {joint} in {routine.labels[index + 1]}"
                     pace = routine.paces[index] if index < len(routine.paces) else ""
     return top, where, pace
+
+
+def top_speed(part: Part, neutral: dict[str, dict[str, float]], *, bpm: float = BPM,
+              trims: dict[str, float] | None = None) -> float:
+    """The most ``part``'s speed can be, at its size, before one of its own steps outruns the servos."""
+
+    routine = build(neutral, neutral, [Part(part.move, 2, 1.0, part.size)], bpm=bpm, trims=trims)
+    peak = max(math.pi / 2 * _turn(routine.keyframes[index], routine.keyframes[index + 1]) / span
+               for index, (span, pace) in enumerate(zip(routine.seconds, routine.paces)) if pace)
+    return min(MAX_SPEED, MAX_JOINT_SPEED / peak)
 
 
 LIMIT_SLACK_DEG = 2.0  # past Arm.limits_degrees, which keeps its own margin: the left elbow's neutral is there
@@ -376,7 +425,7 @@ def check(routine: Routine, bodies: dict[str, Body], heading: float, step_s: flo
 
 
 def storyboard(bodies: dict[str, Body], neutral: dict[str, dict[str, float]], trims: dict[str, float],
-               heading: float, moves, path: Path) -> Path:
+               heading: float, parts: list[Part], path: Path) -> Path:
     """Each move's poses as the model has them, from behind the arms and from their right side."""
 
     import cv2
@@ -387,14 +436,16 @@ def storyboard(bodies: dict[str, Body], neutral: dict[str, dict[str, float]], tr
     middle = np.mean([body.to_table(body.kinematics.pan_axis * 100) for body in bodies.values()], axis=0)
     colours = {"left": (215, 130, 40), "right": (40, 140, 235)}
     rows = []
-    for name in moves:
+    for part in parts:
+        name, swinging = part.move, _swinging(part.move)
         panels = []
         for view, across in (("from behind", right), ("from the right", forward)):
             for number, (pose, _) in enumerate(MOVES[name], start=1):
                 panel = np.full((height, width, 3), 250, np.uint8)
                 cv2.line(panel, (0, floor), (width, floor), (170, 170, 170), 2)
                 for arm, body in bodies.items():
-                    points, _ = body.points(_absolute(neutral[arm], pose[arm], trims.get(arm, 0.0)))
+                    points, _ = body.points(_absolute(neutral[arm], pose[arm], trims.get(arm, 0.0), part.size,
+                                                      swinging[arm]))
                     screen = [(int(width / 2 + ((p[:2] - middle) @ across) * scale), int(floor - p[2] * scale))
                               for p in points]
                     for i, j in SEGMENTS:
@@ -483,7 +534,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.moves is not None:
         own = {part.move: part for part in parts}
         parts = [own.get(name, Part(name)) for name in (name.strip() for name in args.moves.split(",")) if name]
-    parts = [Part(part.move, part.reps if args.reps is None else args.reps, part.speed * args.speed) for part in parts]
+    parts = [Part(part.move, part.reps if args.reps is None else args.reps, part.speed * args.speed, part.size)
+             for part in parts]
     bpm = bpm if args.bpm is None else args.bpm
     moves = [part.move for part in parts]
     rig, poses = load_rig(), load_poses()
@@ -499,13 +551,19 @@ def main(argv: list[str] | None = None) -> int:
         print(error)
         return 1
     peak, where, pace = fastest(routine)
-    print(", ".join(f"{part.move} x{part.reps} at speed {part.speed:g}" for part in parts)
+    print(", ".join(f"{part.move} x{part.reps} at speed {part.speed:g}"
+                    + (f", size {part.size:g}" if part.size != 1 else "") for part in parts)
           + f" ({bpm:g} bpm): {routine.total:.0f} s. Fastest: {where}, {peak:.0f} deg/s at its peak.")
-    if peak > MAX_JOINT_SPEED:
+    print(f"the most each speed can be in {SETTINGS_FILE}, at its size"
+          + (f" and --speed {args.speed:g}" if args.speed != 1 else "") + ": "
+          + ", ".join(f"{part.move} {math.floor(top_speed(part, neutral, bpm=bpm, trims=trims) / args.speed * 100) / 100:g}"
+                      for part in parts))
+    if peak > MAX_JOINT_SPEED:  # a move's own step: the ways between go at TRANSIT_SPEED
         slowest = next(part for part in parts if part.move == pace).speed * MAX_JOINT_SPEED / peak / args.speed
         print(f"too fast for the servos (at most {MAX_JOINT_SPEED:g} deg/s): {pace} speed "
               f"{math.floor(slowest * 100) / 100:g} at most in {SETTINGS_FILE}"
-              + (f", with --speed {args.speed:g}" if args.speed != 1 else ""))
+              + (f", with --speed {args.speed:g}" if args.speed != 1 else "")
+              + f"; or a smaller size for {pace}, which lets it go faster")
         return 1
     if bodies:
         print("the bases turn " + ", ".join(f"{arm} {trim:+.1f} deg" for arm, trim in trims.items())
@@ -518,7 +576,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"too close: at least {MIN_APART_CM:g} cm apart and {MIN_ABOVE_TABLE_CM:g} cm above the table, "
                   f"at most {MAX_BEHIND_CM:g} cm behind the bases")
             return 1
-        print(f"poses drawn: {storyboard(bodies, neutral, trims, heading, moves, repository_root() / 'out' / 'groove.png')}")
+        print(f"poses drawn: {storyboard(bodies, neutral, trims, heading, parts, repository_root() / 'out' / 'groove.png')}")
     else:
         print("no arm placements in rig.toml: the bases are not turned to match, and nothing is checked on the model")
     if args.preview:

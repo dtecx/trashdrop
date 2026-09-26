@@ -23,12 +23,12 @@ import numpy as np
 from tests.test_arm import FakeBus, FakeClock
 from trashdrop.arm import Arm, Stopped
 from trashdrop.groove import (
-    LEAD_BEATS,
     MAX_BEHIND_CM,
     MAX_JOINT_SPEED,
     MIN_ABOVE_TABLE_CM,
     MIN_APART_CM,
     ORDER,
+    TRANSIT_SPEED,
     Part,
     build,
     fastest,
@@ -67,7 +67,7 @@ class RoutineTests(unittest.TestCase):
         self.assertEqual(routine.at(routine.total), NEUTRAL)
         ticks = [routine.at(t) for t in np.arange(0.0, routine.total, 0.02)]
         biggest = max(abs(b[arm][joint] - a[arm][joint]) for a, b in zip(ticks, ticks[1:]) for arm in a for joint in a[arm])
-        self.assertLess(biggest, 3.5, "a few degrees (or percent) at most between two ticks")
+        self.assertLessEqual(biggest, MAX_JOINT_SPEED * 0.02, "never more between two ticks than a servo turns")
 
     def test_every_move_in_order_each_eased_into_from_upright(self) -> None:
         trims = {"left": 7.8, "right": -7.8}
@@ -77,8 +77,6 @@ class RoutineTests(unittest.TestCase):
             expected += (["upright"] if number else []) + [name] * 4
         self.assertEqual(routine.labels, expected + ["neutral"])
         for index, label in enumerate(routine.labels[1:]):
-            if label in ORDER and routine.labels[index] != label:
-                self.assertEqual(routine.seconds[index], LEAD_BEATS, "two beats into each move")
             if label == "upright":
                 upright = {arm: dict(NEUTRAL[arm], shoulder_pan=NEUTRAL[arm]["shoulder_pan"] + trims[arm])
                            for arm in NEUTRAL}
@@ -91,7 +89,18 @@ class RoutineTests(unittest.TestCase):
         speed, where, pace = fastest(build(NEUTRAL, NEUTRAL, fast))
         self.assertGreater(speed, MAX_JOINT_SPEED)
         self.assertEqual(pace, "point", "the move whose speed to turn down")
-        self.assertIn("shoulder_pan", where)
+        self.assertIn("point", where)
+
+    def test_the_most_each_move_can_speed_up_is_just_what_the_servos_manage(self) -> None:
+        from trashdrop.groove import top_speed
+
+        for part in plan(size=1.0) + plan(size=0.5):
+            most = top_speed(part, NEUTRAL)
+            if most < 4.0:  # not held back by MAX_SPEED
+                peak, _, _ = fastest(build(NEUTRAL, NEUTRAL, [Part(part.move, 3, most, part.size)]))
+                self.assertAlmostEqual(peak, MAX_JOINT_SPEED, delta=1.0, msg=part.move)
+        self.assertGreater(top_speed(Part("twist", size=0.5), NEUTRAL), top_speed(Part("twist"), NEUTRAL),
+                           "smaller goes faster")
 
     def test_each_move_as_many_times_and_as_fast_as_it_says(self) -> None:
         routine = build(NEUTRAL, NEUTRAL, [Part("jaws", 2, 1.0), Part("point", 3, 0.5)], bpm=60)
@@ -101,7 +110,7 @@ class RoutineTests(unittest.TestCase):
                          if l == label] for label in ("jaws", "point")}
         self.assertEqual(steps["jaws"][1:], [1.0] * 3, "a beat a pose at 60 bpm")
         self.assertEqual(steps["point"][1:], [4.0] * 5, "two beats a pose, half as fast")
-        self.assertEqual(steps["point"][0], LEAD_BEATS * 2.0, "the way in at its own pace")
+        self.assertLess(steps["point"][0], 4.0, "the way in at the transit pace, not point's")
 
     def test_nothing_past_the_venue_arms_limits(self) -> None:
         limits = {name: venue_arm(name)[0].limits_degrees() for name in NEUTRAL}
@@ -109,6 +118,30 @@ class RoutineTests(unittest.TestCase):
         turned_too_far = outside(build(NEUTRAL, NEUTRAL, plan(), trims={"left": -20.0, "right": 0.0}), limits)
         self.assertEqual(len(turned_too_far), 1)
         self.assertIn("left shoulder_pan", turned_too_far[0])
+
+    def test_a_smaller_move_swings_less_and_keeps_its_posture(self) -> None:
+        # The mouth still points ahead, the flat hand stays level, the twisting hands stay open.
+        kept = {"jaws": {"wrist_flex", "wrist_roll"}, "point": {"wrist_flex"}, "raise": set(), "twist": {"gripper"}}
+        full, half = (build(NEUTRAL, NEUTRAL, plan(reps=1, size=size)) for size in (1.0, 0.5))
+        for keyframe, smaller, label in zip(full.keyframes, half.keyframes, full.labels):
+            if label not in ORDER:
+                continue
+            for arm in NEUTRAL:
+                for joint, value in keyframe[arm].items():
+                    rest = 0.0 if joint == "gripper" else NEUTRAL[arm][joint]  # the gripper from shut
+                    expected = value if joint in kept[label] else rest + (value - rest) / 2
+                    self.assertAlmostEqual(smaller[arm][joint], expected, msg=f"{label} {arm} {joint}")
+
+    def test_the_ways_between_moves_keep_their_own_pace_however_fast_the_moves(self) -> None:
+        for speed in (0.5, 1.0, 4.0):
+            routine = build(NEUTRAL, NEUTRAL, plan(reps=2, speed=speed))
+            transits = [index for index, pace in enumerate(routine.paces) if not pace]
+            self.assertEqual([routine.labels[index + 1] for index in transits],
+                             ["jaws", "upright", "point", "upright", "raise", "upright", "twist", "neutral"])
+            for index in transits:
+                a, b = routine.keyframes[index], routine.keyframes[index + 1]
+                turn = max(abs(b[arm][j] - a[arm][j]) * (1.3 if j == "gripper" else 1.0) for arm in a for j in a[arm])
+                self.assertLessEqual(np.pi / 2 * turn / routine.seconds[index], TRANSIT_SPEED + 1e-6)
 
     def test_unknown_moves_and_silly_numbers_are_refused(self) -> None:
         with self.assertRaises(ValueError):
@@ -119,13 +152,15 @@ class RoutineTests(unittest.TestCase):
             build(NEUTRAL, NEUTRAL, [Part("jaws", 4, 0.0)])
         with self.assertRaises(ValueError):
             build(NEUTRAL, NEUTRAL, [Part("jaws", 0, 1.0)])
+        with self.assertRaises(ValueError):
+            build(NEUTRAL, NEUTRAL, [Part("jaws", 4, 1.0, 2.0)])
 
     def test_the_settings_file(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "groove.toml"
             self.assertEqual(load_parts(path), (plan(), 60.0), "without one, every move as usual")
-            path.write_text('order = ["twist", "jaws"]\nbpm = 90\n[twist]\nreps = 6\nspeed = 0.5\n')
-            self.assertEqual(load_parts(path), ([Part("twist", 6, 0.5), Part("jaws", 4, 1.0)], 90.0))
+            path.write_text('order = ["twist", "jaws"]\nbpm = 90\n[twist]\nreps = 6\nspeed = 0.5\nsize = 0.7\n')
+            self.assertEqual(load_parts(path), ([Part("twist", 6, 0.5, 0.7), Part("jaws", 4, 1.0)], 90.0))
         parts, _ = load_parts(Path(__file__).resolve().parents[1] / "groove.toml")
         self.assertEqual([part.move for part in parts], list(ORDER), "the repository's has every move")
 
@@ -251,7 +286,7 @@ class ModelTests(unittest.TestCase):
         from trashdrop.groove import storyboard
 
         with tempfile.TemporaryDirectory() as folder:
-            path = storyboard(self.bodies, NEUTRAL, self.trims, 0.0, ORDER, Path(folder) / "groove.png")
+            path = storyboard(self.bodies, NEUTRAL, self.trims, 0.0, plan(), Path(folder) / "groove.png")
             self.assertEqual(cv2.imread(str(path)).shape, (4 * 250 + 30, 4 * 330, 3))
 
 
