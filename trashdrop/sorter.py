@@ -21,7 +21,7 @@ up) when the camera looks.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -73,6 +73,7 @@ class PickPlan:
     moving_pixel: tuple[float, float] | None = None  # where the moving finger comes down
     table_cm: float | None = None  # the table's height under the target, in the arm's frame
     tcp_above_table_cm: float = GRASP_HEIGHT_CM
+    distances_cm: dict[str, float] = field(default_factory=dict)  # item to each arm's base
 
     @property
     def fingertip_above_table_cm(self) -> float:
@@ -269,11 +270,13 @@ def draw_detection(frame, detection: Detection, valid_small) -> np.ndarray:
 def plan_pick(item_small, scale: float, homography, placements: dict[str, Placement], kinematics,
               limits: dict[str, dict[str, tuple[float, float]]], prefer: str | None = None,
               fingertips_cm: float = FINGERTIPS_CM):
-    """A PickPlan for the item, or (None, reason).
+    """(PickPlan, what the arms passed over said), or (None, why no arm can).
 
-    ``kinematics`` is one Kinematics for every arm, or one per arm by name:
-    each arm's wrist roll has its own zero. ``fingertips_cm`` is how far above
-    the table the fixed fingertip comes down.
+    The arm whose base is nearest the item plans first, the other only if it
+    cannot; ``prefer`` names an arm to try first regardless. ``kinematics`` is
+    one Kinematics for every arm, or one per arm by name: each arm's wrist
+    roll has its own zero. ``fingertips_cm`` is how far above the table the
+    fixed fingertip comes down.
     """
 
     tcp_cm = max(fingertips_cm, LOWEST_FINGERTIPS_CM) + FINGERTIP_BEYOND_TCP * 100
@@ -283,8 +286,10 @@ def plan_pick(item_small, scale: float, homography, placements: dict[str, Placem
     here, right = sheet_points(homography, np.array([u0, u0 + 10.0]), np.array([v0, v0]))
     m_per_px_small = np.linalg.norm(right - here) / 100.0 / 10.0 * scale
 
+    here = sheet_points(homography, np.array([u0]), np.array([v0]))[0]
+    distances = {name: float(np.linalg.norm(base_on_sheet(placement) - here)) for name, placement in placements.items()}
     reasons = []
-    order = sorted(placements, key=lambda name: name != prefer)
+    order = sorted(placements, key=lambda name: (name != prefer, distances[name]))
     for name in order:
         placement = placements[name]
         arm_kinematics = kinematics[name] if isinstance(kinematics, dict) else kinematics
@@ -312,7 +317,8 @@ def plan_pick(item_small, scale: float, homography, placements: dict[str, Placem
                 above, down, lean = found
                 return PickPlan(name, above.degrees, down.degrees, gripper_percent_for(grasp.opening_m), grasp,
                                 (float(x), float(y)), (float(fixed_px[0]), float(fixed_px[1])), lean,
-                                (float(moving_px[0]), float(moving_px[1])), table_cm, tcp_cm), None
+                                (float(moving_px[0]), float(moving_px[1])), table_cm, tcp_cm,
+                                distances), "; ".join(reasons) or None
         if grasp.mode != "pinch":
             reasons.append(f"{name}: {grasp.reason}")
         else:

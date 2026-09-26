@@ -38,6 +38,7 @@ from trashdrop.sorter import (  # noqa: E402
 )
 
 LEFT = Placement(x=24.65, y=-19.64, yaw=-92.31, table_z=-2.42)  # the venue's left arm
+RIGHT = Placement(x=17.97, y=20.73, yaw=-84.12, table_z=-0.47)  # and its right arm, facing the same way
 SCALE = 6.0  # full-resolution pixels per analysis pixel
 
 
@@ -137,6 +138,28 @@ class PlanTests(unittest.TestCase):
         drawn = draw_plan(frame, item, SCALE, plan)
         u, v = (int(round(value)) for value in plan.pixel)
         self.assertTrue((drawn[v, u] == (0, 0, 255)).all(), "the fixed finger's dot is where the plan says")
+
+    def test_the_arm_nearer_the_item_takes_it(self) -> None:
+        both = {"left": LEFT, "right": RIGHT}
+        for sheet_cm, nearer in (((10.0, -8.0), "right"), ((-10.0, -8.0), "left")):
+            with self.subTest(item=sheet_cm):
+                item = item_at(self.homography, sheet_cm, (3.0, 12.0))
+                plan, reason = plan_pick(item, SCALE, self.homography, both, self.kinematics, {})
+                self.assertIsNotNone(plan, reason)
+                self.assertEqual(plan.arm, nearer)
+                self.assertLess(plan.distances_cm[nearer], min(plan.distances_cm.values()) + 1e-9)
+        item = item_at(self.homography, (10.0, -8.0), (3.0, 12.0))
+        plan, _ = plan_pick(item, SCALE, self.homography, both, self.kinematics, {}, prefer="left")
+        self.assertEqual(plan.arm, "left", "an arm asked for goes first however far it is")
+
+    def test_the_further_arm_takes_what_the_nearer_cannot_reach(self) -> None:
+        # Right beside the right arm's base: too close for fingers down.
+        item = item_at(self.homography, (17.0, -18.0), (3.0, 6.0))
+        plan, passed_over = plan_pick(item, SCALE, self.homography, {"left": LEFT, "right": RIGHT},
+                                      self.kinematics, {})
+        self.assertIsNotNone(plan, passed_over)
+        self.assertEqual(plan.arm, "left")
+        self.assertIn("right", passed_over)
 
     def test_an_item_out_of_reach_is_refused_with_a_reason(self) -> None:
         item = item_at(self.homography, (30.0, 20.0), (3.0, 8.0))

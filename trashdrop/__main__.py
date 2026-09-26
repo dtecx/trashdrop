@@ -689,8 +689,9 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     """Camera finds an item, an arm takes it and drops it on its own side."""
 
     import cv2
+    import numpy as np
 
-    from .arm import connect, load_poses
+    from .arm import connect, load_poses, resolve_arm
     from .dataset.capture import open_camera
     from .kinematics import Kinematics
     from .perception.calibration import HomographyCalibration
@@ -712,14 +713,21 @@ def _cmd_pick(args: argparse.Namespace) -> int:
 
     rig = load_rig()
     placements = {name: Placement(*devices.sheet) for name, devices in rig.arms.items() if devices.sheet}
+    if args.arm:
+        only = resolve_arm(args.arm, rig)
+        placements = {name: placement for name, placement in placements.items() if name == only}
     if not placements:
-        print("no arm has touched the sheet yet: run `uv run trashdrop rig touch left` first")
+        print("no arm has touched the tape yet: run `uv run trashdrop rig touch left --tape` first")
         return 1
     for name in placements:
         devices = rig.arms[name]
-        if devices.wrist_roll_offset and any(corner not in devices.touch_poses for corner in devices.touches):
+        # Touches without joint angles were worked out with no offset; the
+        # fingertip is 8 mm off the roll axis, so they are off by this much.
+        stale_cm = 2 * 0.8 * abs(np.sin(np.radians(devices.wrist_roll_offset) / 2))
+        if stale_cm > 0.3 and any(corner not in devices.touch_poses for corner in devices.touches):
             print(f"WARNING: the {name} arm touched its corners before its wrist zero was measured, so its\n"
-                  f"  grasps land up to 1.6 cm off. Touch them again: uv run trashdrop rig touch {name} --tape")
+                  f"  grasps land up to {stale_cm:.1f} cm off. Touch them again: "
+                  f"uv run trashdrop rig touch {name} --tape")
     sheet_file = repository_root() / "camera_sheet.json"
     if not sheet_file.is_file():
         print("the camera has not found the sheet yet: run `uv run trashdrop camera sheet` first")
@@ -787,11 +795,15 @@ def _cmd_pick(args: argparse.Namespace) -> int:
             if plan is None:
                 print(f"  cannot pick it: {reason}")
                 continue
+            others = ", ".join(f"the {name} {cm:.0f} cm" for name, cm in plan.distances_cm.items() if name != plan.arm)
             print(
-                f"  the {plan.arm} arm takes it: {plan.grasp_plan.width_m * 100:.1f} cm across, jaws open "
+                f"  the {plan.arm} arm takes it ({plan.distances_cm[plan.arm]:.0f} cm from its base"
+                f"{'; ' + others if others else ''}): {plan.grasp_plan.width_m * 100:.1f} cm across, jaws open "
                 f"{plan.open_percent:.0f} %, fixed finger to ({plan.target_cm[0]:.1f}, {plan.target_cm[1]:.1f}) cm "
                 f"in its frame, fingers leaning {plan.lean_deg:.0f} deg (red dot in out/pick_plan.jpg)"
             )
+            if reason:
+                print(f"  (the nearer arm could not: {reason})")
             if plan.grasp_plan.width_m > FLAT_PINCH_WIDTH:
                 print(f"  careful: wider than {FLAT_PINCH_WIDTH * 100:.1f} cm. Opened that far the moving jaw rides "
                       "high and comes down\n  on top of anything low (a pack lying flat): expect a miss unless "
@@ -1373,6 +1385,8 @@ def build_parser() -> argparse.ArgumentParser:
     pick = sub.add_parser("pick", help="the overhead camera finds an item; an arm picks it and drops it aside")
     pick.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")
     pick.add_argument("--dry-run", action="store_true", help="only hover over the item, never grasp")
+    pick.add_argument("--arm", default=None,
+                      help="use only this arm: left, right (or its label); by default the nearer one takes each item")
     pick.add_argument("--fingertips", type=float, default=None,
                       help="how far above the table the fixed fingertip comes down, cm (default 0.5, at least 0.2)")
     pick.set_defaults(func=_cmd_pick)
