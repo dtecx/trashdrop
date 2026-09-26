@@ -11,11 +11,19 @@ docstring.
     uv run python -m trashdrop.spectacles --dry-run   # first: no arms, just the link and where they would go
     uv run python -m trashdrop.spectacles             # then the arms (stop `trashdrop web` first: one program a bus)
 
-It prints the address for the Lens (`ws://192.168.x.y:8765`). macOS may ask
-whether Python may accept incoming connections: allow it. The glasses and
-the Mac must be on the same Wi-Fi, and a network that keeps its devices
-apart (many venue networks do) stops them seeing each other: a phone's
-hotspot for both then.
+It prints the address for the Lens. Easiest is the glasses' USB-C cable to
+the Mac: they answer adb (`adb devices` lists `Snap_matador`), so the Mac
+forwards the glasses' port 8765 to its own (`adb reverse tcp:8765 tcp:8765`,
+done for you when they are plugged in at start) and the Lens connects to
+`ws://127.0.0.1:8765` -- no Wi-Fi involved. Plug them in again, or restart
+them, and start the Mac side again to renew it. Needs adb:
+`brew install android-platform-tools`.
+
+Over Wi-Fi instead, the Lens connects to `ws://<the Mac's address>:8765`,
+also printed. macOS may ask whether Python may accept incoming connections:
+allow it. The glasses and the Mac must be on the same network, and one that
+keeps its devices apart (many venue networks do) stops them seeing each
+other.
 
 Options: `--scale 1.5` (arm cm per hand cm), `--speed 120` (deg/s, the most
 any joint turns), `--facing them` (standing in front of the arms, facing

@@ -27,8 +27,8 @@ export class HandStream extends BaseScriptComponent {
   camera: SceneObject;
 
   @input
-  @hint("ws://<the Mac's address>:8765 -- the Mac prints it when it starts")
-  url: string = "ws://192.168.1.10:8765";
+  @hint("ws://127.0.0.1:8765 over the USB cable, or ws://<the Mac's address>:8765 over Wi-Fi -- the Mac prints it")
+  url: string = "ws://127.0.0.1:8765";
 
   @input
   @hint("Messages a second")

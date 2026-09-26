@@ -9,6 +9,11 @@ the arms stand, and changes none of it.
     uv run python -m trashdrop.spectacles --dry-run   # no arms: the link, and where they would go
     uv run python -m trashdrop.spectacles             # the arms follow the hands; Ctrl+C holds them
 
+The glasses reach the Mac over Wi-Fi, or over their USB-C cable: with them
+plugged in, the port on the glasses is forwarded to the Mac's (adb reverse,
+as the Spectacles answer adb), and the Lens connects to ws://127.0.0.1:8765
+-- no network needed, and none in the way.
+
 How a hand drives its arm:
 
 * Relative, like a mouse. When a hand comes into view, it and its arm are
@@ -185,6 +190,27 @@ def make_server(hands: Hands, host: str = "0.0.0.0", port: int = PORT) -> socket
                 hands.connected = False
 
     return _Server((host, port), Handler)
+
+
+def usb_tunnel(port: int) -> str | None:
+    """Spectacles on a USB cable: their ``port`` forwarded to this Mac's (adb reverse). The Lens's address, or None."""
+
+    import shutil
+    import subprocess
+
+    if not shutil.which("adb"):
+        return None
+    try:
+        listed = subprocess.run(["adb", "devices", "-l"], capture_output=True, text=True, timeout=15).stdout
+        glasses = [line.split()[0] for line in listed.splitlines()[1:]
+                   if " device " in f"{line} " and "Snap" in line]
+        if not glasses:
+            return None
+        done = subprocess.run(["adb", "-s", glasses[0], "reverse", f"tcp:{port}", f"tcp:{port}"],
+                              capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return f"ws://127.0.0.1:{port}" if done.returncode == 0 else None
 
 
 def addresses() -> list[str]:
@@ -424,7 +450,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"cannot listen on port {args.port}: {error}")
         return 1
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    print("listening. In the Lens, set Url to " + " or ".join(f"ws://{ip}:{args.port}" for ip in addresses()))
+    wifi = " or ".join(f"ws://{ip}:{args.port}" for ip in addresses())
+    tunnel = usb_tunnel(args.port)
+    if tunnel:
+        print(f"listening. The glasses are on the USB cable: in the Lens, set Url to {tunnel} "
+              f"(over Wi-Fi instead: {wifi})")
+    else:
+        print(f"listening. In the Lens, set Url to {wifi} (or plug the glasses in by USB and start again)")
     arms, speeds = {}, {}
     try:
         if args.dry_run:
