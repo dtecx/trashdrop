@@ -12,11 +12,11 @@ The sheet need not stay on the table: the homography and the placements
 describe the table plane, and hold for as long as the camera and the arm
 bases stay where they were when they were calibrated.
 
-Items are looked for only where some arm can pick with its fingers down --
-a ring around each base -- so a hand or a laptop at the edge of the picture
-is never mistaken for rubbish. Both arms should be in their neutral pose
-(straight up) when the camera looks: they then stand over their own bases,
-outside every ring.
+Items are looked for only inside the pick zone (rig.toml), and there only
+where some arm can reach, so laptops, hands and pens elsewhere on the table
+are never mistaken for rubbish. Only the zone has to be empty when the empty
+table is photographed. Both arms should be in their neutral pose (straight
+up) when the camera looks.
 """
 
 from __future__ import annotations
@@ -105,31 +105,15 @@ class Detection:
     changed: np.ndarray  # everything that differs from the empty table, for a look
 
 
-def table_mask(background, valid_small) -> np.ndarray:
-    """The reachable zone cut down to the table: its bright, flat surface.
-
-    The rings around the bases spill onto the floor, where legs pass by. The
-    floor is dark and the table white, so the bright part of the empty-table
-    photograph, in one piece, is the table.
-    """
+def zone_mask(shape: tuple[int, int], scale: float, homography, zone) -> np.ndarray:
+    """Analysis-resolution mask of the pick zone (a rectangle in sheet cm)."""
 
     import cv2
 
-    height, width = valid_small.shape
-    small = cv2.resize(background, (width, height), interpolation=cv2.INTER_AREA)
-    value = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)[..., 2]
-    # Relative to the table's own brightness, so it holds whether the floor
-    # fills half the ring or none of it.
-    bright = (value > 0.6 * np.percentile(value[valid_small > 0], 90)).astype(np.uint8)
-    bright = cv2.morphologyEx(bright, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(bright & (valid_small > 0).astype(np.uint8))
-    if count <= 1:
-        return valid_small
-    biggest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    table = (labels == biggest).astype(np.uint8)
-    # Fill what sits on the table in the empty photo too (the arms' own bases).
-    table = cv2.morphologyEx(table, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
-    return (table * 255).astype(np.uint8) & valid_small
+    polygon = np.array([homography.world_to_pixel(x / 100, y / 100) for x, y in zone.corners()]) / scale
+    mask = np.zeros(shape, np.uint8)
+    cv2.fillPoly(mask, [np.rint(polygon).astype(np.int32)], 255)
+    return mask
 
 
 def find_item(frame, background, valid_small) -> Detection:
@@ -168,6 +152,22 @@ def find_item(frame, background, valid_small) -> Detection:
     if (filled > 0).sum() < 0.6 * max((hull > 0).sum(), 1):
         filled = hull
     return Detection(filled > 0, scale, "ok", mask)
+
+
+def draw_zone(frame, zone_small, searched_small) -> np.ndarray:
+    """The pick zone outlined in green; its part no arm can reach shaded."""
+
+    import cv2
+
+    height, width = frame.shape[:2]
+    view = frame.copy()
+    zone = cv2.resize(zone_small, (width, height), interpolation=cv2.INTER_NEAREST) > 0
+    searched = cv2.resize(searched_small, (width, height), interpolation=cv2.INTER_NEAREST) > 0
+    out_of_reach = zone & ~searched
+    view[out_of_reach] = (0.5 * view[out_of_reach]).astype(np.uint8)
+    contours, _ = cv2.findContours(zone.astype(np.uint8) * 255, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(view, contours, -1, (60, 220, 60), 4)
+    return view
 
 
 def draw_detection(frame, detection: Detection, valid_small) -> np.ndarray:

@@ -44,9 +44,27 @@ class ArmDevices:
     sheet: tuple[float, float, float, float] | None = None
 
 
+@dataclass(frozen=True)
+class PickZone:
+    """Where items are put down and looked for: a rectangle on the table, in the
+    calibration sheet's frame (cm). By default the sheet's own footprint: lay the
+    sheet where the zone should be, calibrate, take it away."""
+
+    x: float = 0.0
+    y: float = 0.0
+    width: float = 30.0
+    height: float = 21.0
+
+    def corners(self) -> list[tuple[float, float]]:
+        hw, hh = self.width / 2, self.height / 2
+        return [(self.x - hw, self.y + hh), (self.x + hw, self.y + hh),
+                (self.x + hw, self.y - hh), (self.x - hw, self.y - hh)]
+
+
 @dataclass
 class Rig:
     overhead: str = OVERHEAD_DEFAULT
+    pick_zone: PickZone = field(default_factory=PickZone)
     arms: dict[str, ArmDevices] = field(
         default_factory=lambda: {name: ArmDevices(label=DEFAULT_LABELS[name]) for name in ARM_NAMES}
     )
@@ -63,7 +81,11 @@ def load_rig(path: Path = RIG_FILE) -> Rig:
     if not path.is_file():
         return Rig()
     payload = tomllib.loads(path.read_text(encoding="utf-8"))
-    rig = Rig(overhead=payload.get("overhead", {}).get("camera", OVERHEAD_DEFAULT))
+    zone = payload.get("pick_zone", {})
+    rig = Rig(
+        overhead=payload.get("overhead", {}).get("camera", OVERHEAD_DEFAULT),
+        pick_zone=PickZone(**{key: float(value) for key, value in zone.items() if key in ("x", "y", "width", "height")}),
+    )
     for name in ARM_NAMES:
         section = payload.get(name, {})
         rig.arms[name] = ArmDevices(
@@ -88,6 +110,15 @@ def render(rig: Rig) -> str:
         "",
         "[overhead]",
         f'camera = "{rig.overhead}"',
+        "",
+        "# Where items are put down and looked for, in cm in the calibration sheet's frame",
+        "# (x to the right of the printed page, y towards its top). By default the sheet's own",
+        "# footprint: lay the sheet where the zone should be, calibrate, take it away.",
+        "[pick_zone]",
+        f"x = {rig.pick_zone.x:g}",
+        f"y = {rig.pick_zone.y:g}",
+        f"width = {rig.pick_zone.width:g}",
+        f"height = {rig.pick_zone.height:g}",
     ]
     for name, arm in rig.arms.items():
         lines += ["", f"[{name}]"]

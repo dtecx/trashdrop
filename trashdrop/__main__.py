@@ -478,7 +478,7 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     from .perception.calibration import HomographyCalibration
     from .placement import Placement
     from .rig import load_rig
-    from .sorter import draw_detection, draw_plan, execute_pick, find_item, plan_pick, reach_mask, table_mask
+    from .sorter import draw_detection, draw_plan, draw_zone, execute_pick, find_item, plan_pick, reach_mask, zone_mask
     from .station import repository_root
 
     rig = load_rig()
@@ -514,16 +514,24 @@ def _cmd_pick(args: argparse.Namespace) -> int:
         args.out.mkdir(parents=True, exist_ok=True)
 
         def photograph_empty_table():
-            input("Take EVERYTHING off the table where the arms reach, press Enter to photograph it empty...")
+            input("Clear the pick zone (where the marker sheet lay; the rest of the table can stay as it is),\n"
+                  "then press Enter to photograph it empty...")
             empty = grab()
             small_shape = (round(empty.shape[0] * 320 / empty.shape[1]), 320)
-            rings = reach_mask(small_shape, empty.shape[1] / 320, homography, placements)
-            zone = table_mask(empty, rings)
+            scale = empty.shape[1] / 320
+            zone = zone_mask(small_shape, scale, homography, rig.pick_zone)
+            searched = zone & reach_mask(small_shape, scale, homography, placements)
             cv2.imwrite(str(args.out / "pick_background.jpg"), empty)
-            return empty, zone
+            cv2.imwrite(str(args.out / "pick_zone.jpg"), draw_zone(empty, zone, searched))
+            unreachable = 1.0 - (searched > 0).sum() / max((zone > 0).sum(), 1)
+            if unreachable > 0.05:
+                print(f"  {unreachable:.0%} of the pick zone is out of every calibrated arm's reach "
+                      "(shaded in out/pick_zone.jpg); items there will be refused")
+            return empty, searched
 
         background, valid = photograph_empty_table()
-        print("ready. The camera looks only at the table, where an arm can reach (green in out/pick_seen.jpg).")
+        print(f"ready. The camera looks only inside the pick zone ({rig.pick_zone.width:g} x "
+              f"{rig.pick_zone.height:g} cm, green in out/pick_zone.jpg).")
 
         while True:
             answer = input("\nPut an item within reach, then Enter (b = photograph the empty table again, q = quit): ")

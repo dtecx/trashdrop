@@ -19,11 +19,13 @@ pytest.importorskip("mujoco", reason="needs the simulation extra")
 from trashdrop.kinematics import Kinematics  # noqa: E402
 from trashdrop.perception.calibration import HomographyCalibration  # noqa: E402
 from trashdrop.placement import Placement  # noqa: E402
+from trashdrop.rig import PickZone  # noqa: E402
 from trashdrop.sorter import (  # noqa: E402
     GRASP_HEIGHT_CM,
     draw_detection,
+    draw_zone,
     find_item,
-    table_mask,
+    zone_mask,
     base_on_sheet,
     draw_plan,
     drop_pose,
@@ -116,34 +118,37 @@ class PlanTests(unittest.TestCase):
 
 
 class DetectionTests(unittest.TestCase):
-    """The venue's empty-table photo: a white table on a dark floor."""
+    """A busy table: things stay on it, people reach across it. Only the zone counts."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.homography = camera()
+        cls.zone = zone_mask((180, 320), SCALE, cls.homography, PickZone())  # 30 x 21 cm, the sheet's footprint
 
     @staticmethod
-    def empty_table() -> np.ndarray:
-        frame = np.full((1080, 1920, 3), (40, 55, 70), np.uint8)  # the floor
-        frame[:, 600:1500] = (215, 220, 218)  # the table
+    def table() -> np.ndarray:
+        frame = np.full((1080, 1920, 3), (215, 220, 218), np.uint8)
         noise = np.random.default_rng(0).normal(0, 2, frame.shape)
         return np.clip(frame + noise, 0, 255).astype(np.uint8)
 
-    def test_the_floor_is_left_out_of_the_zone(self) -> None:
-        zone = table_mask(self.empty_table(), np.full((180, 320), 255, np.uint8))
-        self.assertEqual(zone[90, 40], 0, "floor")
-        self.assertEqual(zone[90, 170], 255, "table")
+    def test_the_zone_is_the_sheets_footprint(self) -> None:
+        self.assertEqual(self.zone[540 // 6, 960 // 6], 255, "the sheet's centre")
+        self.assertEqual(self.zone[540 // 6, 1300 // 6], 0, "20 cm right of the sheet's edge")
 
-    def test_an_item_put_down_after_the_empty_photo_is_found(self) -> None:
-        empty = self.empty_table()
-        zone = table_mask(empty, np.full((180, 320), 255, np.uint8))
+    def test_a_hand_outside_the_zone_does_not_hide_the_item_in_it(self) -> None:
+        empty = self.table()
         frame = empty.copy()
-        cv2.rectangle(frame, (900, 400), (1200, 520), (60, 90, 170), -1)
-        detection = find_item(frame, empty, zone)
+        cv2.rectangle(frame, (900, 500), (1000, 560), (60, 90, 170), -1)  # the item, inside
+        cv2.rectangle(frame, (1500, 100), (1900, 400), (90, 120, 160), -1)  # a hand, far outside
+        detection = find_item(frame, empty, self.zone)
         self.assertIsNotNone(detection.item, detection.reason)
-        self.assertEqual(draw_detection(frame, detection, zone).shape, frame.shape)
+        self.assertEqual(draw_detection(frame, detection, self.zone).shape, frame.shape)
+        self.assertEqual(draw_zone(frame, self.zone, self.zone).shape, frame.shape)
 
     def test_an_item_already_there_in_the_empty_photo_is_explained(self) -> None:
-        with_item = self.empty_table()
-        cv2.rectangle(with_item, (900, 400), (1200, 520), (60, 90, 170), -1)
-        zone = table_mask(with_item, np.full((180, 320), 255, np.uint8))
-        detection = find_item(with_item, with_item, zone)
+        with_item = self.table()
+        cv2.rectangle(with_item, (900, 500), (1000, 560), (60, 90, 170), -1)
+        detection = find_item(with_item, with_item, self.zone)
         self.assertIsNone(detection.item)
         self.assertIn("press b", detection.reason.lower())
 

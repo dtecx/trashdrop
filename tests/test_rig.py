@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 from trashdrop.camera.uvc import UvcCamera
-from trashdrop.rig import MOVE_TICKS, ArmDevices, Rig, first_moved, load_rig, save_rig, wait_until_still
+from trashdrop.rig import MOVE_TICKS, ArmDevices, PickZone, Rig, first_moved, load_rig, save_rig, wait_until_still
 from trashdrop.servo import decode_offset
 
 
@@ -46,7 +46,7 @@ class FakeClock:
 
 class RigFileTests(unittest.TestCase):
     def test_rig_toml_round_trips(self) -> None:
-        rig = Rig(overhead="046d:08e5")
+        rig = Rig(overhead="046d:08e5", pick_zone=PickZone(x=2.0, y=-3.0, width=40.0, height=25.0))
         rig.arms["left"] = ArmDevices(bus="5AAF220303", camera="2993:0858", label="F01", max_speed=20.0)
         rig.arms["right"] = ArmDevices(bus="5AAF219965", camera=None, label="F02")
         with tempfile.TemporaryDirectory() as directory:

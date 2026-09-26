@@ -6,6 +6,15 @@
 [overhead]
 camera = "046d:08e5"
 
+# Where items are put down and looked for, in cm in the calibration sheet's frame
+# (x to the right of the printed page, y towards its top). By default the sheet's own
+# footprint: lay the sheet where the zone should be, calibrate, take it away.
+[pick_zone]
+x = 0
+y = 0
+width = 30
+height = 21
+
 [left]
 label = "F01"          # written on the arm
 bus = "5AAF219965"       # servo adapter serial number
