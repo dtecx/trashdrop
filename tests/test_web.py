@@ -40,6 +40,7 @@ class StandInCell:
 
     def stop(self):
         self.stopped += 1
+        return "STOP: nothing was moving"
 
     def set_options(self, changes):
         if "material" in changes and changes["material"] == "glass":
@@ -81,13 +82,18 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.post("/api/action/look"), (200, {"ok": True, "error": None}))
         status, reply = self.post("/api/action/pick")
         self.assertEqual((status, reply["ok"]), (409, False))
-        self.assertEqual(self.post("/api/stop")[1]["ok"], True)
+        self.assertEqual(self.post("/api/stop")[1], {"ok": True, "message": "STOP: nothing was moving"})
         self.assertEqual(self.cell.stopped, 1)
         self.assertEqual(self.post("/api/options", {"dry_run": True})[0], 200)
         self.assertTrue(self.cell.options["dry_run"])
         self.assertEqual(self.post("/api/options", {"material": "glass"})[0], 400)
         self.assertEqual(self.post("/api/speeds", {"arm": "left", "max_speed": 60, "descent_speed": 25})[0], 200)
         self.assertEqual(self.cell.options["speeds"], ("left", 60.0, 25.0))
+
+    def test_a_single_frame_is_a_jpeg(self) -> None:
+        with urllib.request.urlopen(self.base + "/frame.jpg", timeout=5) as response:
+            self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+            self.assertTrue(response.read(3).startswith(b"\xff\xd8"))
 
     def test_the_stream_is_mjpeg(self) -> None:
         with urllib.request.urlopen(self.base + "/stream.mjpg", timeout=5) as response:

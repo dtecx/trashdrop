@@ -918,10 +918,10 @@ def _cmd_web(args: argparse.Namespace) -> int:
     url = f"http://{'localhost' if args.host in ('127.0.0.1', '0.0.0.0') else args.host}:{server.server_address[1]}"
     try:
         cell.start()
-        print(f"the page: {url}\n  Ctrl+C here stops it; the arms hold where they are.")
+        print(f"open the page in a browser: {url}\n  Ctrl+C here stops it; the arms hold where they are.")
         if args.host != "127.0.0.1":
             print("  listening beyond this machine: anyone who can open the page can move the arms")
-        if not args.no_browser:
+        if args.open:
             webbrowser.open(url)
         server.serve_forever()
     except KeyboardInterrupt:
@@ -1515,7 +1515,7 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")
     web.add_argument("--arm", default=None, help="use only this arm: left, right (or its label)")
     web.add_argument("--demo", action="store_true", help="no camera or arms: out/'s saved pictures and pretend arms")
-    web.add_argument("--no-browser", action="store_true", help="do not open the page")
+    web.add_argument("--open", action="store_true", help="open the page in the default browser")
     web.set_defaults(func=_cmd_web)
 
     arm = sub.add_parser("arm", help="the real arms: status, named poses, slow moves (left / right / F01 / F02)")

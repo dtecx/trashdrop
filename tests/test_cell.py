@@ -160,6 +160,15 @@ class CellTests(unittest.TestCase):
         self.assertIsNone(self.cell.busy)
         self.assertFalse(self.cell.auto)
 
+    def test_stop_says_what_it_stopped(self) -> None:
+        self.cell, _ = make_cell()
+        self.assertIn("nothing was moving", self.cell.stop())
+        release = threading.Event()
+        self.cell.look = lambda: release.wait(5)
+        self.cell.begin("look")
+        self.assertIn("look stopped", self.cell.stop())
+        release.set()
+
     def test_one_action_at_a_time(self) -> None:
         self.cell, _ = make_cell()
         release = threading.Event()

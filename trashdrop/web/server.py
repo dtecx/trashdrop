@@ -6,12 +6,17 @@ page (page.html) polls /api/state and draws the overlays itself from the
 data there; the stream is MJPEG, which every browser shows in an <img>.
 
     GET  /               the page
-    GET  /stream.mjpg    the overhead camera, ~12 frames a second
+    GET  /frame.jpg      the overhead camera's newest frame; the page asks ~10 times a second
+    GET  /stream.mjpg    the same as one MJPEG stream, for anything else that wants it
     GET  /api/state      everything the page shows, as JSON
-    POST /api/action/X   start empty | look | pick | neutral | auto
-    POST /api/stop       hold every arm where it is, stop auto
+    POST /api/action/X   start empty | look | pick | neutral | auto | relax
+    POST /api/stop       hold every arm where it is, stop auto; says what it stopped
     POST /api/options    {"fingertips_cm": .., "material": .., ...}
     POST /api/speeds     {"arm": "left", "max_speed": .., "descent_speed": ..}
+
+The page fetches single frames rather than holding the MJPEG stream open:
+Safari keeps only a few connections to a host, a stream that reconnected
+filled them, and the page's buttons then waited forever behind it.
 
 It listens on 127.0.0.1 unless told otherwise: whoever opens the page can
 move the arms.
@@ -20,6 +25,7 @@ move the arms.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -52,12 +58,34 @@ def encode(frame) -> bytes:
     return jpeg.tobytes()
 
 
+class FrameCache:
+    """The newest frame as JPEG, encoded once however many pages ask for it."""
+
+    def __init__(self, camera) -> None:
+        self._camera, self._lock = camera, threading.Lock()
+        self._at, self._jpeg = None, b""
+
+    def jpeg(self) -> bytes | None:
+        frame, at = self._camera.latest()
+        if frame is None:
+            return None
+        with self._lock:
+            if at != self._at:
+                self._jpeg, self._at = encode(frame), at
+            return self._jpeg
+
+
 def make_handler(cell):
+    frames = FrameCache(cell.camera)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "TrashDrop"
 
-        def log_message(self, *args) -> None:  # the cell keeps its own log
+        def log_message(self, *args) -> None:  # every request would flood the terminal
             pass
+
+        def log_error(self, format, *args) -> None:  # but not a failing one
+            cell.log("web: " + format % args)
 
         def do_GET(self) -> None:
             path = self.path.split("?", 1)[0]
@@ -65,6 +93,12 @@ def make_handler(cell):
                 self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
             elif path == "/api/state":
                 self._json(cell.state())
+            elif path == "/frame.jpg":
+                jpeg = frames.jpeg()
+                if jpeg is None:
+                    self._send(503, b"no frame yet", "text/plain")
+                else:
+                    self._send(200, jpeg, "image/jpeg")
             elif path == "/stream.mjpg":
                 self._stream()
             else:
@@ -76,8 +110,7 @@ def make_handler(cell):
                 length = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(length) or b"{}") if length else {}
                 if path == "/api/stop":
-                    cell.stop()
-                    return self._json({"ok": True})
+                    return self._json({"ok": True, "message": cell.stop()})
                 if path.startswith("/api/action/"):
                     error = cell.begin(path.rsplit("/", 1)[1])
                     return self._json({"ok": error is None, "error": error}, 200 if error is None else 409)

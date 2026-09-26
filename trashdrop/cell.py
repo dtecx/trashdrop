@@ -55,6 +55,14 @@ AUTO_IDLE_S = 1.0
 AUTO_STEADY_S = 0.6
 AUTO_SAME_PLACE_PX = 30  # about 2 cm at the venue
 DEMO_TOSS_S = 6.0  # the demo tosses its item back in this long after it was taken
+STARTING = {
+    "empty": "empty zone: photographing it",
+    "look": "look: finding the item",
+    "pick": "pick: finding the item, then taking it",
+    "neutral": "neutral: standing the arms up",
+    "auto": "auto sort: starting",
+    "relax": "relax: torque off",
+}
 # The detector speaks to the keyboard ("press b"); the page has buttons.
 PAGE_WORDS = {
     "nothing_changed": "the zone is empty",
@@ -175,6 +183,18 @@ class Cell:
         self._lock = threading.Lock()
         self._frame_used: np.ndarray | None = None
         self._stale_limits: set[str] = set()  # arms whose servo speed limit waits for the bus to be free
+        # Drawn over the stream and fixed while the cell runs. Worked out here,
+        # once: Kinematics is not thread-safe, and the page asks from its own
+        # threads while the worker plans with it.
+        self._bases_px, self._drops_px = {}, {}
+        for name, placement in placements.items():
+            self._bases_px[name] = list(homography.world_to_pixel(*(base_on_sheet(placement) / 100)))
+            tcp = kinematics[name].tcp(drop_pose(name)) * 100
+            angle = np.radians(placement.yaw)
+            back = np.array([[np.cos(angle), np.sin(angle)], [-np.sin(angle), np.cos(angle)]])
+            table = back @ (tcp[:2] - [placement.x, placement.y])
+            self._drops_px[name] = list(homography.world_to_pixel(table[0] / 100, table[1] / 100))
+        self._zone_px = [list(homography.world_to_pixel(x / 100, y / 100)) for x, y in rig.pick_zone.corners()]
 
     # --- setting up --------------------------------------------------------------
 
@@ -294,16 +314,17 @@ class Cell:
         """Start an action on the worker thread; the reason it cannot start, if it cannot."""
 
         actions = {"empty": self.photograph_empty, "look": self.look, "pick": self.pick,
-                   "neutral": self.neutral, "auto": self.run_auto}
+                   "neutral": self.neutral, "auto": self.run_auto, "relax": self.relax}
         if action not in actions:
             return f"no action {action!r}"
-        if action != "empty" and action != "neutral" and self.background is None:
+        if action not in ("empty", "neutral", "relax") and self.background is None:
             return "photograph the empty zone first"
         with self._lock:
             if self.busy:
                 return f"busy: {self.busy}"
             self.busy = action
             self.stop_event.clear()
+        self.log(STARTING[action])
         threading.Thread(target=self._run, args=(actions[action],), name=action, daemon=True).start()
         return None
 
@@ -321,10 +342,16 @@ class Cell:
                 self.busy = None
             self.version += 1
 
-    def stop(self) -> None:
+    def stop(self) -> str:
+        """Stop what is running; the arms keep holding where they are. What happened, in words."""
+
+        running = self.busy
         self.auto = False
         self.stop_event.set()
-        self.log("stop")
+        message = (f"STOP: {running} stopped, the arms hold where they are" if running
+                   else "STOP: nothing was moving (Relax arms lets them go limp)")
+        self.log(message)
+        return message
 
     # --- the steps --------------------------------------------------------------
 
@@ -495,6 +522,14 @@ class Cell:
 
         self.stop_event.wait(seconds)
 
+    def relax(self) -> None:
+        """Torque off: the arms go limp and whatever holds them up falls. A person must hold them."""
+
+        for name, arm in self.arms.items():
+            if hasattr(arm, "torque_off"):
+                arm.torque_off()
+        self.log("arms limp: Neutral stands them up again")
+
     def neutral(self) -> None:
         from .arm import Arm, move_together
 
@@ -561,19 +596,10 @@ class Cell:
     def scene(self) -> dict:
         """What is drawn over the stream and does not change between looks, full-resolution pixels."""
 
-        zone = [list(self.homography.world_to_pixel(x / 100, y / 100)) for x, y in self.rig.pick_zone.corners()]
-        bases, drops = {}, {}
-        for name, placement in self.placements.items():
-            bases[name] = list(self.homography.world_to_pixel(*(base_on_sheet(placement) / 100)))
-            tcp = self.kinematics[name].tcp(drop_pose(name)) * 100
-            angle = np.radians(placement.yaw)
-            back = np.array([[np.cos(angle), np.sin(angle)], [-np.sin(angle), np.cos(angle)]])
-            table = back @ (tcp[:2] - [placement.x, placement.y])
-            drops[name] = list(self.homography.world_to_pixel(table[0] / 100, table[1] / 100))
         frame, _ = self.camera.latest()
         size = [frame.shape[1], frame.shape[0]] if frame is not None else [1920, 1080]
-        return {"size": size, "zone": zone, "searched": self.searched_outline, "bases": bases, "drops": drops,
-                "sides": {material: side for material, side in SIDE_OF.items()}}
+        return {"size": size, "zone": self._zone_px, "searched": self.searched_outline, "bases": self._bases_px,
+                "drops": self._drops_px, "sides": dict(SIDE_OF)}
 
     def state(self) -> dict:
         arms = {}

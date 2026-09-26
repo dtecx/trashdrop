@@ -57,7 +57,7 @@ taking whatever is tossed into the zone until STOP (Esc on the page), and
 the arms' speeds and the pick's settings:
 
 ```bash
-uv run trashdrop web                     # opens http://localhost:8000
+uv run trashdrop web                     # then open http://localhost:8000 (Safari, Chrome, a phone with --host)
 uv run trashdrop web --demo              # no camera or arms: out/'s pictures and pretend arms
 ```
 

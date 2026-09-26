@@ -69,8 +69,11 @@
   .switch { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; color: var(--muted); font-size: 12.5px; }
   .switch input { width: 36px; height: 20px; accent-color: #3ddc97; }
   .log { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #b8c4d2; background: #0c1118; border: 1px solid var(--line); border-radius: 10px; padding: 10px; height: 210px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
-  .toast { position: fixed; right: 20px; bottom: 20px; background: #3a1417; border: 1px solid #8f2a2f; color: #ffd7d9; padding: 10px 14px; border-radius: 10px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .toast { position: fixed; right: 20px; bottom: 20px; background: #3a1417; border: 1px solid #8f2a2f; color: #ffd7d9; padding: 12px 16px; border-radius: 10px; opacity: 0; transition: opacity .2s; pointer-events: none; font-size: 15px; max-width: 420px; z-index: 20; }
+  .toast.info { background: #13263a; border-color: #2d5a8a; color: #d8e8ff; }
   .toast.show { opacity: 1; }
+  button.relax { grid-column: 1 / -1; background: transparent; border-style: dashed; color: var(--muted); padding: 8px; }
+  button.relax:hover:not(:disabled) { color: var(--text); border-color: #8a6a1a; background: #221c10; }
   svg text { font-family: system-ui, -apple-system, sans-serif; font-weight: 700; paint-order: stroke; stroke: rgba(0,0,0,.75); stroke-width: 6px; }
 </style>
 </head>
@@ -110,6 +113,7 @@
         <button id="empty" data-action="empty">Empty zone</button>
         <button id="neutral" data-action="neutral">Neutral</button>
         <button id="stop" class="stop">STOP<span class="kbd" style="color:#ffd7d9;border-color:#8f2a2f">Esc</span></button>
+        <button id="relax" class="relax" title="torque off: the arms go limp and fall -- hold them">Relax arms (limp)</button>
       </div>
     </div>
     <div class="card">
@@ -152,12 +156,16 @@ try { show = JSON.parse(localStorage.getItem('layers') || '{}'); } catch (e) { s
 for (const [key] of LAYERS) if (!(key in show)) show[key] = true;
 let state = null, drawn = null, editing = null, online = true;
 
-function toast(text) { const t = $('toast'); t.textContent = text; t.classList.add('show'); clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove('show'), 3500); }
+function toast(text, info) {
+  const t = $('toast'); t.textContent = text; t.classList.toggle('info', !!info); t.classList.add('show');
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove('show'), 3500);
+}
 async function post(path, body) {
   try {
     const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
     const reply = await response.json();
     if (!reply.ok) toast(reply.error || 'refused');
+    else if (reply.message) toast(reply.message, true);
     poll();
     return reply;
   } catch (e) { toast('the cell does not answer'); }
@@ -303,7 +311,7 @@ function render() {
   renderChips(s || {});
   if (!s) return;
   const busy = !!s.busy;
-  for (const id of ['look', 'pick', 'auto', 'empty', 'neutral']) $(id).disabled = busy && !(id === 'auto' && s.auto);
+  for (const id of ['look', 'pick', 'auto', 'empty', 'neutral', 'relax']) $(id).disabled = busy && !(id === 'auto' && s.auto);
   $('auto').textContent = s.auto ? 'Auto: on — stop' : 'Auto sort';
   $('auto').classList.toggle('on', s.auto);
   for (const id of ['look', 'pick', 'auto']) if (!s.empty_photographed) $(id).disabled = true;
@@ -316,11 +324,15 @@ function render() {
   renderLog(s.log);
 }
 
+let polling = false;
 async function poll() {
+  if (polling) return;  // never more than one question in flight
+  polling = true;
   try {
     const response = await fetch('/api/state', { cache: 'no-store' });
     state = await response.json(); online = true;
   } catch (e) { online = false; }
+  polling = false;
   render();
 }
 
@@ -328,6 +340,9 @@ async function poll() {
 for (const id of ['look', 'pick', 'empty', 'neutral']) $(id).addEventListener('click', () => post(`/api/action/${$(id).dataset.action}`));
 $('auto').addEventListener('click', () => (state && state.auto ? post('/api/stop') : post('/api/action/auto')));
 $('stop').addEventListener('click', () => post('/api/stop'));
+$('relax').addEventListener('click', () => {
+  if (confirm('Torque off: both arms go limp and fall. Hold them first. Relax?')) post('/api/action/relax');
+});
 $('dry').addEventListener('click', () => post('/api/options', { dry_run: !(state && state.options.dry_run) }));
 $('sort').addEventListener('change', () => post('/api/options', { any_arm: !$('sort').checked }));
 for (const [id, key] of [['material_over', 'material'], ['only_arm', 'only_arm']]) {
@@ -345,10 +360,14 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'l' || event.key === 'L') $('look').click();
   if (event.key === 'p' || event.key === 'P') $('pick').click();
 });
-const stream = $('stream');
-stream.addEventListener('load', () => { $('nosignal').hidden = true; });
-stream.addEventListener('error', () => { $('nosignal').hidden = false; setTimeout(() => { stream.src = `/stream.mjpg?${Date.now()}`; }, 1500); });
-stream.src = '/stream.mjpg';
+// Single frames, one request at a time: a held-open stream starves Safari's few connections.
+function nextFrame() {
+  const next = new Image();
+  next.onload = () => { $('stream').src = next.src; $('nosignal').hidden = true; setTimeout(nextFrame, 70); };
+  next.onerror = () => { $('nosignal').hidden = false; setTimeout(nextFrame, 800); };
+  next.src = `/frame.jpg?${Date.now()}`;
+}
+nextFrame();
 buildToggles();
 poll();
 setInterval(poll, 400);
