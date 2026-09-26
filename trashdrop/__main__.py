@@ -693,7 +693,6 @@ def _cmd_pick(args: argparse.Namespace) -> int:
 
     from .arm import connect, load_poses, move_together, resolve_arm
     from .dataset.capture import open_camera
-    from .knock import execute_knock, looks_upright, plan_knock
     from .kinematics import Kinematics
     from .perception.calibration import HomographyCalibration
     from .placement import Placement
@@ -787,7 +786,6 @@ def _cmd_pick(args: argparse.Namespace) -> int:
 
         background, valid = photograph_empty_table()
         print("ready. The camera looks only inside the pick zone (green in out/pick_zone.jpg).")
-        just_pushed = False  # an item pushed over is picked up next, not pushed again
 
         while True:
             answer = input("\nPut an item within reach, then Enter (b = photograph the empty table again, q = quit): ")
@@ -804,27 +802,6 @@ def _cmd_pick(args: argparse.Namespace) -> int:
                 print(f"  {detection.reason}  (out/pick_seen.jpg shows what changed)")
                 continue
             item, item_scale = refine_item(frame, background, detection, valid)
-            upright, short_cm, long_cm = looks_upright(item, item_scale, homography)
-            if upright and not args.push_over:
-                print(f"  it looks upright ({short_cm:.0f} x {long_cm:.0f} cm from above): the jaw cannot take it "
-                      "standing. Lay it on its side (--push-over tries pushing it over)")
-                continue
-            if upright and not just_pushed:
-                knock, why = plan_knock(item, item_scale, homography, placements, kinematics, limits,
-                                        np.mean(rig.pick_zone.corners(), axis=0))
-                if knock is None:
-                    print(f"  it looks upright ({short_cm:.0f} x {long_cm:.0f} cm from above) and no arm can push it "
-                          f"over ({why}): lay it down")
-                    continue
-                print(f"  it looks upright ({short_cm:.0f} x {long_cm:.0f} cm from above): the {knock.arm} arm "
-                      f"{'pulls' if knock.pulls else 'pushes'} it over, then it is picked up lying")
-                if args.dry_run or input("  Enter = go, s = skip: ").strip().lower() == "s":
-                    continue
-                execute_knock(arms[knock.arm], knock, poses[knock.arm]["neutral"])
-                just_pushed = True
-                print("  pushed over. Enter picks it up")
-                continue
-            just_pushed = False
             side = None
             if args.material:
                 side = SIDE_OF[args.material]
@@ -1477,9 +1454,6 @@ def build_parser() -> argparse.ArgumentParser:
                       help="do not sort: the nearer arm takes every item and drops it on its own side")
     pick.add_argument("--min-confidence", type=float, default=None,
                       help="how sure the classifier must be before an item is sorted (default 0.8)")
-    pick.add_argument("--push-over", action="store_true",
-                      help="push an item that looks upright over instead of asking for it to be laid down "
-                           "(it tends to slide rather than fall)")
     pick.add_argument("--fingertips", type=float, default=None,
                       help="how far above the table the fixed fingertip comes down, cm (default 0.5, at least 0.2)")
     pick.set_defaults(func=_cmd_pick)
