@@ -94,7 +94,17 @@ class PlanTests(unittest.TestCase):
         self.assertAlmostEqual(reached[2], plan.table_cm + GRASP_HEIGHT_CM, delta=0.3)
         tip = self.kinematics.fingertip(plan.grasp)[2] * 100 - plan.table_cm
         self.assertAlmostEqual(tip, plan.fingertip_above_table_cm, delta=0.3)
-        self.assertGreater(tip, 1.0, "the fingertip clears the table")
+        self.assertGreater(tip, 0.2, "the fingertip clears the table")
+
+    def test_how_low_the_fingertips_come_is_asked_for_and_never_into_the_table(self) -> None:
+        item = item_at(self.homography, (-10.0, -8.0), (3.0, 12.0))
+        for asked, expected in ((1.3, 1.3), (0.5, 0.5), (-1.0, 0.2)):
+            with self.subTest(asked=asked):
+                plan, reason = plan_pick(item, SCALE, self.homography, {"left": LEFT}, self.kinematics, {},
+                                         fingertips_cm=asked)
+                self.assertIsNotNone(plan, reason)
+                tip = self.kinematics.fingertip(plan.grasp)[2] * 100 - plan.table_cm
+                self.assertAlmostEqual(tip, expected, delta=0.3)
 
     def test_an_arm_with_its_own_wrist_zero_still_closes_its_jaw_across_the_item(self) -> None:
         # The venue's miss: a screwdriver lying along the table's y, the jaw closing along it.

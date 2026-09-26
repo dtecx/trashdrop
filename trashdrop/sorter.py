@@ -30,11 +30,14 @@ from .perception.grasp import GraspPlan, plan_grasp
 from .placement import Placement
 
 ANALYSIS_WIDTH = 320
-# Where the TCP goes above the table to grasp, and how far back along the
-# fingers the approach starts -- as far as the reach allows at that spot.
-# 2 cm puts the fingertips about 1.3 cm above the table: under the middle of a
-# 3 cm handle, and the pads still cover a lying bottle's middle.
-GRASP_HEIGHT_CM = 2.0
+# How far above the table the fixed fingertip comes down to grasp, cm (`pick
+# --fingertips` changes it). At 1.3 cm the pads held only the top edge of a
+# 2.2 cm pack at the venue; 0.5 cm covers its side, and the pads still reach
+# up past the middle of a lying bottle. The TCP goes this much higher, and the
+# approach starts back along the fingers -- as far as the reach allows there.
+FINGERTIPS_CM = 0.5
+LOWEST_FINGERTIPS_CM = 0.2  # any lower and a millimetre of calibration puts them in the table
+GRASP_HEIGHT_CM = FINGERTIPS_CM + FINGERTIP_BEYOND_TCP * 100  # the TCP, above the table
 BACK_OFF_CM = (7.0, 6.0, 5.0, 4.0)
 DESCENT_SPEED = 15.0  # deg/s for the last few centimetres
 # The ring around a base where items are looked for, cm: fingers straight down
@@ -69,12 +72,13 @@ class PickPlan:
     lean_deg: float = 0.0  # how far the fingers lean away from the base
     moving_pixel: tuple[float, float] | None = None  # where the moving finger comes down
     table_cm: float | None = None  # the table's height under the target, in the arm's frame
+    tcp_above_table_cm: float = GRASP_HEIGHT_CM
 
     @property
     def fingertip_above_table_cm(self) -> float:
         """Where the plan puts the fixed fingertip, above the table."""
 
-        return GRASP_HEIGHT_CM - FINGERTIP_BEYOND_TCP * 100 * float(np.cos(np.radians(self.lean_deg)))
+        return self.tcp_above_table_cm - FINGERTIP_BEYOND_TCP * 100 * float(np.cos(np.radians(self.lean_deg)))
 
 
 def sheet_points(homography, us, vs) -> np.ndarray:
@@ -263,12 +267,16 @@ def draw_detection(frame, detection: Detection, valid_small) -> np.ndarray:
 
 
 def plan_pick(item_small, scale: float, homography, placements: dict[str, Placement], kinematics,
-              limits: dict[str, dict[str, tuple[float, float]]], prefer: str | None = None):
+              limits: dict[str, dict[str, tuple[float, float]]], prefer: str | None = None,
+              fingertips_cm: float = FINGERTIPS_CM):
     """A PickPlan for the item, or (None, reason).
 
     ``kinematics`` is one Kinematics for every arm, or one per arm by name:
-    each arm's wrist roll has its own zero.
+    each arm's wrist roll has its own zero. ``fingertips_cm`` is how far above
+    the table the fixed fingertip comes down.
     """
+
+    tcp_cm = max(fingertips_cm, LOWEST_FINGERTIPS_CM) + FINGERTIP_BEYOND_TCP * 100
 
     centre = np.argwhere(item_small).mean(axis=0)[::-1] * scale  # (u, v) full resolution
     u0, v0 = centre
@@ -298,13 +306,13 @@ def plan_pick(item_small, scale: float, homography, placements: dict[str, Placem
             yaw = placement.direction_to_arm(float(np.degrees(np.arctan2(direction_sheet[1], direction_sheet[0]))))
             x, y = placement.to_arm(target_sheet)
             table_cm = placement.table_height(x, y)
-            target = np.array([x, y, table_cm + GRASP_HEIGHT_CM]) / 100
+            target = np.array([x, y, table_cm + tcp_cm]) / 100
             found = _approach(arm_kinematics, target, yaw, limits.get(name))
             if found is not None:
                 above, down, lean = found
                 return PickPlan(name, above.degrees, down.degrees, gripper_percent_for(grasp.opening_m), grasp,
                                 (float(x), float(y)), (float(fixed_px[0]), float(fixed_px[1])), lean,
-                                (float(moving_px[0]), float(moving_px[1])), table_cm), None
+                                (float(moving_px[0]), float(moving_px[1])), table_cm, tcp_cm), None
         if grasp.mode != "pinch":
             reasons.append(f"{name}: {grasp.reason}")
         else:

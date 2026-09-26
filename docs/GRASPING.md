@@ -38,8 +38,9 @@ repository agrees within a few millimetres. The numbers live in
    that).
 2. Open the jaw to `plan.opening_m`, not fully.
 3. Lower the fixed finger to `plan.fixed_finger(...)`, fingertips about
-   13 mm above the table (`sorter.GRASP_HEIGHT_CM`), which covers the middle
-   of a 3 cm handle and of a can or bottle lying down. "The table" is the
+   5 mm above the table (`sorter.FINGERTIPS_CM`, or `pick --fingertips`):
+   at 13 mm the pads held only the top edge of a 2.2 cm pack, and the pads
+   still reach past the middle of a can or bottle lying down. "The table" is the
    plane through the corners that arm touched: the venue's arms read the flat
    table up to 3 cm lower at full reach than beside their bases, so one
    height for the whole zone either hits the table near the base or closes

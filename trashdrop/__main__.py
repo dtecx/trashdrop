@@ -697,6 +697,7 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     from .placement import Placement
     from .rig import load_rig
     from .sorter import (
+        FINGERTIPS_CM,
         draw_detection,
         draw_plan,
         draw_zone,
@@ -780,7 +781,8 @@ def _cmd_pick(args: argparse.Namespace) -> int:
                 print(f"  {detection.reason}  (out/pick_seen.jpg shows what changed)")
                 continue
             item, item_scale = refine_item(frame, background, detection, valid)
-            plan, reason = plan_pick(item, item_scale, homography, placements, kinematics, limits)
+            plan, reason = plan_pick(item, item_scale, homography, placements, kinematics, limits,
+                                     fingertips_cm=FINGERTIPS_CM if args.fingertips is None else args.fingertips)
             cv2.imwrite(str(args.out / "pick_plan.jpg"), draw_plan(frame, item, item_scale, plan))
             if plan is None:
                 print(f"  cannot pick it: {reason}")
@@ -1371,6 +1373,8 @@ def build_parser() -> argparse.ArgumentParser:
     pick = sub.add_parser("pick", help="the overhead camera finds an item; an arm picks it and drops it aside")
     pick.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")
     pick.add_argument("--dry-run", action="store_true", help="only hover over the item, never grasp")
+    pick.add_argument("--fingertips", type=float, default=None,
+                      help="how far above the table the fixed fingertip comes down, cm (default 0.5, at least 0.2)")
     pick.set_defaults(func=_cmd_pick)
 
     arm = sub.add_parser("arm", help="the real arms: status, named poses, slow moves (left / right / F01 / F02)")
