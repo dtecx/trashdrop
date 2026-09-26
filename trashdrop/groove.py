@@ -6,15 +6,16 @@ changes none of it.
 
     uv run python -m trashdrop.groove --preview   # no arms: the checks, and out/groove.png
     uv run python -m trashdrop.groove             # both arms dance; Ctrl+C holds them
+    uv run python -m trashdrop.groove --speed 0.5 # half as fast; 1.5 half again as fast
 
-The team acted the four moves out with their own hands (photos, 2026-09-26).
-Each arm stands in for a forearm held up, its gripper for the hand:
+The team acted the four moves out with their own hands (photos, 2026-09-26),
+and then said how the arms should do them. Each arm stands in for a forearm
+held up, its gripper for the hand:
 
-* claws -- hands open, then pinched shut: the grippers open wide, then snap
-  shut with the wrists bent a little forward.
-* point -- hands flat, bent at the wrist, both pointing one way and then the
-  other: the bases turn side-on, the wrists bend level, and the arms lean the
-  way they point.
+* jaws -- a mouth: the gripper level, pointing ahead, turned so that its jaw
+  opens up and down, opening wide and snapping shut.
+* point -- the hand flat and still, the base turning: the gripper level,
+  pointing ahead, and the bases sweeping it to one side and to the other.
 * raise -- one arm straight up with the hand open, the other lowered in
   front, then the other way round.
 * twist -- hands spread like claws, turning at the wrists: the grippers open
@@ -59,15 +60,18 @@ def _mirrored(pose: dict[str, float]) -> dict[str, dict[str, float]]:
     return {"left": dict(pose), "right": {joint: -value if joint in MIRRORED else value for joint, value in pose.items()}}
 
 
-OPEN = 70.0  # percent: a hand spread wide
-SIDE_ON = -80.0  # the bases' turn for point: the arms' left becomes their front
+OPEN = 70.0  # percent: a hand spread wide, a mouth open wide
+# Level and pointing ahead; turned a quarter so the jaw opens up and down.
+# The other quarter, lower jaw moving, is past the right wrist's limit.
+MOUTH = {"wrist_flex": 90.0, "wrist_roll": 90.0}
+FLAT = {"wrist_flex": 90.0}  # level and pointing ahead, the jaw closing sideways: a flat hand
+SWEEP = 75.0  # the bases' turn for point, each way; the left base stops at 84 with its trim on
 UP = {"gripper": OPEN}  # straight up, the hand open
 DOWN = {"shoulder_lift": 70.0, "wrist_flex": 20.0, "gripper": 20.0}  # lowered in front, the hand loose
 # Each move: its poses in order, as (arm -> offsets from neutral, beats to reach it).
 MOVES: dict[str, tuple[tuple[dict[str, dict[str, float]], float], ...]] = {
-    "claws": ((_both({"gripper": OPEN}), 1.0), (_both({"gripper": 0.0, "wrist_flex": 25.0}), 1.0)),
-    "point": ((_both({"shoulder_pan": SIDE_ON, "shoulder_lift": 10.0, "wrist_flex": 90.0}), 2.0),
-              (_both({"shoulder_pan": SIDE_ON, "shoulder_lift": -10.0, "wrist_flex": -90.0}), 2.0)),
+    "jaws": ((_both({**MOUTH, "gripper": OPEN}), 1.0), (_both({**MOUTH, "gripper": 0.0}), 1.0)),
+    "point": ((_both({**FLAT, "shoulder_pan": -SWEEP}), 2.0), (_both({**FLAT, "shoulder_pan": SWEEP}), 2.0)),
     "raise": (({"left": DOWN, "right": UP}, 2.0), ({"left": UP, "right": DOWN}, 2.0)),
     "twist": ((_mirrored({"gripper": 60.0, "wrist_roll": 40.0}), 1.0),
               (_mirrored({"gripper": 60.0, "wrist_roll": -40.0}), 1.0)),
@@ -385,7 +389,9 @@ def perform(arms: dict, routine: Routine, *, log=print, clock=time.monotonic, sl
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m trashdrop.groove", description=__doc__.split("\n\n")[0])
-    parser.add_argument("--bpm", type=float, default=BPM, help=f"beats a minute (default {BPM:g}, slow)")
+    parser.add_argument("--speed", type=float, default=1.0,
+                        help="how fast: 1 the usual tempo, 0.5 half as fast, 1.5 half again as fast")
+    parser.add_argument("--bpm", type=float, default=BPM, help=f"the usual tempo, beats a minute (default {BPM:g})")
     parser.add_argument("--reps", type=int, default=REPS, help=f"times through each move (default {REPS})")
     parser.add_argument("--moves", default=",".join(ORDER), help=f"which, in order (default {','.join(ORDER)})")
     parser.add_argument("--preview", action="store_true", help="no arms: check the dance and draw out/groove.png")
@@ -398,6 +404,10 @@ def main(argv: list[str] | None = None) -> int:
     from .station import repository_root
 
     moves = [name.strip() for name in args.moves.split(",") if name.strip()]
+    if args.speed <= 0:
+        print("--speed must be above 0")
+        return 1
+    bpm = args.bpm * args.speed
     rig, poses = load_rig(), load_poses()
     neutral = {arm: dict(poses[arm]["neutral"]) for arm in ARMS}
     bodies, trims, heading = {}, {}, 0.0
@@ -406,16 +416,16 @@ def main(argv: list[str] | None = None) -> int:
                   for arm in ARMS}
         trims, heading = facing(bodies, neutral)
     try:
-        routine = build(neutral, neutral, moves=moves, reps=args.reps, bpm=args.bpm, trims=trims)
+        routine = build(neutral, neutral, moves=moves, reps=args.reps, bpm=bpm, trims=trims)
     except ValueError as error:
         print(error)
         return 1
     speed, where = fastest(routine)
-    print(f"{' -> '.join(moves)}, {args.reps} times each at {args.bpm:g} bpm: {routine.total:.0f} s. "
-          f"Fastest: {where}, {speed:.0f} deg/s at its peak.")
+    print(f"{' -> '.join(moves)}, {args.reps} times each at speed {args.speed:g} ({bpm:g} bpm): "
+          f"{routine.total:.0f} s. Fastest: {where}, {speed:.0f} deg/s at its peak.")
     if speed > MAX_JOINT_SPEED:
-        print(f"too fast for the servos (at most {MAX_JOINT_SPEED:g} deg/s): --bpm "
-              f"{math.floor(args.bpm * MAX_JOINT_SPEED / speed)} at most")
+        print(f"too fast for the servos (at most {MAX_JOINT_SPEED:g} deg/s): --speed "
+              f"{math.floor(args.speed * MAX_JOINT_SPEED / speed * 100) / 100:g} at most")
         return 1
     if bodies:
         print("the bases turn " + ", ".join(f"{arm} {trim:+.1f} deg" for arm, trim in trims.items())
@@ -446,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
                 arm.torque_on()
         move_together([(arm, neutral[name]) for name, arm in arms.items()])
         start = {name: arm.pose() for name, arm in arms.items()}
-        perform(arms, build(start, neutral, moves=moves, reps=args.reps, bpm=args.bpm, trims=trims))
+        perform(arms, build(start, neutral, moves=moves, reps=args.reps, bpm=bpm, trims=trims))
     except (ValueError, RuntimeError) as error:
         print(error)
         return 1

@@ -73,7 +73,7 @@ class RoutineTests(unittest.TestCase):
         self.assertLess(speed, MAX_JOINT_SPEED)
         speed, where = fastest(build(NEUTRAL, NEUTRAL, bpm=120))
         self.assertGreater(speed, MAX_JOINT_SPEED)
-        self.assertIn("claws", where)
+        self.assertIn("jaws", where)
 
     def test_nothing_past_the_venue_arms_limits(self) -> None:
         limits = {name: venue_arm(name)[0].limits_degrees() for name in NEUTRAL}
@@ -127,26 +127,34 @@ class ModelTests(unittest.TestCase):
                     for arm, body in self.bodies.items()]
         self.assertLess(abs(_wrap(headings[0] - headings[1])), 0.5)
 
-    def test_claws_open_wide_then_pinch_bent_forward(self) -> None:
-        spread, pinched = self.poses("claws")
+    def test_jaws_a_mouth_ahead_opening_up_and_down(self) -> None:
+        wide, shut = self.poses("jaws")
         for arm in NEUTRAL:
-            self.assertGreater(spread[arm]["gripper"], 50.0)
-            self.assertEqual(pinched[arm]["gripper"], 0.0)
-            self.assertGreater(self.fingers(arm, pinched[arm])[:2] @ self.ahead, 0.3, "the hand curls forward")
+            self.assertGreater(wide[arm]["gripper"], 50.0)
+            self.assertEqual(shut[arm]["gripper"], 0.0)
+            for pose in (wide[arm], shut[arm]):
+                self.assertGreater(self.fingers(arm, pose)[:2] @ self.ahead, 0.95, f"{arm}: pointing ahead, level")
+                _, across = self.bodies[arm].kinematics.pointing(pose)
+                self.assertGreater(abs(across[2]), 0.95, f"{arm}: the jaw opens up and down")
 
-    def test_point_both_hands_level_the_same_way_then_the_other(self) -> None:
+    def test_point_the_base_sweeps_a_still_flat_hand_side_to_side(self) -> None:
         first, second = self.poses("point")
+        for arm in NEUTRAL:
+            self.assertEqual({joint: value for joint, value in first[arm].items() if joint != "shoulder_pan"},
+                             {joint: value for joint, value in second[arm].items() if joint != "shoulder_pan"},
+                             f"{arm}: only the base turns")
         ways = []
         for pose in (first, second):
             flat = {arm: self.fingers(arm, pose[arm]) for arm in NEUTRAL}
             for arm, way in flat.items():
-                self.assertLess(abs(way[2]), 0.25, f"{arm}: the hand about level")
-                sideways = way[:2] / np.linalg.norm(way[:2])
-                self.assertLess(abs(sideways @ self.ahead), 0.42, f"{arm}: pointing to the side")
+                self.assertLess(abs(way[2]), 0.05, f"{arm}: the hand level")
+                _, across = self.bodies[arm].kinematics.pointing(pose[arm])
+                self.assertLess(abs(across[2]), 0.2, f"{arm}: flat, the jaw closing sideways")
             left, right = (flat[arm][:2] / np.linalg.norm(flat[arm][:2]) for arm in ("left", "right"))
-            self.assertGreater(left @ right, np.cos(np.radians(5.0)), "both hands the same way")
+            self.assertGreater(left @ right, np.cos(np.radians(1.0)), "both hands the same way")
+            self.assertLess(abs(left @ self.ahead), 0.3, "well to the side")
             ways.append(left)
-        self.assertLess(ways[0] @ ways[1], -0.9, "then the other way")
+        self.assertLess(ways[0] @ ways[1], -0.8, "then to the other side")
 
     def test_raise_one_arm_up_the_other_down_then_swapped(self) -> None:
         for pose, (down, up) in zip(self.poses("raise"), (("left", "right"), ("right", "left"))):
@@ -172,6 +180,12 @@ class ModelTests(unittest.TestCase):
         self.assertGreaterEqual(apart, MIN_APART_CM)
         self.assertGreaterEqual(above, MIN_ABOVE_TABLE_CM)
 
+    def test_a_speed_the_servos_cannot_keep_up_with_is_refused(self) -> None:
+        from trashdrop.groove import main
+
+        self.assertEqual(main(["--preview", "--speed", "3", "--moves", "jaws"]), 1)
+        self.assertEqual(main(["--preview", "--speed", "0"]), 1)
+
     def test_a_storyboard_of_every_pose(self) -> None:
         if importlib.util.find_spec("cv2") is None:
             self.skipTest("needs the dataset extra")
@@ -196,7 +210,7 @@ class PerformTests(unittest.TestCase):
         clock = FakeClock()
         arms, buses = self.arms(clock)
         start = {name: arm.pose() for name, arm in arms.items()}
-        routine = build(start, NEUTRAL, moves=("claws", "twist"), reps=1, bpm=120)
+        routine = build(start, NEUTRAL, moves=("jaws", "twist"), reps=1, bpm=120)
         before = {name: len(bus.goals_streamed()) for name, bus in buses.items()}
         perform(arms, routine, log=lambda *_: None, clock=clock, sleep=clock.sleep)
         streamed = {name: bus.goals_streamed()[before[name]:] for name, bus in buses.items()}
