@@ -34,6 +34,7 @@ REGISTERS = {
     "acceleration": (41, 1),
     "goal_position": (42, 2),
     "goal_speed": (46, 2),
+    "lock": (55, 1),  # 0: what is written to the EEPROM part of the table survives power off
     "position": (56, 2),
     "voltage": (62, 1),
     "temperature": (63, 1),
@@ -59,6 +60,14 @@ def decode_offset(raw: int) -> int:
     """Homing offset is sign-magnitude, with the sign in bit 11."""
 
     return -(raw & 0x7FF) if raw & 0x800 else raw
+
+
+def encode_offset(value: int) -> int:
+    """A homing offset as the servo stores it: sign-magnitude, the sign in bit 11."""
+
+    if not -0x7FF <= value <= 0x7FF:
+        raise ValueError(f"homing offset {value} is outside -2047..2047")
+    return 0x800 | -value if value < 0 else value
 
 
 @dataclass(frozen=True)

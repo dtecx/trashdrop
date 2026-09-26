@@ -13,6 +13,7 @@ from pathlib import Path
 
 from trashdrop.arm import (
     DEG_PER_TICK,
+    ROLL,
     TEST_ORDER,
     LIMIT_MARGIN,
     RATE_HZ,
@@ -25,9 +26,11 @@ from trashdrop.arm import (
     nudge_joints,
     pick_and_drop,
     save_pose,
+    set_roll_offset,
+    zero_roll,
 )
 from trashdrop.rig import Rig
-from trashdrop.servo import MOTORS
+from trashdrop.servo import MOTORS, decode_offset, encode_offset
 
 LIMITS = {motor: (800, 3300) for motor in MOTORS.values()}
 LIMITS[MOTORS["gripper"]] = (2044, 3499)
@@ -421,6 +424,71 @@ class PoseFileTests(unittest.TestCase):
         self.assertEqual(resolve_arm("left", rig), "left")
         with self.assertRaises(ValueError):
             resolve_arm("front", rig)
+
+
+class ZeroBus(FakeBus):
+    """The wrist roll's servo as it counts: its reading is its actual angle less its homing offset."""
+
+    def __init__(self, actual: int, offset: int) -> None:
+        super().__init__()
+        self.roll = MOTORS[ROLL]
+        self.regs[self.roll].update(min_limit=0, max_limit=4095, homing_offset=encode_offset(offset), lock=1)
+        self.actual = actual
+        self.saved = None  # the offset as it comes back after power off
+
+    def read(self, motor: int, register: str) -> int:
+        if motor == self.roll and register == "position":
+            return (self.actual - decode_offset(self.regs[motor]["homing_offset"])) % 4096
+        return super().read(motor, register)
+
+    def write(self, motor: int, register: str, value: int) -> None:
+        super().write(motor, register, value)
+        if motor == self.roll and register == "homing_offset" and self.regs[motor]["lock"] == 0:
+            self.saved = value
+
+
+class ZeroRollTests(unittest.TestCase):
+    """The venue's left wrist: the gripper slipped on the roll servo's shaft, the EEPROM unchanged."""
+
+    def reads(self, arm: Arm, bus: ZeroBus) -> float:
+        return arm.from_ticks(ROLL, bus.read(bus.roll, "position"))
+
+    def test_turned_back_by_hand_the_gripper_reads_the_pose_again(self) -> None:
+        bus = ZeroBus(actual=1650, offset=-362)  # straight by eye here, and it reads 2012, not neutral's 2048
+        arm = Arm("left", bus, 45.0)
+        self.assertLess(self.reads(arm, bus), -3.0)
+        old, new = zero_roll(arm, 0.0)
+        self.assertEqual(old, -362)
+        self.assertAlmostEqual(self.reads(arm, bus), 0.0, delta=0.1)
+        self.assertEqual(decode_offset(bus.saved), new, "written unlocked: it survives power off")
+        self.assertEqual(bus.regs[bus.roll]["lock"], 1, "and locked again")
+        self.assertEqual((bus.regs[bus.roll]["min_limit"], bus.regs[bus.roll]["max_limit"]), (0, 4095))
+
+    def test_any_angle_on_the_turn_gets_a_zero(self) -> None:
+        for actual in (0, 5, 2047, 2048, 4090, 4095):
+            for degrees in (0.0, 120.0, -90.0):
+                with self.subTest(actual=actual, degrees=degrees):
+                    bus = ZeroBus(actual, 1500)
+                    arm = Arm("left", bus, 45.0)
+                    zero_roll(arm, degrees)
+                    self.assertAlmostEqual(self.reads(arm, bus), degrees, delta=0.1)
+
+    def test_never_with_torque_on(self) -> None:
+        bus = ZeroBus(1650, -362)
+        bus.regs[bus.roll]["torque_enable"] = 1
+        with self.assertRaises(RuntimeError):
+            zero_roll(Arm("left", bus, 45.0), 0.0)
+        self.assertIsNone(bus.saved)
+        self.assertEqual(decode_offset(bus.regs[bus.roll]["homing_offset"]), -362)
+
+    def test_an_old_offset_goes_back_exactly(self) -> None:
+        bus = ZeroBus(1650, -362)
+        arm = Arm("left", bus, 45.0)
+        _, new = zero_roll(arm, 0.0)
+        self.assertEqual(set_roll_offset(arm, -362), new)
+        self.assertEqual(decode_offset(bus.saved), -362)
+        with self.assertRaises(ValueError):
+            encode_offset(2048)
 
 
 if __name__ == "__main__":

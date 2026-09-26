@@ -960,7 +960,8 @@ def _cmd_arm_status(args: argparse.Namespace) -> int:
                 unit = "% open" if joint == "gripper" else "deg"
                 print(
                     f"    {joint:13s} {value:7.1f} {unit:6s} tick {motor.position:4d} "
-                    f"(limits {motor.min_limit}..{motor.max_limit})  torque {'ON ' if motor.torque else 'off'}  "
+                    f"(limits {motor.min_limit}..{motor.max_limit}, offset {motor.homing_offset:+5d})  "
+                    f"torque {'ON ' if motor.torque else 'off'}  "
                     f"{motor.voltage:4.1f} V  {motor.temperature} C"
                 )
         finally:
@@ -1249,6 +1250,69 @@ def _cmd_arm_save(args: argparse.Namespace) -> int:
         arm.bus.close()
     save_pose(arm.name, args.pose, values)
     print(f"saved {arm.name}.{args.pose} to {POSES_FILE}: " + ", ".join(f"{j} {v:.1f}" for j, v in values.items()))
+    return 0
+
+
+def _others_on(port: str) -> list[str]:
+    """Other programs with this serial port open, by process ID; nothing where lsof is missing."""
+
+    import os
+    import shutil
+    import subprocess
+
+    if not shutil.which("lsof"):
+        return []
+    found = subprocess.run(["lsof", "-t", port], capture_output=True, text=True).stdout.split()
+    return [pid for pid in found if pid != str(os.getpid())]
+
+
+def _cmd_arm_zero(args: argparse.Namespace) -> int:
+    """Give the wrist roll its old zero back after the gripper slipped on the servo's shaft."""
+
+    from .arm import DEG_PER_TICK, ROLL, load_poses, set_roll_offset, zero_roll
+    from .servo import MOTORS, decode_offset
+
+    arm = _open_arm(args.arm)
+    motor = MOTORS[ROLL]
+    try:
+        others = _others_on(arm.bus.port)
+        if others:
+            print(f"another program has the {arm.name} arm's bus open (process {', '.join(others)} -- "
+                  "`trashdrop web`?): stop it first; two programs on one bus garble what goes to the EEPROM")
+            return 1
+        old = decode_offset(arm.bus.read(motor, "homing_offset"))
+        limits = arm.limits[ROLL]
+        print(f"{arm.name} wrist_roll reads {arm.from_ticks(ROLL, arm.bus.read(motor, 'position')):+.1f} deg: "
+              f"homing offset {old:+d}, limits {limits.low}..{limits.high}")
+        if args.offset is not None:
+            input(f"Its wrist roll goes limp for a moment and gets homing offset {args.offset:+d}. Press Enter...")
+            arm.bus.write(motor, "torque_enable", 0)
+            set_roll_offset(arm, args.offset)
+            new = args.offset
+        else:
+            pose = load_poses().get(arm.name, {}).get(args.pose)
+            if pose is None:
+                print(f"no pose {args.pose!r} for the {arm.name} arm in poses.toml")
+                return 1
+            input(f"The {arm.name} arm goes to {args.pose}. Keep clear and press Enter...")
+            if not arm.torque_is_on():
+                arm.torque_on()
+            arm.move(pose)
+            arm.bus.write(motor, "torque_enable", 0)
+            input(f"Its wrist roll is limp now; the rest holds. Turn the gripper by hand until it stands the way "
+                  f"{args.pose} always had it, then press Enter...")
+            old, new = zero_roll(arm, pose[ROLL])
+        present = arm.bus.read(motor, "position")
+        arm.bus.write(motor, "goal_position", present)  # rule one: the goal first, then torque
+        arm.bus.write(motor, "torque_enable", 1)
+        print(f"{arm.name} wrist_roll: zero moved {(old - new) * DEG_PER_TICK:+.1f} deg (homing offset {old:+d} -> "
+              f"{new:+d}); it reads {arm.from_ticks(ROLL, present):+.1f} deg there and holds.\n"
+              f"  Undo: uv run trashdrop arm zero {arm.name} --offset {old}")
+    except KeyboardInterrupt:
+        print(f"\nstopped. If the wrist roll is limp, `uv run trashdrop arm hold {arm.name}` holds it again")
+        return 130
+    finally:
+        arm.bus.close()
     return 0
 
 
@@ -1704,6 +1768,13 @@ def build_parser() -> argparse.ArgumentParser:
     arm_reach.add_argument("--speed", type=float, default=None)
     arm_reach.add_argument("--low", action="store_true", help="allow a TCP below 3 cm")
     arm_reach.set_defaults(func=_cmd_arm_reach)
+    arm_zero = arm_sub.add_parser(
+        "zero", help="the gripper slipped on the wrist roll: turn it straight by hand, the servo gets its zero back")
+    arm_zero.add_argument("arm")
+    arm_zero.add_argument("--pose", default="neutral", help="the pose it is turned straight for (default neutral)")
+    arm_zero.add_argument("--offset", type=int, default=None,
+                          help="write this homing offset instead, e.g. the old one to undo")
+    arm_zero.set_defaults(func=_cmd_arm_zero)
     arm_hold = arm_sub.add_parser("hold", help="torque on where the arm is; moves nothing")
     arm_hold.add_argument("arm")
     arm_hold.set_defaults(func=_cmd_arm_hold)

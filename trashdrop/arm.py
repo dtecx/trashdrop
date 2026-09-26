@@ -30,7 +30,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from .servo import MOTORS
+from .servo import MOTORS, decode_offset, encode_offset
 from .station import repository_root
 
 # LeRobot divides by the largest tick value, not by ticks per turn.
@@ -388,6 +388,58 @@ def pick_and_drop(arm: Arm, poses: dict[str, dict[str, float]], *, speed: float 
     log(f"{arm.name}: dropped; back to neutral")
     arm.move(poses["neutral"], speed=speed)
     return True
+
+
+# --- the wrist roll's zero ----------------------------------------------------
+
+FULL_TURN = 4096
+ROLL = "wrist_roll"
+
+
+def zero_roll(arm: Arm, degrees: float) -> tuple[int, int]:
+    """Give the limp wrist roll the zero at which it reads ``degrees`` where it stands now.
+
+    For a gripper that slipped on the roll servo's shaft: the servo still
+    reads where it was sent, and the gripper stands turned. Turned back by
+    hand to where a pose should have it, the joint gets the homing offset that
+    makes it read the pose's angle there, so every pose, touch and offset
+    recorded against the old zero holds again. The wrist roll only: the
+    other joints' EEPROM limits keep them off their end stops, and a new
+    zero would carry those limits away. (old offset, new offset), in ticks.
+    """
+
+    limits = arm.limits[ROLL]
+    wanted = round((limits.low + limits.high) / 2 + degrees / DEG_PER_TICK)
+    if not limits.low + LIMIT_MARGIN <= wanted <= limits.high - LIMIT_MARGIN:
+        raise ValueError(f"{arm.name} wrist_roll: {degrees:+.1f} deg is outside the joint's range")
+    motor = MOTORS[ROLL]
+    old = decode_offset(arm.bus.read(motor, "homing_offset"))
+    actual = (arm.bus.read(motor, "position") + old) % FULL_TURN  # the servo reads its angle less the offset
+    offset = (actual - wanted + FULL_TURN // 2) % FULL_TURN - FULL_TURN // 2
+    offset = max(offset, -0x7FF)  # sign-magnitude stops at 2047: a tick off, at worst
+    set_roll_offset(arm, offset)
+    return old, offset
+
+
+def set_roll_offset(arm: Arm, offset: int) -> int:
+    """Write the wrist roll's homing offset into its servo's EEPROM; the offset it had before.
+
+    Every reading of the joint moves by the difference; its limits stay. The
+    joint must be limp: with torque on, its goal would jump under it.
+    """
+
+    motor = MOTORS[ROLL]
+    if arm.bus.read(motor, "torque_enable"):
+        raise RuntimeError(f"{arm.name} wrist_roll: torque is on -- a new zero would jump it")
+    old = decode_offset(arm.bus.read(motor, "homing_offset"))
+    arm.bus.write(motor, "lock", 0)
+    try:
+        arm.bus.write(motor, "homing_offset", encode_offset(offset))
+    finally:
+        arm.bus.write(motor, "lock", 1)
+    if decode_offset(arm.bus.read(motor, "homing_offset")) != offset:
+        raise RuntimeError(f"{arm.name} wrist_roll: the new homing offset did not take")
+    return old
 
 
 def connect(name: str, rig=None, *, stop: threading.Event | None = None) -> Arm:
