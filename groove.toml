@@ -14,7 +14,7 @@ bpm = 60
 [jaws]   # a mouth pointing ahead: opens wide, snaps shut (most: 1.88 at size 1)
 reps = 3
 speed = 1.85
-size = 1.0
+size = 0.7
 
 [point]  # a flat hand held still, the bases sweeping it side to side (most: 2.29 at size 1)
 reps = 2
@@ -22,11 +22,11 @@ speed = 2.25
 size = 1.0
 
 [raise]  # one arm up, the other lowered in front, swapped; grippers shut (most: 4)
-reps = 5
+reps = 3
 speed = 3.0
-size = 1.0
+size = 0.8
 
 [twist]  # open hands turning at the wrists, mirrored (most: 2.14 at size 1)
-reps = 10
+reps = 6
 speed = 2.1
 size = 1.0

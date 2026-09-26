@@ -38,8 +38,8 @@ sheet = { x = 11.34, y = -22.40, yaw = -95.14, table_z = -0.36, dz_dx = -0.0318,
 label = "F02"          # written on the arm
 bus = "5AAF220303"       # servo adapter serial number
 camera = "10bb:2b08"      # wrist camera
-max_speed = 45             # degrees per second, every move
-descent_speed = 20         # degrees per second, final approach to an item
+max_speed = 100             # degrees per second, every move
+descent_speed = 75         # degrees per second, final approach to an item
 wrist_roll_offset = 5.0  # model roll = LeRobot roll + this (from `rig roll`)
 touches = { far_left = [19.71, 33.39, -2.25], far_right = [21.21, 9.93, -2.20], near_right = [3.41, 4.55, -0.99], near_left = [-0.41, 28.61, -1.95] }  # tape corners touched, cm in the arm's frame
 touch_poses = { far_left = [-63.6, 67.7, -58.6, 46.7, -64.3], far_right = [-27.9, 5.4, 35.1, 39.6, -64.2], near_right = [-87.5, -31.9, 70.9, 69.9, -64.2], near_left = [-97.2, 33.2, -6.1, 43.6, -64.3] }  # joint degrees of each touch: pan, lift, elbow, wrist flex, wrist roll
