@@ -6,7 +6,11 @@ changes none of it.
 
     uv run python -m trashdrop.groove --preview   # no arms: the checks, and out/groove.png
     uv run python -m trashdrop.groove             # both arms dance; Ctrl+C holds them
-    uv run python -m trashdrop.groove --speed 0.5 # half as fast; 1.5 half again as fast
+    uv run python -m trashdrop.groove --speed 0.5 # everything half as fast; 1.5 half again as fast
+
+groove.toml, beside rig.toml, says which moves in what order, and for each
+how many times through it and how fast; --speed scales them all, and
+--reps and --moves stand in for the file's for one run.
 
 The team acted the four moves out with their own hands (photos, 2026-09-26),
 and then said how the arms should do them. Each arm stands in for a forearm
@@ -16,8 +20,8 @@ held up, its gripper for the hand:
   opens up and down, opening wide and snapping shut.
 * point -- the hand flat and still, the base turning: the gripper level,
   pointing ahead, and the bases sweeping it to one side and to the other.
-* raise -- one arm straight up with the hand open, the other lowered in
-  front, then the other way round.
+* raise -- one arm straight up, the other lowered in front, then the other
+  way round; the grippers stay shut all through it.
 * twist -- hands spread like claws, turning at the wrists: the grippers open
   and the wrist rolls turn back and forth, mirrored.
 
@@ -36,7 +40,7 @@ from __future__ import annotations
 import argparse
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
 
@@ -44,6 +48,8 @@ import numpy as np
 
 BPM = 60.0  # slow, to begin with
 REPS = 4  # times through each move
+MAX_SPEED = 3.0  # a move's speed, times the usual tempo; the servos' own limit usually comes first
+SETTINGS_FILE = "groove.toml"  # at the repository's root
 LEAD_BEATS = 2.0  # into each move, and back to neutral at the end
 BETWEEN_BEATS = 1.5  # from the end of one move to standing straight up, before the next
 MAX_JOINT_SPEED = 220.0  # deg/s at the fastest moment of any step; an STS3215 manages about 270
@@ -71,8 +77,8 @@ OPEN = 70.0  # percent: a hand spread wide, a mouth open wide
 MOUTH = {"wrist_flex": 90.0, "wrist_roll": 90.0}
 FLAT = {"wrist_flex": 90.0}  # level and pointing ahead, the jaw closing sideways: a flat hand
 SWEEP = 75.0  # the bases' turn for point, each way; the left base stops at 84 with its trim on
-UP = {"gripper": OPEN}  # straight up, the hand open
-DOWN = {"shoulder_lift": 70.0, "wrist_flex": 20.0, "gripper": 20.0}  # lowered in front, the hand loose
+UP: dict[str, float] = {}  # straight up; the grippers stay shut all through raise
+DOWN = {"shoulder_lift": 70.0, "wrist_flex": 20.0}  # lowered in front
 # Each move: its poses in order, as (arm -> offsets from neutral, beats to reach it).
 MOVES: dict[str, tuple[tuple[dict[str, dict[str, float]], float], ...]] = {
     "jaws": ((_both({**MOUTH, "gripper": OPEN}), 1.0), (_both({**MOUTH, "gripper": 0.0}), 1.0)),
@@ -94,6 +100,7 @@ class Routine:
     keyframes: list[dict[str, dict[str, float]]]  # arm -> joint -> degrees (gripper: percent open)
     seconds: list[float]  # from keyframes[i] to keyframes[i + 1]
     labels: list[str]  # the move each keyframe belongs to
+    paces: list[str] = field(default_factory=list)  # per step: the move whose speed sets its pace
 
     @property
     def total(self) -> float:
@@ -120,37 +127,70 @@ class Routine:
         return self.labels[self._step(t)[0] + 1]
 
 
-def build(start: dict[str, dict[str, float]], neutral: dict[str, dict[str, float]], *, moves=ORDER,
-          reps: int = REPS, bpm: float = BPM, trims: dict[str, float] | None = None) -> Routine:
-    """The dance from ``start`` back to ``neutral``: each of ``moves`` ``reps`` times, at ``bpm``.
+@dataclass(frozen=True)
+class Part:
+    """One move of the dance: which, how many times through it, and how fast (1: the usual tempo)."""
+
+    move: str
+    reps: int = REPS
+    speed: float = 1.0
+
+
+def plan(moves=ORDER, reps: int = REPS, speed: float = 1.0) -> list[Part]:
+    """``moves`` in order, each ``reps`` times at ``speed``."""
+
+    return [Part(name, reps, speed) for name in moves]
+
+
+def load_parts(path: Path) -> tuple[list[Part], float]:
+    """(the parts to dance, in order; the usual tempo, bpm) from groove.toml; without it, every move as usual."""
+
+    import tomllib
+
+    if not path.is_file():
+        return plan(), BPM
+    settings = tomllib.loads(path.read_text(encoding="utf-8"))
+    parts = [Part(name, int(settings.get(name, {}).get("reps", REPS)), float(settings.get(name, {}).get("speed", 1.0)))
+             for name in settings.get("order", ORDER)]
+    return parts, float(settings.get("bpm", BPM))
+
+
+def build(start: dict[str, dict[str, float]], neutral: dict[str, dict[str, float]], parts: list[Part], *,
+          bpm: float = BPM, trims: dict[str, float] | None = None) -> Routine:
+    """The dance from ``start`` back to ``neutral``, part by part, at ``bpm`` times each part's speed.
 
     ``trims`` turn each base by that many degrees throughout, so that both
-    arms face the same way (see facing()).
+    arms face the same way (see facing()). The way up between two moves goes
+    at the pace of the one that ends, the way into a move at its own.
     """
 
-    unknown = [name for name in moves if name not in MOVES]
-    if unknown or not moves:
+    unknown = [part.move for part in parts if part.move not in MOVES]
+    if unknown or not parts:
         raise ValueError(f"the moves are {', '.join(MOVES)}; not {', '.join(unknown) or 'none'}")
-    if not (0 < bpm <= 200 and 1 <= reps <= 32):
-        raise ValueError("bpm 1-200, reps 1-32")
-    beat, trims = 60.0 / bpm, trims or {}
-    keyframes = [{arm: dict(start[arm]) for arm in ARMS}]
-    seconds: list[float] = []
-    labels = ["start"]
-    for number, name in enumerate(moves):
+    for part in parts:
+        if not (1 <= part.reps <= 32 and 0 < part.speed <= MAX_SPEED):
+            raise ValueError(f"{part.move}: reps 1-32, and a speed above 0 and at most {MAX_SPEED:g}")
+    if not 0 < bpm <= 200:
+        raise ValueError("bpm 1-200")
+    trims = trims or {}
+    routine = Routine([{arm: dict(start[arm]) for arm in ARMS}], [], ["start"])
+
+    def step(keyframe: dict[str, dict[str, float]], beats: float, label: str, pace: Part) -> None:
+        routine.keyframes.append(keyframe)
+        routine.seconds.append(beats * 60.0 / (bpm * pace.speed))
+        routine.labels.append(label)
+        routine.paces.append(pace.move)
+
+    for number, part in enumerate(parts):
         if number:  # straight up between moves: nothing sweeps from one move's last pose into the next's first
-            keyframes.append({arm: _absolute(neutral[arm], {}, trims.get(arm, 0.0)) for arm in ARMS})
-            seconds.append(BETWEEN_BEATS * beat)
-            labels.append("upright")
-        for rep in range(reps):
-            for index, (pose, beats) in enumerate(MOVES[name]):
-                keyframes.append({arm: _absolute(neutral[arm], pose[arm], trims.get(arm, 0.0)) for arm in ARMS})
-                seconds.append((LEAD_BEATS if rep == 0 and index == 0 else beats) * beat)
-                labels.append(name)
-    keyframes.append({arm: dict(neutral[arm]) for arm in ARMS})
-    seconds.append(LEAD_BEATS * beat)
-    labels.append("neutral")
-    return Routine(keyframes, seconds, labels)
+            step({arm: _absolute(neutral[arm], {}, trims.get(arm, 0.0)) for arm in ARMS}, BETWEEN_BEATS, "upright",
+                 parts[number - 1])
+        for rep in range(part.reps):
+            for index, (pose, beats) in enumerate(MOVES[part.move]):
+                step({arm: _absolute(neutral[arm], pose[arm], trims.get(arm, 0.0)) for arm in ARMS},
+                     LEAD_BEATS if rep == 0 and index == 0 else beats, part.move, part)
+    step({arm: dict(neutral[arm]) for arm in ARMS}, LEAD_BEATS, "neutral", parts[-1])
+    return routine
 
 
 def _absolute(neutral: dict[str, float], offsets: dict[str, float], trim: float) -> dict[str, float]:
@@ -160,10 +200,13 @@ def _absolute(neutral: dict[str, float], offsets: dict[str, float], trim: float)
     return pose
 
 
-def fastest(routine: Routine) -> tuple[float, str]:
-    """The fastest any joint turns, deg/s, and where. Eased, a step peaks at pi/2 its average speed."""
+def fastest(routine: Routine) -> tuple[float, str, str]:
+    """The fastest any joint turns, deg/s; where; and the move whose speed sets that step's pace.
 
-    top, where = 0.0, ""
+    Eased, a step peaks at pi/2 its average speed.
+    """
+
+    top, where, pace = 0.0, "", ""
     for index, span in enumerate(routine.seconds):
         a, b = routine.keyframes[index], routine.keyframes[index + 1]
         for arm in a:
@@ -172,7 +215,8 @@ def fastest(routine: Routine) -> tuple[float, str]:
                 speed = math.pi / 2 * turn / span
                 if speed > top:
                     top, where = speed, f"the {arm} {joint} in {routine.labels[index + 1]}"
-    return top, where
+                    pace = routine.paces[index] if index < len(routine.paces) else ""
+    return top, where, pace
 
 
 LIMIT_SLACK_DEG = 2.0  # past Arm.limits_degrees, which keeps its own margin: the left elbow's neutral is there
@@ -417,10 +461,12 @@ def perform(arms: dict, routine: Routine, *, log=print, clock=time.monotonic, sl
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m trashdrop.groove", description=__doc__.split("\n\n")[0])
     parser.add_argument("--speed", type=float, default=1.0,
-                        help="how fast: 1 the usual tempo, 0.5 half as fast, 1.5 half again as fast")
-    parser.add_argument("--bpm", type=float, default=BPM, help=f"the usual tempo, beats a minute (default {BPM:g})")
-    parser.add_argument("--reps", type=int, default=REPS, help=f"times through each move (default {REPS})")
-    parser.add_argument("--moves", default=",".join(ORDER), help=f"which, in order (default {','.join(ORDER)})")
+                        help="everything faster or slower, on top of each move's speed in groove.toml: "
+                             "1 as it says, 0.5 half as fast, 1.5 half again as fast")
+    parser.add_argument("--reps", type=int, default=None, help="times through every move, instead of groove.toml's")
+    parser.add_argument("--moves", default=None,
+                        help=f"which moves, in order, instead of groove.toml's (of {','.join(ORDER)})")
+    parser.add_argument("--bpm", type=float, default=None, help="the usual tempo, instead of groove.toml's")
     parser.add_argument("--preview", action="store_true", help="no arms: check the dance and draw out/groove.png")
     args = parser.parse_args(argv)
 
@@ -430,11 +476,16 @@ def main(argv: list[str] | None = None) -> int:
     from .rig import load_rig
     from .station import repository_root
 
-    moves = [name.strip() for name in args.moves.split(",") if name.strip()]
     if args.speed <= 0:
         print("--speed must be above 0")
         return 1
-    bpm = args.bpm * args.speed
+    parts, bpm = load_parts(repository_root() / SETTINGS_FILE)
+    if args.moves is not None:
+        own = {part.move: part for part in parts}
+        parts = [own.get(name, Part(name)) for name in (name.strip() for name in args.moves.split(",")) if name]
+    parts = [Part(part.move, part.reps if args.reps is None else args.reps, part.speed * args.speed) for part in parts]
+    bpm = bpm if args.bpm is None else args.bpm
+    moves = [part.move for part in parts]
     rig, poses = load_rig(), load_poses()
     neutral = {arm: dict(poses[arm]["neutral"]) for arm in ARMS}
     bodies, trims, heading = {}, {}, 0.0
@@ -443,16 +494,18 @@ def main(argv: list[str] | None = None) -> int:
                   for arm in ARMS}
         trims, heading = facing(bodies, neutral)
     try:
-        routine = build(neutral, neutral, moves=moves, reps=args.reps, bpm=bpm, trims=trims)
+        routine = build(neutral, neutral, parts, bpm=bpm, trims=trims)
     except ValueError as error:
         print(error)
         return 1
-    speed, where = fastest(routine)
-    print(f"{' -> '.join(moves)}, {args.reps} times each at speed {args.speed:g} ({bpm:g} bpm): "
-          f"{routine.total:.0f} s. Fastest: {where}, {speed:.0f} deg/s at its peak.")
-    if speed > MAX_JOINT_SPEED:
-        print(f"too fast for the servos (at most {MAX_JOINT_SPEED:g} deg/s): --speed "
-              f"{math.floor(args.speed * MAX_JOINT_SPEED / speed * 100) / 100:g} at most")
+    peak, where, pace = fastest(routine)
+    print(", ".join(f"{part.move} x{part.reps} at speed {part.speed:g}" for part in parts)
+          + f" ({bpm:g} bpm): {routine.total:.0f} s. Fastest: {where}, {peak:.0f} deg/s at its peak.")
+    if peak > MAX_JOINT_SPEED:
+        slowest = next(part for part in parts if part.move == pace).speed * MAX_JOINT_SPEED / peak / args.speed
+        print(f"too fast for the servos (at most {MAX_JOINT_SPEED:g} deg/s): {pace} speed "
+              f"{math.floor(slowest * 100) / 100:g} at most in {SETTINGS_FILE}"
+              + (f", with --speed {args.speed:g}" if args.speed != 1 else ""))
         return 1
     if bodies:
         print("the bases turn " + ", ".join(f"{arm} {trim:+.1f} deg" for arm, trim in trims.items())
@@ -485,7 +538,7 @@ def main(argv: list[str] | None = None) -> int:
                 arm.torque_on()
         move_together([(arm, neutral[name]) for name, arm in arms.items()])
         start = {name: arm.pose() for name, arm in arms.items()}
-        perform(arms, build(start, neutral, moves=moves, reps=args.reps, bpm=bpm, trims=trims))
+        perform(arms, build(start, neutral, parts, bpm=bpm, trims=trims))
     except (ValueError, RuntimeError) as error:
         print(error)
         return 1

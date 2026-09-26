@@ -2,8 +2,9 @@
 
 What is pinned down, on the model at the venue's placements and on fake
 arms: it starts where the arms stand and ends in neutral, never jumping;
-each move does what the team's photos show; between moves both arms stand
-up straight; the arms keep clear of each other and of the table, and
+each move does what the team's photos show, as many times and as fast as
+groove.toml says; between moves both arms stand up straight; the arms keep
+clear of each other and of the table, and
 nothing goes behind their bases; no joint is asked for more than the
 servos manage or past the venue arms' limits; and every tick writes both
 arms.
@@ -28,10 +29,13 @@ from trashdrop.groove import (
     MIN_ABOVE_TABLE_CM,
     MIN_APART_CM,
     ORDER,
+    Part,
     build,
     fastest,
+    load_parts,
     outside,
     perform,
+    plan,
 )
 from trashdrop.servo import MOTORS
 
@@ -58,7 +62,7 @@ def venue_arm(name: str, clock: FakeClock | None = None, stop=None) -> tuple[Arm
 class RoutineTests(unittest.TestCase):
     def test_it_starts_where_the_arms_stand_and_ends_in_neutral_without_a_jump(self) -> None:
         start = {arm: dict(pose, shoulder_pan=3.0) for arm, pose in NEUTRAL.items()}
-        routine = build(start, NEUTRAL)
+        routine = build(start, NEUTRAL, plan())
         self.assertEqual(routine.at(0.0), start)
         self.assertEqual(routine.at(routine.total), NEUTRAL)
         ticks = [routine.at(t) for t in np.arange(0.0, routine.total, 0.02)]
@@ -67,7 +71,7 @@ class RoutineTests(unittest.TestCase):
 
     def test_every_move_in_order_each_eased_into_from_upright(self) -> None:
         trims = {"left": 7.8, "right": -7.8}
-        routine = build(NEUTRAL, NEUTRAL, reps=2, bpm=60, trims=trims)
+        routine = build(NEUTRAL, NEUTRAL, plan(reps=2), bpm=60, trims=trims)
         expected = ["start"]
         for number, name in enumerate(ORDER):
             expected += (["upright"] if number else []) + [name] * 4
@@ -80,25 +84,50 @@ class RoutineTests(unittest.TestCase):
                            for arm in NEUTRAL}
                 self.assertEqual(routine.keyframes[index + 1], upright, "both straight up, facing the same way")
 
-    def test_the_servos_keep_up_and_a_beat_too_fast_is_caught(self) -> None:
-        speed, _ = fastest(build(NEUTRAL, NEUTRAL))
+    def test_the_servos_keep_up_and_a_move_too_fast_is_caught_by_name(self) -> None:
+        speed, _, _ = fastest(build(NEUTRAL, NEUTRAL, plan()))
         self.assertLess(speed, MAX_JOINT_SPEED)
-        speed, where = fastest(build(NEUTRAL, NEUTRAL, bpm=120))
+        fast = [Part("jaws", 4, 1.0), Part("point", 4, 3.0), Part("twist", 4, 1.0)]
+        speed, where, pace = fastest(build(NEUTRAL, NEUTRAL, fast))
         self.assertGreater(speed, MAX_JOINT_SPEED)
-        self.assertIn("jaws", where)
+        self.assertEqual(pace, "point", "the move whose speed to turn down")
+        self.assertIn("shoulder_pan", where)
+
+    def test_each_move_as_many_times_and_as_fast_as_it_says(self) -> None:
+        routine = build(NEUTRAL, NEUTRAL, [Part("jaws", 2, 1.0), Part("point", 3, 0.5)], bpm=60)
+        self.assertEqual(routine.labels.count("jaws"), 2 * 2, "twice through both of its poses")
+        self.assertEqual(routine.labels.count("point"), 3 * 2)
+        steps = {label: [s for s, (l, pace) in zip(routine.seconds, zip(routine.labels[1:], routine.paces))
+                         if l == label] for label in ("jaws", "point")}
+        self.assertEqual(steps["jaws"][1:], [1.0] * 3, "a beat a pose at 60 bpm")
+        self.assertEqual(steps["point"][1:], [4.0] * 5, "two beats a pose, half as fast")
+        self.assertEqual(steps["point"][0], LEAD_BEATS * 2.0, "the way in at its own pace")
 
     def test_nothing_past_the_venue_arms_limits(self) -> None:
         limits = {name: venue_arm(name)[0].limits_degrees() for name in NEUTRAL}
-        self.assertEqual(outside(build(NEUTRAL, NEUTRAL, trims={"left": 7.8, "right": -7.8}), limits), [])
-        turned_too_far = outside(build(NEUTRAL, NEUTRAL, trims={"left": -20.0, "right": 0.0}), limits)
+        self.assertEqual(outside(build(NEUTRAL, NEUTRAL, plan(), trims={"left": 7.8, "right": -7.8}), limits), [])
+        turned_too_far = outside(build(NEUTRAL, NEUTRAL, plan(), trims={"left": -20.0, "right": 0.0}), limits)
         self.assertEqual(len(turned_too_far), 1)
         self.assertIn("left shoulder_pan", turned_too_far[0])
 
     def test_unknown_moves_and_silly_numbers_are_refused(self) -> None:
         with self.assertRaises(ValueError):
-            build(NEUTRAL, NEUTRAL, moves=("twerk",))
+            build(NEUTRAL, NEUTRAL, plan(("twerk",)))
         with self.assertRaises(ValueError):
-            build(NEUTRAL, NEUTRAL, bpm=0)
+            build(NEUTRAL, NEUTRAL, plan(), bpm=0)
+        with self.assertRaises(ValueError):
+            build(NEUTRAL, NEUTRAL, [Part("jaws", 4, 0.0)])
+        with self.assertRaises(ValueError):
+            build(NEUTRAL, NEUTRAL, [Part("jaws", 0, 1.0)])
+
+    def test_the_settings_file(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "groove.toml"
+            self.assertEqual(load_parts(path), (plan(), 60.0), "without one, every move as usual")
+            path.write_text('order = ["twist", "jaws"]\nbpm = 90\n[twist]\nreps = 6\nspeed = 0.5\n')
+            self.assertEqual(load_parts(path), ([Part("twist", 6, 0.5), Part("jaws", 4, 1.0)], 90.0))
+        parts, _ = load_parts(Path(__file__).resolve().parents[1] / "groove.toml")
+        self.assertEqual([part.move for part in parts], list(ORDER), "the repository's has every move")
 
 
 @unittest.skipUnless(HAS_MUJOCO, "needs the simulation extra")
@@ -119,7 +148,7 @@ class ModelTests(unittest.TestCase):
         cls.ahead = np.array([np.cos(np.radians(cls.heading)), np.sin(np.radians(cls.heading))])
 
     def poses(self, move: str) -> list[dict[str, dict[str, float]]]:
-        return build(NEUTRAL, NEUTRAL, moves=(move,), reps=1, trims=self.trims).keyframes[1:3]
+        return build(NEUTRAL, NEUTRAL, plan((move,), reps=1), trims=self.trims).keyframes[1:3]
 
     def fingers(self, arm: str, pose: dict[str, float]) -> np.ndarray:
         """Where the fingers point, on the table's frame (z up)."""
@@ -172,7 +201,13 @@ class ModelTests(unittest.TestCase):
         for pose, (down, up) in zip(self.poses("raise"), (("left", "right"), ("right", "left"))):
             tips = {arm: self.bodies[arm].points(pose[arm])[1][6] for arm in NEUTRAL}
             self.assertLess(tips[down], tips[up] - 20.0, f"{down} lowered, {up} up")
-            self.assertGreater(pose[up]["gripper"], 50.0, "the raised hand open")
+
+    def test_raise_keeps_the_grippers_shut_all_through(self) -> None:
+        routine = build(NEUTRAL, NEUTRAL, plan(("point", "raise", "twist"), reps=2), trims=self.trims)
+        during = [t for t in np.arange(0.0, routine.total, 0.02) if routine.label(t) == "raise"]
+        self.assertGreater(len(during), 100)
+        for t in during:
+            self.assertEqual([routine.at(t)[arm]["gripper"] for arm in NEUTRAL], [0.0, 0.0], f"at {t:.2f} s")
 
     def test_twist_turns_the_open_hands_mirrored(self) -> None:
         turns = []
@@ -188,7 +223,7 @@ class ModelTests(unittest.TestCase):
     def test_the_arms_keep_clear_of_each_other_the_table_and_what_is_behind_them(self) -> None:
         from trashdrop.groove import check
 
-        room = check(build(NEUTRAL, NEUTRAL, reps=1, trims=self.trims), self.bodies, self.heading, step_s=0.1)
+        room = check(build(NEUTRAL, NEUTRAL, plan(reps=1), trims=self.trims), self.bodies, self.heading, step_s=0.1)
         self.assertGreaterEqual(room.apart, MIN_APART_CM)
         self.assertGreaterEqual(room.above, MIN_ABOVE_TABLE_CM)
         self.assertLessEqual(room.behind, MAX_BEHIND_CM, "nothing behind the bases")
@@ -232,7 +267,7 @@ class PerformTests(unittest.TestCase):
         clock = FakeClock()
         arms, buses = self.arms(clock)
         start = {name: arm.pose() for name, arm in arms.items()}
-        routine = build(start, NEUTRAL, moves=("jaws", "twist"), reps=1, bpm=120)
+        routine = build(start, NEUTRAL, plan(("jaws", "twist"), reps=1), bpm=120)
         before = {name: len(bus.goals_streamed()) for name, bus in buses.items()}
         perform(arms, routine, log=lambda *_: None, clock=clock, sleep=clock.sleep)
         streamed = {name: bus.goals_streamed()[before[name]:] for name, bus in buses.items()}
@@ -248,7 +283,7 @@ class PerformTests(unittest.TestCase):
     def test_a_stop_holds_both_where_they_are(self) -> None:
         stop, clock = threading.Event(), FakeClock()
         arms, buses = self.arms(clock, stop)
-        routine = build({name: arm.pose() for name, arm in arms.items()}, NEUTRAL, reps=1)
+        routine = build({name: arm.pose() for name, arm in arms.items()}, NEUTRAL, plan(reps=1))
         sleep = clock.sleep
 
         def pressed_after_three_seconds(seconds: float) -> None:

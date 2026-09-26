@@ -1,0 +1,25 @@
+# The organisers' merch dance: uv run python -m trashdrop.groove (see trashdrop/groove.py).
+# Edit freely; --preview checks it without the arms.
+#
+# order: the moves, in the order they are danced; a move left out is not danced.
+# Per move -- reps: times through it (each time, both of its poses);
+#             speed: 1 the usual tempo (bpm), 0.5 half as fast, 1.5 half again as fast.
+# --speed on the command line scales every move's speed on top of these.
+order = ["jaws", "point", "raise", "twist"]
+bpm = 60
+
+[jaws]   # a mouth pointing ahead: opens wide, snaps shut
+reps = 4
+speed = 1.0
+
+[point]  # a flat hand held still, the bases sweeping it side to side
+reps = 4
+speed = 1.0
+
+[raise]  # one arm up, the other lowered in front, swapped; grippers shut
+reps = 4
+speed = 1.0
+
+[twist]  # open hands turning at the wrists, mirrored
+reps = 4
+speed = 1.0
