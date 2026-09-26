@@ -13,6 +13,14 @@ wrist_flex = -2.5
 wrist_roll = 2.9
 gripper = 11.3
 
+[left.crab_start]
+shoulder_pan = 0.0
+shoulder_lift = 0.0
+elbow_flex = -90.0
+wrist_flex = 0.0
+wrist_roll = 120.0
+gripper = 0.0
+
 [left.neutral]
 shoulder_pan = 0.0
 shoulder_lift = 0.0
@@ -28,6 +36,14 @@ elbow_flex = -88.0
 wrist_flex = 0.8
 wrist_roll = 55.5
 gripper = 0.7
+
+[right.crab_start]
+shoulder_pan = 0.0
+shoulder_lift = 0.0
+elbow_flex = -90.0
+wrist_flex = 0.0
+wrist_roll = 0.0
+gripper = 0.0
 
 [right.neutral]
 shoulder_pan = 0.0

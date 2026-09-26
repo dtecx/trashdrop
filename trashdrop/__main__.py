@@ -1049,6 +1049,33 @@ def _cmd_arm_first(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_arm_together(args: argparse.Namespace) -> int:
+    """Both arms to one saved pose together; the grippers clamp first and keep clamping."""
+
+    from .arm import connect, load_poses, move_both_to_pose
+    from .rig import load_rig
+
+    rig = load_rig()
+    arms = {}
+    try:
+        arms = {name: connect(name, rig) for name in ("left", "right")}
+        input(f"both arms: {'grippers clamp, then ' if args.clamp else ''}the arms go together to {args.pose} "
+              f"at up to {args.speed:g} deg/s. Hold what they carry, keep a hand on Ctrl+C, press Enter...")
+        reached = move_both_to_pose(arms, load_poses(), args.pose, args.speed, clamp=args.clamp)
+    except (ValueError, RuntimeError) as error:
+        print(error)
+        return 1
+    except KeyboardInterrupt:
+        print("\nstopped; both arms hold where they are")
+        return 130
+    finally:
+        for arm in arms.values():
+            arm.bus.close()
+    for name, pose in zip(arms, reached):
+        print(f"{name}: " + ", ".join(f"{joint} {value:.1f}" for joint, value in pose.items()))
+    return 0
+
+
 def _cmd_arm_jog(args: argparse.Namespace) -> int:
     arm = _open_arm(args.arm)
     try:
@@ -1590,6 +1617,13 @@ def build_parser() -> argparse.ArgumentParser:
     arm_first.add_argument("--speed", type=float, required=True,
                            help="deg/s; each arm is still capped by its max_speed in rig.toml")
     arm_first.set_defaults(func=_cmd_arm_first)
+    arm_together = arm_sub.add_parser(
+        "together", help="both arms together to one saved pose, grippers clamping what they hold between them")
+    arm_together.add_argument("pose")
+    arm_together.add_argument("--speed", type=float, default=10.0, help="deg/s (default 10); capped by max_speed")
+    arm_together.add_argument("--no-clamp", dest="clamp", action="store_false",
+                              help="leave the grippers as they are instead of closing them first")
+    arm_together.set_defaults(func=_cmd_arm_together)
     arm_jog = arm_sub.add_parser("jog", help="move one joint by some degrees")
     arm_jog.add_argument("arm")
     arm_jog.add_argument("joint")

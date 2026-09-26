@@ -282,6 +282,36 @@ class TogetherTests(unittest.TestCase):
             move_named_pose_together({"left": arm}, {}, FIRST_POSE, speed=0.0)
 
 
+class BothToPoseTests(unittest.TestCase):
+    def test_grippers_clamp_first_then_both_arms_move_together(self) -> None:
+        from trashdrop.arm import move_both_to_pose
+
+        clock = FakeClock()
+        buses = {"left": FakeBus(), "right": FakeBus()}
+        arms = {name: Arm(name, bus, 30.0, clock=clock, sleep=clock.sleep) for name, bus in buses.items()}
+        pose = {"shoulder_pan": 0.0, "shoulder_lift": 0.0, "elbow_flex": -20.0, "wrist_flex": 0.0, "wrist_roll": 10.0,
+                "gripper": 80.0}
+        move_both_to_pose(arms, {"left": {"crab": pose}, "right": {"crab": dict(pose, wrist_roll=0.0)}}, "crab", 20.0)
+        for name, arm in arms.items():
+            self.assertTrue(arm.torque_is_on())
+            self.assertLess(arm.pose()["gripper"], 2.0, "clamped shut (the limit's margin), not the saved 80 % open")
+            self.assertAlmostEqual(arm.pose()["elbow_flex"], -20.0, delta=0.2)
+        self.assertAlmostEqual(arms["left"].pose()["wrist_roll"], 10.0, delta=0.2)
+        gripper = MOTORS["gripper"]
+        first_joint_move = next(i for i, goals in enumerate(buses["left"].goals_streamed())
+                                if goals[MOTORS["elbow_flex"]] != buses["left"].goals_streamed()[0][MOTORS["elbow_flex"]])
+        self.assertLessEqual(buses["left"].goals_streamed()[first_joint_move][gripper],
+                             buses["left"].goals_streamed()[0][gripper], "the jaw closed before the arm moved")
+
+    def test_a_missing_pose_moves_nothing(self) -> None:
+        from trashdrop.arm import move_both_to_pose
+
+        bus = FakeBus()
+        with self.assertRaises(ValueError):
+            move_both_to_pose({"left": make_arm(bus)}, {}, "crab", 10.0)
+        self.assertFalse(bus.goals_streamed())
+
+
 class NudgeTests(unittest.TestCase):
     def test_every_joint_is_nudged_a_little_and_ends_where_it_started(self) -> None:
         bus = FakeBus()

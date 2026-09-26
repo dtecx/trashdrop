@@ -280,6 +280,32 @@ def move_named_pose_together(
     return move_together(moves, speed=speed)
 
 
+def move_both_to_pose(arms: dict[str, Arm], poses: dict[str, dict[str, dict[str, float]]], pose_name: str,
+                      speed: float, *, clamp: bool = True) -> list[dict[str, float]]:
+    """Both arms to one saved pose together, with whatever they hold between them.
+
+    Torque goes on where it is off (goals first), then, with ``clamp``, the
+    grippers close on what they hold and keep squeezing; then the five arm
+    joints move together. The saved gripper value is not used.
+    """
+
+    if not math.isfinite(speed) or speed <= 0:
+        raise ValueError("speed must be finite and positive")
+    arm_joints = tuple(joint for joint in MOTORS if joint != GRIPPER)
+    moves = []
+    for name, arm in arms.items():
+        saved = poses.get(name, {}).get(pose_name)
+        if saved is None:
+            raise ValueError(f"no pose {pose_name!r} for the {name} arm in poses.toml")
+        moves.append((arm, {joint: saved[joint] for joint in arm_joints if joint in saved}))
+    for arm, _ in moves:
+        if not arm.torque_is_on():
+            arm.torque_on()
+    if clamp:
+        move_together([(arm, {GRIPPER: 0.0}) for arm, _ in moves], speed=speed)
+    return move_together(moves, speed=speed)
+
+
 # A first test on a real arm: from the joint that can do least harm to the one
 # that swings the whole arm.
 TEST_ORDER = ("gripper", "wrist_roll", "wrist_flex", "elbow_flex", "shoulder_lift", "shoulder_pan")
