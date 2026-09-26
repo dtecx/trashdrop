@@ -60,6 +60,18 @@ class RigFileTests(unittest.TestCase):
         self.assertEqual(zone.corners(), [(-15.0, 14.0), (15.0, 14.0), (15.0, -14.0), (-15.0, -14.0)])
         self.assertEqual(zone.corners(inset=1.0)[0], (-14.0, 13.0), "inset keeps tape on the edge out")
 
+    def test_tape_calibration_survives_the_file(self) -> None:
+        rig = Rig()
+        rig.arms["left"] = ArmDevices(bus="5AAF219965", label="F01",
+                                      touches={"far_left": (32.9, -10.3, -2.5), "near_left": (17.4, -9.8, -1.3)})
+        rig.tape_pixels = {"far_left": (705.5, 420.0), "near_right": (1180.2, 805.9)}
+        rig.pick_zone = PickZone(polygon=((-16.0, 15.5), (15.0, 13.0), (14.0, -14.5), (-15.5, -12.0)))
+        with tempfile.TemporaryDirectory() as directory:
+            loaded = load_rig(save_rig(rig, Path(directory) / "rig.toml"))
+        self.assertEqual(loaded.arms["left"].touches, rig.arms["left"].touches)
+        self.assertEqual(loaded.tape_pixels, rig.tape_pixels)
+        self.assertEqual(loaded.pick_zone.corners(), [(-16.0, 15.5), (15.0, 13.0), (14.0, -14.5), (-15.5, -12.0)])
+
     def test_no_rig_toml_means_nothing_identified(self) -> None:
         rig = load_rig(Path("/nonexistent/rig.toml"))
         self.assertTrue(all(arm.bus is None for arm in rig.arms.values()))

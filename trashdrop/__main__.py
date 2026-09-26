@@ -369,6 +369,31 @@ def _cmd_rig_identify(args: argparse.Namespace) -> int:
     return 0
 
 
+def _apply_tape(rig) -> None:
+    """Solve the tape calibration with what is known so far; save what it determines."""
+
+    from .rig import PickZone, save_rig
+    from .station import repository_root
+    from .tape import LABELS, solve
+
+    solution = solve({arm: devices.touches for arm, devices in rig.arms.items() if devices.touches},
+                     rig.tape_pixels or None)
+    for arm, placement in solution.placements.items():
+        rig.arms[arm].sheet = (placement.x, placement.y, placement.yaw, placement.table_z)
+        misses = ", ".join(f"{LABELS[name]} {value:.1f} cm" for name, value in solution.residuals[arm].items())
+        print(f"  {arm} arm fits its touches to within: {misses}")
+    if solution.corners:
+        rig.pick_zone = PickZone(polygon=tuple(tuple(float(v) for v in solution.corners[name])
+                                               for name in ("far_left", "far_right", "near_right", "near_left")))
+    if solution.homography is not None:
+        solution.homography.save(repository_root() / "camera_sheet.json")
+    save_rig(rig)
+    if solution.missing:
+        print("  still needed: " + "; ".join(solution.missing))
+    else:
+        print("  calibrated: camera, zone and every touched arm. Next: uv run trashdrop pick --dry-run")
+
+
 def _cmd_rig_touch(args: argparse.Namespace) -> int:
     """Touch the sheet's markers with the fixed fingertip; learn where the arm stands."""
 
@@ -386,8 +411,8 @@ def _cmd_rig_touch(args: argparse.Namespace) -> int:
     kinematics = Kinematics()
     if args.tape:
         names = ("far left", "far right", "near right", "near left")
-        points = dict(zip(names, rig.pick_zone.corners()))
-        what = "INNER corner of the tape square"
+        points = {}
+        what = "INNER corner of the taped zone"
     else:
         names = ("marker 0 (top left of the page)", "marker 1 (top right)", "marker 2 (bottom right)",
                  "marker 3 (bottom left)")
@@ -416,8 +441,13 @@ def _cmd_rig_touch(args: argparse.Namespace) -> int:
     finally:
         arm.bus.close()
     if len(touched) < 3:
-        print("at least three markers are needed; rig.toml not changed")
+        print("at least three points are needed; rig.toml not changed")
         return 1
+    if args.tape:
+        rig.arms[arm.name].touches = {name.replace(" ", "_"): tuple(float(v) for v in tip) for name, tip in touched}
+        print(f"{arm.name}: {len(touched)} corners recorded")
+        _apply_tape(rig)
+        return 0
 
     table_z = float(np.mean([tip[2] for _, tip in touched]))
     placement, residuals = fit_placement([points[name] for name, _ in touched], [tip[:2] for _, tip in touched], table_z)
@@ -480,40 +510,30 @@ def _click_corners(frame, labels: tuple[str, ...]):
 
 
 def _cmd_camera_tape(args: argparse.Namespace) -> int:
-    """The tape square is the zone and the reference: click its inner corners in the camera picture."""
+    """Click the taped zone's inner corners in the overhead camera's picture."""
 
     import cv2
     import numpy as np
 
     from .dataset.capture import open_camera
-    from .perception.calibration import HomographyCalibration
-    from .rig import PickZone, load_rig, save_rig
-    from .station import repository_root
+    from .rig import load_rig
 
-    try:
-        width, height = (float(value) for value in args.size.lower().split("x"))
-    except ValueError:
-        print("--size is the tape square's INNER width x depth in cm, e.g. --size 30x28")
-        return 1
     rig = load_rig()
-    rig.pick_zone = PickZone(0.0, 0.0, width, height)
     capture = open_camera(_resolve_camera(args.camera, 1920, 1080), 1920, 1080)
     try:
         for _ in range(30):  # let exposure settle
             ok, frame = capture.read()
     finally:
         capture.release()
+    names = ("far_left", "far_right", "near_right", "near_left")
     labels = ("far left", "far right", "near right", "near left")
-    print("a window opens: click the tape square's INNER corners -- far left, far right, near right, near left\n"
+    print("a window opens: click the taped zone's INNER corners -- far left, far right, near right, near left\n"
           "(far = away from the arms; left and right as the arms see them)")
     corners = _click_corners(frame, labels)
     if corners is None:
         print("cancelled; nothing saved")
         return 1
-    zone_cm = rig.pick_zone.corners()
-    calibration = HomographyCalibration(corners, [(x / 100, y / 100) for x, y in zone_cm])
-    path = calibration.save(repository_root() / "camera_sheet.json")
-    save_rig(rig)
+    rig.tape_pixels = {name: (float(u), float(v)) for name, (u, v) in zip(names, corners)}
     view = frame.copy()
     cv2.polylines(view, [np.rint(corners).astype(np.int32)], True, (60, 220, 60), 3)
     for (u, v), label in zip(corners, labels):
@@ -521,8 +541,8 @@ def _cmd_camera_tape(args: argparse.Namespace) -> int:
         cv2.putText(view, label, (int(u) + 12, int(v) - 12), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
     args.out.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(args.out / "camera_tape.jpg"), view)
-    print(f"saved: pixels -> cm of the {width:g} x {height:g} cm square in {path}; the square is the pick zone "
-          f"(rig.toml). Check out/camera_tape.jpg, then: uv run trashdrop rig touch left --tape")
+    print("corners saved (out/camera_tape.jpg shows them)")
+    _apply_tape(rig)
     return 0
 
 
@@ -1296,8 +1316,7 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("--usb-id", default=None)
     apply_parser.set_defaults(func=_cmd_camera_apply)
 
-    tape_parser = camera_sub.add_parser("tape", help="click the tape square's inner corners; it becomes the pick zone")
-    tape_parser.add_argument("--size", required=True, help="inner width x depth of the square in cm, e.g. 30x28")
+    tape_parser = camera_sub.add_parser("tape", help="click the taped zone's inner corners in the camera picture")
     tape_parser.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")
     tape_parser.set_defaults(func=_cmd_camera_tape)
 

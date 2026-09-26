@@ -110,14 +110,20 @@ ZONE_INSET_CM = 1.0
 
 
 def zone_mask(shape: tuple[int, int], scale: float, homography, zone) -> np.ndarray:
-    """Analysis-resolution mask of the pick zone (a rectangle in sheet cm), inset from its edge."""
+    """Analysis-resolution mask of the pick zone, ZONE_INSET_CM inside its edge."""
 
     import cv2
 
-    corners = zone.corners(inset=ZONE_INSET_CM)
-    polygon = np.array([homography.world_to_pixel(x / 100, y / 100) for x, y in corners]) / scale
+    corners_cm = np.array(zone.corners(), float)
+    polygon = np.array([homography.world_to_pixel(x / 100, y / 100) for x, y in corners_cm]) / scale
     mask = np.zeros(shape, np.uint8)
     cv2.fillPoly(mask, [np.rint(polygon).astype(np.int32)], 255)
+    # Pixels per cm along the zone's edge, to turn the inset into an erosion.
+    edge_px = np.linalg.norm(np.diff(np.vstack([polygon, polygon[:1]]), axis=0), axis=1).sum()
+    edge_cm = np.linalg.norm(np.diff(np.vstack([corners_cm, corners_cm[:1]]), axis=0), axis=1).sum()
+    inset_px = int(round(ZONE_INSET_CM * edge_px / edge_cm))
+    if inset_px > 0:
+        mask = cv2.erode(mask, np.ones((2 * inset_px + 1, 2 * inset_px + 1), np.uint8))
     return mask
 
 

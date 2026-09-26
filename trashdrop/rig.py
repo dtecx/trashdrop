@@ -42,6 +42,8 @@ class ArmDevices:
     # Where the arm stands relative to the marker sheet: (x cm, y cm, yaw deg,
     # table height cm), from `trashdrop rig touch`. None until it is touched.
     sheet: tuple[float, float, float, float] | None = None
+    # Tape corners this arm touched: name -> (x, y, z) cm in its own frame.
+    touches: dict[str, tuple[float, float, float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -54,10 +56,14 @@ class PickZone:
     y: float = 0.0
     width: float = 30.0
     height: float = 21.0
+    # The taped quadrilateral's real corners, when the zone comes from tape.
+    polygon: tuple[tuple[float, float], ...] | None = None
 
     def corners(self, inset: float = 0.0) -> list[tuple[float, float]]:
         """Far left, far right, near right, near left -- far is away from the arms."""
 
+        if self.polygon:
+            return [tuple(point) for point in self.polygon]
         hw, hh = self.width / 2 - inset, self.height / 2 - inset
         return [(self.x - hw, self.y + hh), (self.x + hw, self.y + hh),
                 (self.x + hw, self.y - hh), (self.x - hw, self.y - hh)]
@@ -67,6 +73,8 @@ class PickZone:
 class Rig:
     overhead: str = OVERHEAD_DEFAULT
     pick_zone: PickZone = field(default_factory=PickZone)
+    # Where the camera sees the tape corners: name -> (u, v) pixels.
+    tape_pixels: dict[str, tuple[float, float]] = field(default_factory=dict)
     arms: dict[str, ArmDevices] = field(
         default_factory=lambda: {name: ArmDevices(label=DEFAULT_LABELS[name]) for name in ARM_NAMES}
     )
@@ -84,9 +92,12 @@ def load_rig(path: Path = RIG_FILE) -> Rig:
         return Rig()
     payload = tomllib.loads(path.read_text(encoding="utf-8"))
     zone = payload.get("pick_zone", {})
+    polygon = tuple(tuple(float(v) for v in point) for point in zone["corners"]) if "corners" in zone else None
     rig = Rig(
         overhead=payload.get("overhead", {}).get("camera", OVERHEAD_DEFAULT),
-        pick_zone=PickZone(**{key: float(value) for key, value in zone.items() if key in ("x", "y", "width", "height")}),
+        pick_zone=PickZone(**{key: float(value) for key, value in zone.items() if key in ("x", "y", "width", "height")},
+                           polygon=polygon),
+        tape_pixels={name: tuple(float(v) for v in point) for name, point in payload.get("tape", {}).items()},
     )
     for name in ARM_NAMES:
         section = payload.get(name, {})
@@ -99,6 +110,7 @@ def load_rig(path: Path = RIG_FILE) -> Rig:
                 tuple(float(section["sheet"][key]) for key in ("x", "y", "yaw", "table_z"))
                 if "sheet" in section else None
             ),
+            touches={name: tuple(float(v) for v in point) for name, point in section.get("touches", {}).items()},
         )
     return rig
 
@@ -122,12 +134,21 @@ def render(rig: Rig) -> str:
         f"width = {rig.pick_zone.width:g}",
         f"height = {rig.pick_zone.height:g}",
     ]
+    if rig.pick_zone.polygon:
+        corners = ", ".join(f"[{x:.2f}, {y:.2f}]" for x, y in rig.pick_zone.polygon)
+        lines.append(f"corners = [{corners}]  # the taped zone: far left, far right, near right, near left")
+    if rig.tape_pixels:
+        lines += ["", "# Where the overhead camera sees the tape corners, pixels (from `camera tape`).", "[tape]"]
+        lines += [f"{name} = [{u:.1f}, {v:.1f}]" for name, (u, v) in rig.tape_pixels.items()]
     for name, arm in rig.arms.items():
         lines += ["", f"[{name}]"]
         lines.append(f'label = "{arm.label}"          # written on the arm')
         lines.append(f'bus = "{arm.bus}"       # servo adapter serial number' if arm.bus else "# bus = unknown")
         lines.append(f'camera = "{arm.camera}"      # wrist camera' if arm.camera else "# camera = unknown")
         lines.append(f"max_speed = {arm.max_speed:g}             # degrees per second, every move")
+        if arm.touches:
+            points = ", ".join(f"{name} = [{x:.2f}, {y:.2f}, {z:.2f}]" for name, (x, y, z) in arm.touches.items())
+            lines.append(f"touches = {{ {points} }}  # tape corners touched, cm in the arm's frame")
         if arm.sheet:
             x, y, yaw, table_z = arm.sheet
             lines.append(
