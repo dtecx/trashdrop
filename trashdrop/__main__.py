@@ -895,6 +895,44 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_web(args: argparse.Namespace) -> int:
+    """The cell's page: the overhead stream with what it sees drawn over it, and its controls."""
+
+    import webbrowser
+
+    from .cell import Cell
+    from .station import repository_root
+    from .web.server import make_server
+
+    if args.demo:
+        out = repository_root() / "out"
+        cell = Cell.demo(empty=out / "pick_background.jpg", item=out / "pick_frame.jpg")
+    else:
+        cell = Cell.open(camera=args.camera, only_arm=args.arm)
+    try:
+        server = make_server(cell, args.host, args.port)
+    except OSError as error:
+        cell.close()
+        print(f"cannot listen on {args.host}:{args.port} ({error}); try --port 8001")
+        return 1
+    url = f"http://{'localhost' if args.host in ('127.0.0.1', '0.0.0.0') else args.host}:{server.server_address[1]}"
+    try:
+        cell.start()
+        print(f"the page: {url}\n  Ctrl+C here stops it; the arms hold where they are.")
+        if args.host != "127.0.0.1":
+            print("  listening beyond this machine: anyone who can open the page can move the arms")
+        if not args.no_browser:
+            webbrowser.open(url)
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+    finally:
+        cell.stop()
+        server.server_close()
+        cell.close()
+    return 0
+
+
 def _open_arm(name: str):
     from .arm import connect
 
@@ -1469,6 +1507,16 @@ def build_parser() -> argparse.ArgumentParser:
     pick.add_argument("--fingertips", type=float, default=None,
                       help="how far above the table the fixed fingertip comes down, cm (default 0.5, at least 0.2)")
     pick.set_defaults(func=_cmd_pick)
+
+    web = sub.add_parser("web", help="the cell in a browser: live stream with overlays, pick, auto sort, settings")
+    web.add_argument("--host", default="127.0.0.1",
+                     help="0.0.0.0 lets other machines open the page -- and move the arms")
+    web.add_argument("--port", type=int, default=8000)
+    web.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")
+    web.add_argument("--arm", default=None, help="use only this arm: left, right (or its label)")
+    web.add_argument("--demo", action="store_true", help="no camera or arms: out/'s saved pictures and pretend arms")
+    web.add_argument("--no-browser", action="store_true", help="do not open the page")
+    web.set_defaults(func=_cmd_web)
 
     arm = sub.add_parser("arm", help="the real arms: status, named poses, slow moves (left / right / F01 / F02)")
     arm_sub = arm.add_subparsers(dest="arm_command", required=True)

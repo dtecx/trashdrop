@@ -84,6 +84,11 @@ simulator.py  probe.py
   turn around wherever a hand held it). `rig roll` measures that offset into
   rig.toml; build a `Kinematics(wrist_roll_offset)` per arm, never one bare
   `Kinematics()` for a real arm, or the jaw closes along the item.
+- `cell.py`, `web/` — the real cell as one object (a thread reading the
+  camera, one action at a time on a worker thread, a stop that holds the
+  arms from any thread) and a standard-library web page over it. The arms'
+  buses are not safe to share between threads: only the worker touches
+  them, and the page reads poses cached after each action.
 - `api.py` — the open intake API. Standard library only, on purpose: no team
   should install anything to talk to us, and it must not break on venue wifi.
   Collaboration is a judging criterion, so treat this as product surface, not

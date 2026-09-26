@@ -23,6 +23,7 @@ go of the torque mid-air would drop it.
 
 from __future__ import annotations
 
+import threading
 import time
 import tomllib
 from dataclasses import dataclass
@@ -44,6 +45,10 @@ GRIPPER = "gripper"
 POSES_FILE = repository_root() / "poses.toml"
 
 
+class Stopped(KeyboardInterrupt):
+    """A stop asked for from elsewhere -- the web page's button -- and handled like Ctrl+C: hold."""
+
+
 @dataclass(frozen=True)
 class JointLimits:
     low: int
@@ -53,11 +58,13 @@ class JointLimits:
 class Arm:
     """One arm on its servo bus. Degrees in, degrees out; ticks stay inside."""
 
-    def __init__(self, name: str, bus, max_speed: float, *, clock=time.monotonic, sleep=time.sleep) -> None:
+    def __init__(self, name: str, bus, max_speed: float, *, clock=time.monotonic, sleep=time.sleep,
+                 stop: threading.Event | None = None) -> None:
         self.name = name
         self.bus = bus
         self.max_speed = max_speed
         self._clock, self._sleep = clock, sleep
+        self.stop = stop  # set from another thread, it stops a move where it is
         self.limits = {
             joint: JointLimits(bus.read(motor, "min_limit"), bus.read(motor, "max_limit"))
             for joint, motor in MOTORS.items()
@@ -178,9 +185,15 @@ def move_together(moves: list[tuple[Arm, dict[str, float]]], *, speed: float | N
 
     plans = [arm._plan(targets, speed) for arm, targets in moves]
     clock, sleep = moves[0][0]._clock, moves[0][0]._sleep
+
+    def check() -> None:
+        if any(arm.stop is not None and arm.stop.is_set() for arm, _ in moves):
+            raise Stopped
+
     began = clock()
     try:
         while True:
+            check()
             elapsed = clock() - began
             for (arm, _), (start, goal, duration) in zip(moves, plans):
                 s = min(elapsed / duration, 1.0)
@@ -194,6 +207,7 @@ def move_together(moves: list[tuple[Arm, dict[str, float]]], *, speed: float | N
         deadline = clock() + 1.5
         pending = {index: (None, 0) for index in range(len(moves))}  # index -> (last reading, still readings)
         while pending and clock() < deadline:
+            check()
             for index, (last, still) in list(pending.items()):
                 present = moves[index][0].bus.positions()
                 goal = plans[index][1]
@@ -299,7 +313,7 @@ def pick_and_drop(arm: Arm, poses: dict[str, dict[str, float]], *, speed: float 
     return True
 
 
-def connect(name: str, rig=None) -> Arm:
+def connect(name: str, rig=None, *, stop: threading.Event | None = None) -> Arm:
     """The arm called ``name`` in rig.toml -- "left", "right", or its label."""
 
     from .rig import load_rig
@@ -310,7 +324,7 @@ def connect(name: str, rig=None) -> Arm:
     devices = rig.arms[key]
     if not devices.bus:
         raise RuntimeError(f"the {key} arm has no bus in rig.toml: run `uv run trashdrop rig identify`")
-    arm = Arm(key, ServoBus.by_serial(devices.bus), devices.max_speed)
+    arm = Arm(key, ServoBus.by_serial(devices.bus), devices.max_speed, stop=stop)
     arm.limit_speed()
     return arm
 

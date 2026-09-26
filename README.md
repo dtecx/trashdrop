@@ -51,6 +51,16 @@ uv run trashdrop arm gripper left open   # or close, or a percent
 uv run trashdrop arm relax left          # limp again -- hold it if it is in the air
 ```
 
+The same from a browser: the overhead stream with the zone, the item and
+the grasp drawn over it, buttons for every step, auto sort that keeps
+taking whatever is tossed into the zone until STOP (Esc on the page), and
+the arms' speeds and the pick's settings:
+
+```bash
+uv run trashdrop web                     # opens http://localhost:8000
+uv run trashdrop web --demo              # no camera or arms: out/'s pictures and pretend arms
+```
+
 Sorting by material needs the classifier, once per machine (the model is
 350 MB and not in git; the training environment has CLIP's weights):
 

@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TrashDrop Cell</title>
+<style>
+  :root {
+    --bg: #0b0e13; --panel: #121821; --panel2: #171f2a; --line: #243040; --text: #e7edf4; --muted: #8a97a8;
+    --zone: #3ddc97; --item: #3fd0f0; --fixed: #ff5a5f; --moving: #4d8dff; --grip: #ffc53d;
+    --plastic: #f5c518; --metal: #f5c518; --paper: #3b82f6; --other: #9aa4b2; --danger: #e5484d; --ok: #3ddc97; --warn: #f5a524;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #111821, #0b0e13); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+  .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; letter-spacing: .2px; }
+  .logo .mark { width: 28px; height: 28px; border-radius: 8px; background: conic-gradient(var(--plastic) 0 50%, var(--paper) 0 100%); box-shadow: 0 0 0 2px #0b0e13 inset, 0 0 0 1px var(--line); }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+  .chip { display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+  .chip b { color: var(--text); font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; padding: 16px 20px 24px; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+  .card h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  aside { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #05070a; border-radius: 10px; overflow: hidden; }
+  .stage img, .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .stage img { object-fit: fill; }
+  .stage .nosignal { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 15px; }
+  .caption { position: absolute; left: 12px; bottom: 12px; right: 12px; display: flex; gap: 10px; align-items: center; pointer-events: none; }
+  .caption span { background: rgba(8, 11, 16, .78); border: 1px solid var(--line); padding: 7px 11px; border-radius: 9px; backdrop-filter: blur(4px); max-width: 100%; }
+  .toggles { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .toggle { display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel2); color: var(--muted); cursor: pointer; user-select: none; font-size: 12.5px; }
+  .toggle input { display: none; }
+  .toggle.on { color: var(--text); border-color: #3a4a60; background: #1d2835; }
+  .toggle i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .hint { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: #1b2330; border: 1px dashed #34465e; color: #c7d3e0; }
+  .hint ol { margin: 4px 0 0 18px; padding: 0; }
+  .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  button { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; transition: background .15s, border-color .15s, transform .05s; }
+  button:hover:not(:disabled) { background: #1f2a38; border-color: #3a4a60; }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: #173a2c; border-color: #2c6e52; } button.primary:hover:not(:disabled) { background: #1c4a38; }
+  button.on { background: #3a2d0e; border-color: #8a6a1a; }
+  button.stop { grid-column: 1 / -1; background: #4a1417; border-color: #8f2a2f; font-weight: 700; font-size: 16px; letter-spacing: .06em; padding: 14px; }
+  button.stop:hover { background: #5c181c; }
+  .kbd { font-size: 11px; color: var(--muted); margin-left: 6px; border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; }
+  .material { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .material .badge { font-size: 20px; font-weight: 700; padding: 4px 12px; border-radius: 10px; background: #1b2330; }
+  .material .side { color: var(--muted); }
+  .bars { display: grid; gap: 6px; margin: 6px 0 12px; }
+  .bar { display: grid; grid-template-columns: 62px 1fr 42px; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+  .bar .track { height: 8px; border-radius: 99px; background: #1c2431; overflow: hidden; }
+  .bar .fill { height: 100%; border-radius: 99px; transition: width .3s; }
+  .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 13px; }
+  .facts div { color: var(--muted); } .facts b { color: var(--text); font-weight: 600; }
+  .message { margin-top: 10px; color: #c7d3e0; }
+  .row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; margin: 8px 0; }
+  .row label { color: var(--muted); font-size: 12.5px; }
+  .row output { font-variant-numeric: tabular-nums; color: var(--text); font-size: 12.5px; min-width: 64px; text-align: right; }
+  input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: #4f8cff; }
+  select { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+  .armbox { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
+  .armbox h3 { margin: 0; font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
+  .switch { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; color: var(--muted); font-size: 12.5px; }
+  .switch input { width: 36px; height: 20px; accent-color: #3ddc97; }
+  .log { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #b8c4d2; background: #0c1118; border: 1px solid var(--line); border-radius: 10px; padding: 10px; height: 210px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+  .toast { position: fixed; right: 20px; bottom: 20px; background: #3a1417; border: 1px solid #8f2a2f; color: #ffd7d9; padding: 10px 14px; border-radius: 10px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+  svg text { font-family: system-ui, -apple-system, sans-serif; font-weight: 700; paint-order: stroke; stroke: rgba(0,0,0,.75); stroke-width: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><div class="mark"></div>TrashDrop <span style="color:var(--muted);font-weight:500">cell</span></div>
+  <div class="chips" id="chips"></div>
+</header>
+<main>
+  <section>
+    <div class="card">
+      <div class="stage" id="stage">
+        <div class="nosignal" id="nosignal">waiting for the camera…</div>
+        <img id="stream" alt="">
+        <svg id="overlay" viewBox="0 0 1920 1080" preserveAspectRatio="none"></svg>
+        <div class="caption"><span id="caption">—</span></div>
+      </div>
+      <div class="toggles" id="toggles"></div>
+      <div class="hint" id="hint" hidden>
+        <b>Getting started</b>
+        <ol>
+          <li><b>Neutral</b> — both arms stand up, out of the camera's way.</li>
+          <li>Clear the taped zone, then <b>Empty zone</b> photographs it.</li>
+          <li>Put one item in the zone: <b>Look</b> shows the plan, <b>Pick</b> sorts it, <b>Auto</b> keeps sorting.</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+  <aside>
+    <div class="card">
+      <h2>Control</h2>
+      <div class="buttons">
+        <button id="look" data-action="look">Look<span class="kbd">L</span></button>
+        <button id="pick" class="primary" data-action="pick">Pick<span class="kbd">P</span></button>
+        <button id="auto" data-action="auto">Auto sort</button>
+        <button id="dry">Dry run: off</button>
+        <button id="empty" data-action="empty">Empty zone</button>
+        <button id="neutral" data-action="neutral">Neutral</button>
+        <button id="stop" class="stop">STOP<span class="kbd" style="color:#ffd7d9;border-color:#8f2a2f">Esc</span></button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Last look</h2>
+      <div class="material"><span class="badge" id="material">—</span><span class="side" id="side"></span></div>
+      <div class="bars" id="bars"></div>
+      <div class="facts" id="facts"></div>
+      <div class="message" id="message"></div>
+    </div>
+    <div class="card">
+      <h2>Settings</h2>
+      <div class="switch"><span>Sort by material (off: the nearer arm takes all)</span><input type="checkbox" id="sort"></div>
+      <div class="row"><label for="material_over">What it is</label>
+        <select id="material_over"><option value="">classifier decides</option><option value="plastic">plastic → left</option><option value="metal">metal → left</option><option value="paper">paper → right</option></select></div>
+      <div class="row"><label for="only_arm">Arms</label>
+        <select id="only_arm"><option value="">both</option><option value="left">left only</option><option value="right">right only</option></select></div>
+      <div class="row"><label for="fingertips">Fingertips above the table</label><output id="fingertips_v"></output>
+        <input type="range" id="fingertips" min="0.2" max="2.5" step="0.1"></div>
+      <div class="row"><label for="confidence">Sure enough to sort</label><output id="confidence_v"></output>
+        <input type="range" id="confidence" min="0.5" max="0.99" step="0.01"></div>
+      <div id="arms"></div>
+    </div>
+    <div class="card">
+      <h2>Log</h2>
+      <div class="log" id="log"></div>
+    </div>
+  </aside>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+const COLORS = { plastic: 'var(--plastic)', metal: 'var(--metal)', paper: 'var(--paper)', other: 'var(--other)' };
+const LAYERS = [
+  ['zone', 'Zone', 'var(--zone)'], ['reach', 'Searched area', '#2a8c63'], ['arms', 'Arms', '#c8d3df'],
+  ['drops', 'Drop sides', 'var(--plastic)'], ['item', 'Item', 'var(--item)'], ['grasp', 'Grasp', 'var(--grip)'],
+  ['labels', 'Labels', '#ffffff'],
+];
+let show = {};
+try { show = JSON.parse(localStorage.getItem('layers') || '{}'); } catch (e) { show = {}; }
+for (const [key] of LAYERS) if (!(key in show)) show[key] = true;
+let state = null, drawn = null, editing = null, online = true;
+
+function toast(text) { const t = $('toast'); t.textContent = text; t.classList.add('show'); clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove('show'), 3500); }
+async function post(path, body) {
+  try {
+    const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    const reply = await response.json();
+    if (!reply.ok) toast(reply.error || 'refused');
+    poll();
+    return reply;
+  } catch (e) { toast('the cell does not answer'); }
+}
+
+// --- the layers the viewer can switch --------------------------------------------------
+function buildToggles() {
+  $('toggles').innerHTML = LAYERS.map(([key, label, color]) =>
+    `<label class="toggle ${show[key] ? 'on' : ''}" data-key="${key}"><input type="checkbox" ${show[key] ? 'checked' : ''}><i style="background:${color}"></i>${label}</label>`).join('');
+  for (const el of document.querySelectorAll('.toggle')) el.addEventListener('click', (event) => {
+    event.preventDefault();
+    const key = el.dataset.key; show[key] = !show[key];
+    try { localStorage.setItem('layers', JSON.stringify(show)); } catch (e) {}
+    buildToggles(); drawn = null; render();
+  });
+}
+
+const pts = (list) => list.map(([x, y]) => `${x.toFixed ? x.toFixed(1) : x},${y.toFixed ? y.toFixed(1) : y}`).join(' ');
+const esc = (text) => String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function drawOverlay(s) {
+  const sc = s.scene, [W, H] = sc.size, L = s.last;
+  $('overlay').setAttribute('viewBox', `0 0 ${W} ${H}`);
+  $('stage').style.aspectRatio = `${W} / ${H}`;
+  const inside = ([x, y]) => x > 0 && y > 0 && x < W && y < H;
+  const clamp = ([x, y]) => [Math.min(Math.max(x, 60), W - 60), Math.min(Math.max(y, 40), H - 40)];
+  let g = '';
+  if (show.reach) for (const outline of sc.searched) g += `<polygon points="${pts(outline)}" fill="rgba(61,220,151,.07)" stroke="#2a8c63" stroke-width="3" stroke-dasharray="12 10"/>`;
+  if (show.zone && sc.zone.length) g += `<polygon points="${pts(sc.zone)}" fill="none" stroke="#3ddc97" stroke-width="5" stroke-linejoin="round"/>`;
+  if (show.arms) for (const [name, p] of Object.entries(sc.bases)) {
+    const [x, y] = clamp(p), off = !inside(p);
+    g += `<circle cx="${x}" cy="${y}" r="18" fill="rgba(200,211,223,.18)" stroke="#c8d3df" stroke-width="4" ${off ? 'stroke-dasharray="6 6"' : ''}/>`
+       + `<text x="${x}" y="${y - 30}" font-size="30" fill="#e7edf4" text-anchor="middle">${name.toUpperCase()}</text>`;
+  }
+  if (show.drops) for (const [name, p] of Object.entries(sc.drops)) {
+    const goes = Object.entries(sc.sides).filter(([, side]) => side === name).map(([m]) => m);
+    const [x, y] = clamp(p), color = goes.includes('paper') ? '#3b82f6' : '#f5c518';
+    g += `<g><circle cx="${x}" cy="${y}" r="26" fill="none" stroke="${color}" stroke-width="5" stroke-dasharray="10 7"/>`
+       + `<text x="${x}" y="${y + 58}" font-size="28" fill="${color}" text-anchor="middle">${esc(goes.join(' · '))}${inside(p) ? '' : ' ↦'}</text></g>`;
+  }
+  if (L && L.outline && L.outline.length) {
+    if (show.item) g += `<polygon points="${pts(L.outline)}" fill="rgba(63,208,240,.14)" stroke="#3fd0f0" stroke-width="4" stroke-linejoin="round"/>`;
+    if (show.grasp && L.fixed && L.moving) {
+      g += `<line x1="${L.fixed[0]}" y1="${L.fixed[1]}" x2="${L.moving[0]}" y2="${L.moving[1]}" stroke="#ffc53d" stroke-width="7" stroke-linecap="round"/>`
+         + `<circle cx="${L.fixed[0]}" cy="${L.fixed[1]}" r="15" fill="#ff5a5f" stroke="#fff" stroke-width="3"/>`
+         + `<circle cx="${L.moving[0]}" cy="${L.moving[1]}" r="17" fill="none" stroke="#4d8dff" stroke-width="6"/>`;
+    }
+    if (show.labels) {
+      const top = L.outline.reduce((a, b) => (b[1] < a[1] ? b : a));
+      const best = Object.entries(L.probabilities || {}).sort((a, b) => b[1] - a[1])[0];
+      const words = [best ? `${best[0].toUpperCase()} ${Math.round(best[1] * 100)}%` : null, L.arm ? `→ ${L.arm} arm` : null].filter(Boolean).join('  ');
+      if (words) g += `<text x="${top[0]}" y="${Math.max(top[1] - 24, 40)}" font-size="34" fill="${best ? COLORS[best[0]] || '#fff' : '#fff'}" text-anchor="middle">${esc(words)}</text>`;
+    }
+  }
+  $('overlay').innerHTML = g;
+}
+
+// --- everything else --------------------------------------------------------------------
+function chip(dot, label, value, title) { return `<span class="chip" title="${esc(title || '')}"><span class="dot ${dot}"></span>${label}${value !== undefined ? ` <b>${esc(value)}</b>` : ''}</span>`; }
+function renderChips(s) {
+  if (!online) { $('chips').innerHTML = chip('bad', 'cell', 'offline'); return; }
+  const mode = s.auto ? ['warn', 'auto'] : s.busy ? ['warn', s.busy] : ['ok', 'idle'];
+  let html = chip(s.camera_fps > 4 ? 'ok' : 'bad', 'camera', `${s.camera_fps} fps`)
+    + chip(s.classifier ? 'ok' : 'warn', 'classifier', s.classifier ? 'on' : 'off')
+    + chip(s.empty_photographed ? 'ok' : 'warn', 'empty zone', s.empty_photographed ? 'taken' : 'needed');
+  for (const [name, arm] of Object.entries(s.arms)) {
+    const pose = arm.pose ? Object.entries(arm.pose).map(([j, v]) => `${j} ${v}`).join(', ') : 'not read yet';
+    html += chip('ok', name, `${arm.max_speed}°/s`, pose);
+  }
+  $('chips').innerHTML = html + chip(mode[0], 'mode', mode[1]);
+}
+
+function renderLook(L) {
+  if (!L) { $('material').textContent = '—'; $('side').textContent = ''; $('bars').innerHTML = ''; $('facts').innerHTML = ''; $('message').textContent = 'Nothing looked at yet.'; $('caption').textContent = 'no look yet'; return; }
+  const probs = Object.entries(L.probabilities || {}).sort((a, b) => b[1] - a[1]);
+  const best = probs[0];
+  $('material').textContent = best ? best[0] : '—';
+  $('material').style.color = best ? COLORS[best[0]] || '#fff' : '#fff';
+  $('side').textContent = L.side ? `goes ${L.side}${L.sure ? ` · ${Math.round(L.sure * 100)}% sure` : ''}` : '';
+  $('bars').innerHTML = probs.map(([name, p]) => `<div class="bar"><span>${esc(name)}</span><div class="track"><div class="fill" style="width:${(p * 100).toFixed(1)}%;background:${COLORS[name] || '#9aa4b2'}"></div></div><span>${Math.round(p * 100)}%</span></div>`).join('');
+  const facts = [];
+  if (L.arm) facts.push(['Arm', L.arm]);
+  if (L.width_cm != null) facts.push(['Across', `${L.width_cm.toFixed(1)} cm`]);
+  if (L.open_percent != null) facts.push(['Jaw open', `${Math.round(L.open_percent)} %`]);
+  if (L.lean_deg != null) facts.push(['Fingers lean', `${Math.round(L.lean_deg)}°`]);
+  for (const [name, cm] of Object.entries(L.distances_cm || {})) facts.push([`To ${name} base`, `${cm.toFixed(0)} cm`]);
+  $('facts').innerHTML = facts.map(([k, v]) => `<div>${esc(k)} <b>${esc(v)}</b></div>`).join('');
+  $('message').textContent = L.message;
+  $('caption').textContent = L.message;
+}
+
+function renderSettings(s) {
+  const o = s.options;
+  if (editing !== 'sort') $('sort').checked = !o.any_arm;
+  if (editing !== 'material_over') $('material_over').value = o.material || '';
+  if (editing !== 'only_arm') $('only_arm').value = o.only_arm || '';
+  if (editing !== 'fingertips') { $('fingertips').value = o.fingertips_cm; }
+  if (editing !== 'confidence') { $('confidence').value = o.min_confidence; }
+  $('fingertips_v').textContent = `${Number($('fingertips').value).toFixed(1)} cm`;
+  $('confidence_v').textContent = `${Math.round($('confidence').value * 100)} %`;
+  $('dry').textContent = `Dry run: ${o.dry_run ? 'on' : 'off'}`; $('dry').classList.toggle('on', o.dry_run);
+  const box = $('arms');
+  if (box.dataset.arms !== Object.keys(s.arms).join()) {
+    box.dataset.arms = Object.keys(s.arms).join();
+    box.innerHTML = Object.keys(s.arms).map((name) => `
+      <div class="armbox" data-arm="${name}">
+        <h3>${name} arm <button class="save" data-arm="${name}" style="padding:4px 10px;font-size:12px">Save to rig.toml</button></h3>
+        <div class="row"><label>Travel speed</label><output data-out="max"></output><input type="range" min="5" max="120" step="1" data-in="max"></div>
+        <div class="row"><label>Last approach speed</label><output data-out="descent"></output><input type="range" min="2" max="120" step="1" data-in="descent"></div>
+      </div>`).join('');
+    for (const el of box.querySelectorAll('input')) {
+      el.addEventListener('input', () => { editing = `speed-${el.closest('.armbox').dataset.arm}`; updateSpeedLabels(); });
+    }
+    for (const el of box.querySelectorAll('button.save')) el.addEventListener('click', async () => {
+      const armbox = el.closest('.armbox');
+      const reply = await post('/api/speeds', { arm: el.dataset.arm, max_speed: Number(armbox.querySelector('[data-in=max]').value), descent_speed: Number(armbox.querySelector('[data-in=descent]').value) });
+      if (reply && reply.ok) { editing = null; toast(`${el.dataset.arm} arm: saved`); }
+    });
+  }
+  for (const [name, arm] of Object.entries(s.arms)) {
+    const armbox = box.querySelector(`[data-arm="${name}"]`);
+    if (editing === `speed-${name}`) continue;
+    armbox.querySelector('[data-in=max]').value = arm.max_speed;
+    armbox.querySelector('[data-in=descent]').value = arm.descent_speed ?? arm.max_speed;
+  }
+  updateSpeedLabels();
+}
+function updateSpeedLabels() {
+  for (const armbox of document.querySelectorAll('.armbox')) {
+    armbox.querySelector('[data-out=max]').textContent = `${armbox.querySelector('[data-in=max]').value}°/s`;
+    armbox.querySelector('[data-out=descent]').textContent = `${armbox.querySelector('[data-in=descent]').value}°/s`;
+  }
+}
+
+function renderLog(lines) {
+  const log = $('log'), atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+  const text = lines.join('\n');
+  if (log.textContent !== text) { log.textContent = text; if (atBottom) log.scrollTop = log.scrollHeight; }
+}
+
+function render() {
+  const s = state;
+  renderChips(s || {});
+  if (!s) return;
+  const busy = !!s.busy;
+  for (const id of ['look', 'pick', 'auto', 'empty', 'neutral']) $(id).disabled = busy && !(id === 'auto' && s.auto);
+  $('auto').textContent = s.auto ? 'Auto: on — stop' : 'Auto sort';
+  $('auto').classList.toggle('on', s.auto);
+  for (const id of ['look', 'pick', 'auto']) if (!s.empty_photographed) $(id).disabled = true;
+  $('hint').hidden = s.empty_photographed;
+  $('nosignal').hidden = s.camera_fps > 0;
+  const key = `${s.version}|${JSON.stringify(show)}|${s.scene.size}|${s.scene.searched.length}`;
+  if (drawn !== key) { drawOverlay(s); drawn = key; }
+  renderLook(s.last);
+  renderSettings(s);
+  renderLog(s.log);
+}
+
+async function poll() {
+  try {
+    const response = await fetch('/api/state', { cache: 'no-store' });
+    state = await response.json(); online = true;
+  } catch (e) { online = false; }
+  render();
+}
+
+// --- wiring -------------------------------------------------------------------------------
+for (const id of ['look', 'pick', 'empty', 'neutral']) $(id).addEventListener('click', () => post(`/api/action/${$(id).dataset.action}`));
+$('auto').addEventListener('click', () => (state && state.auto ? post('/api/stop') : post('/api/action/auto')));
+$('stop').addEventListener('click', () => post('/api/stop'));
+$('dry').addEventListener('click', () => post('/api/options', { dry_run: !(state && state.options.dry_run) }));
+$('sort').addEventListener('change', () => post('/api/options', { any_arm: !$('sort').checked }));
+for (const [id, key] of [['material_over', 'material'], ['only_arm', 'only_arm']]) {
+  $(id).addEventListener('focus', () => { editing = id; });
+  $(id).addEventListener('change', async () => { await post('/api/options', { [key]: $(id).value || null }); editing = null; });
+  $(id).addEventListener('blur', () => { editing = null; });
+}
+for (const [id, key] of [['fingertips', 'fingertips_cm'], ['confidence', 'min_confidence']]) {
+  $(id).addEventListener('input', () => { editing = id; renderSettings(state); });
+  $(id).addEventListener('change', async () => { await post('/api/options', { [key]: Number($(id).value) }); editing = null; });
+}
+document.addEventListener('keydown', (event) => {
+  if (event.target.matches('input, select, textarea')) return;
+  if (event.key === 'Escape') { event.preventDefault(); post('/api/stop'); }
+  if (event.key === 'l' || event.key === 'L') $('look').click();
+  if (event.key === 'p' || event.key === 'P') $('pick').click();
+});
+const stream = $('stream');
+stream.addEventListener('load', () => { $('nosignal').hidden = true; });
+stream.addEventListener('error', () => { $('nosignal').hidden = false; setTimeout(() => { stream.src = `/stream.mjpg?${Date.now()}`; }, 1500); });
+stream.src = '/stream.mjpg';
+buildToggles();
+poll();
+setInterval(poll, 400);
+</script>
+</body>
+</html>

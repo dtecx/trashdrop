@@ -199,6 +199,29 @@ class TogetherTests(unittest.TestCase):
             present = bus.positions()
             self.assertEqual(bus.goals_streamed()[-1], {MOTORS[joint]: ticks for joint, ticks in present.items()})
 
+    def test_a_stop_from_elsewhere_holds_every_arm_where_it_is(self) -> None:
+        import threading
+
+        from trashdrop.arm import Stopped
+
+        stop, clock = threading.Event(), FakeClock()
+        bus = FakeBus()
+        arm = Arm("left", bus, 30.0, clock=clock, sleep=clock.sleep, stop=stop)
+        arm.torque_on()
+        original_sleep = clock.sleep
+
+        def sleep(seconds: float) -> None:  # the button is pressed a second into the move
+            original_sleep(seconds)
+            if clock.now > 1.0:
+                stop.set()
+
+        arm._sleep = sleep
+        with self.assertRaises(Stopped):
+            arm.move({"shoulder_pan": 60.0})
+        present = bus.positions()
+        self.assertEqual(bus.goals_streamed()[-1], {MOTORS[joint]: ticks for joint, ticks in present.items()})
+        self.assertLess(clock.now, 1.1)
+
     def test_a_jaw_closed_on_an_item_ends_the_move_once_it_stops(self) -> None:
         # Stalled 300 ticks short of closed, the jaw never reaches its goal.
         bus, clock = FakeBus(sag={"gripper": 300}), FakeClock()
