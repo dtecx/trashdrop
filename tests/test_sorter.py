@@ -141,6 +141,20 @@ class PlanTests(unittest.TestCase):
         u, v = (int(round(value)) for value in plan.pixel)
         self.assertTrue((drawn[v, u] == (0, 0, 255)).all(), "the fixed finger's dot is where the plan says")
 
+    def test_a_grasp_that_failed_is_planned_another_way(self) -> None:
+        item = item_at(self.homography, (-10.0, -8.0), (3.0, 12.0))
+        first, reason = plan_pick(item, SCALE, self.homography, {"left": LEFT}, self.kinematics, {})
+        self.assertIsNotNone(first, reason)
+        self.assertLess(abs(first.grasp_sheet[0] + 10.0), 1.5, "the grasp's middle is on the item")
+        self.assertLess(abs(first.grasp_sheet[1] + 8.0), 6.0)
+        self.assertGreater(abs(first.across_sheet[0]), 0.95, "closing across it: it lies along the sheet's y")
+        again, reason = plan_pick(item, SCALE, self.homography, {"left": LEFT}, self.kinematics, {},
+                                  avoid=[(first.grasp_sheet, first.across_sheet)])
+        self.assertIsNotNone(again, reason)
+        moved = np.hypot(again.grasp_sheet[0] - first.grasp_sheet[0], again.grasp_sheet[1] - first.grasp_sheet[1])
+        turned = np.degrees(np.arccos(min(1.0, abs(float(np.dot(again.across_sheet, first.across_sheet))))))
+        self.assertTrue(moved >= 1.8 or turned >= 25.0, (moved, turned))
+
     def test_the_arm_nearer_the_item_takes_it(self) -> None:
         both = {"left": LEFT, "right": RIGHT}
         for sheet_cm, nearer in (((10.0, -8.0), "right"), ((-10.0, -8.0), "left")):

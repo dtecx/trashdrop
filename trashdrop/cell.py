@@ -182,6 +182,7 @@ class Cell:
         self.version = 0  # bumped whenever what the page draws changes
         self._lock = threading.Lock()
         self._frame_used: np.ndarray | None = None
+        self._failed: list = []  # grasps that failed on the item in the zone now: the next plan avoids them
         self._stale_limits: set[str] = set()  # arms whose servo speed limit waits for the bus to be free
         # Drawn over the stream and fixed while the cell runs. Worked out here,
         # once: Kinematics is not thread-safe, and the page asks from its own
@@ -366,6 +367,7 @@ class Cell:
         self.background = frame
         self.searched_outline = _outlines(self.valid > 0, scale)
         self.last = None
+        self._failed.clear()
         self.version += 1
         self.log("empty zone photographed: put an item in it")
         if getattr(self, "_scene", None):
@@ -405,7 +407,7 @@ class Cell:
             look.code = "no_arm"
             return self._seen(look)
         plan, reason = plan_pick(item, scale, self.homography, candidates, self.kinematics, self.limits,
-                                 fingertips_cm=options.fingertips_cm)
+                                 fingertips_cm=options.fingertips_cm, avoid=self._failed)
         if plan is None:
             look.message = f"cannot take it: {reason}"
             look.code = "no_plan"
@@ -441,12 +443,16 @@ class Cell:
         """
 
         for attempt in range(1, tries + 1):
-            self._go(self._last_plan)
+            tried = self._last_plan
+            self._go(tried)
             if self.options.dry_run:
                 return False
+            if tried.grasp_sheet is not None:
+                self._failed.append((tried.grasp_sheet, tried.across_sheet))  # forgotten below if it worked
             after = self.look()
             if after.code == "nothing_changed":
                 self.background = self._frame_used  # empty now: keeps up with the light
+                self._failed.clear()
                 self.log("done: the zone is empty again")
                 return True
             if self._last_plan is None or attempt == tries:
@@ -454,7 +460,7 @@ class Cell:
                     self.log(f"still in the zone after {attempt} {'try' if attempt == 1 else 'tries'}: "
                              "leave it for a person")
                 return False
-            self.log(f"still in the zone: try {attempt + 1} of {tries}")
+            self.log(f"still in the zone: try {attempt + 1} of {tries}, another way to hold it")
         return False
 
     def _go(self, plan) -> None:
@@ -490,13 +496,16 @@ class Cell:
                         said = first.message
                     if first.code == "nothing_changed":
                         failures.clear()
+                        self._failed.clear()
                     self._wait(AUTO_IDLE_S)
                     continue
                 self._wait(AUTO_STEADY_S)
                 look = self.look(quiet=True)
                 if self._last_plan is None or not _same_place(first, look):
                     continue  # still rolling, or a hand in the zone
-                place = (look.arm, round(look.fixed[0] / AUTO_SAME_PLACE_PX), round(look.fixed[1] / AUTO_SAME_PLACE_PX))
+                # Tries are counted where the item lies, not where the jaw went: each holds it another way.
+                middle = np.mean(look.outline, axis=0) if look.outline else look.fixed
+                place = (round(middle[0] / AUTO_SAME_PLACE_PX), round(middle[1] / AUTO_SAME_PLACE_PX))
                 if failures.get(place, 0) >= PICK_TRIES:
                     message = "could not take the item there: take it away or move it"
                     if message != said:
@@ -510,6 +519,8 @@ class Cell:
                     failures.clear()
                 else:
                     failures[place] = failures.get(place, 0) + 1
+                    if failures[place] < PICK_TRIES:
+                        self.log(f"still in the zone: try {failures[place] + 1} of {PICK_TRIES} holds it another way")
             except KeyboardInterrupt:
                 raise
             except Exception as error:  # non-stop: say it, and carry on

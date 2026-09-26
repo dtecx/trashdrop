@@ -3,9 +3,10 @@
 The camera sees the table at 1 mm per pixel, the calibration sheet's frame in
 its middle; the arms stand where the venue's did. What is pinned down: a look
 finds the item, asks what it is and gives it to the arm on its side; an unsure
-item goes nowhere; a pick counts only once the zone is empty again; auto mode
-keeps sorting items as they are tossed in, until STOP; and the page's JSON
-and its settings stay sane.
+item goes nowhere; a pick counts only once the zone is empty again, and a try
+that lost the item is followed by one holding it another way; auto mode keeps
+sorting items as they are tossed in, until STOP; and the page's JSON and its
+settings stay sane.
 """
 
 from __future__ import annotations
@@ -87,6 +88,21 @@ class CatchingArm(SimArm):
         return super().move(targets, speed=speed)
 
 
+class SlippingArm(CatchingArm):
+    """Loses the item the first time it carries it: it is still in the zone after that try."""
+
+    def __init__(self, name: str, scene: Scene) -> None:
+        super().__init__(name, scene)
+        self.slips = 1
+
+    def move(self, targets, *, speed=None):
+        if targets.get("gripper") == RELEASE_OPEN and self.slips:
+            self.slips -= 1
+            self.moves.append(dict(targets))
+            return SimArm.move(self, targets, speed=speed)
+        return super().move(targets, speed=speed)
+
+
 def make_cell(probabilities=None) -> tuple[Cell, Scene]:
     scene = Scene()
     rig = Rig()
@@ -140,6 +156,21 @@ class CellTests(unittest.TestCase):
         self.assertTrue(self.cell.arms["right"].moves, "paper: the right arm")
         self.assertFalse(self.cell.arms["left"].moves)
         self.assertTrue(any("done" in line for line in self.cell.log_lines))
+
+    def test_a_try_that_lost_the_item_is_followed_by_one_holding_it_another_way(self) -> None:
+        self.cell, scene = make_cell()
+        self.cell.arms["left"] = SlippingArm("left", scene)
+        scene.frame = with_item()
+        tried, go = [], self.cell._go
+        self.cell._go = lambda plan: (tried.append(plan), go(plan))[-1]
+        self.assertTrue(self.cell.pick())
+        self.assertEqual(len(tried), 2)
+        first, second = tried
+        moved = np.hypot(second.grasp_sheet[0] - first.grasp_sheet[0], second.grasp_sheet[1] - first.grasp_sheet[1])
+        turned = np.degrees(np.arccos(min(1.0, abs(float(np.dot(second.across_sheet, first.across_sheet))))))
+        self.assertTrue(moved >= 1.8 or turned >= 25.0, (moved, turned))
+        self.assertTrue(any("another way" in line for line in self.cell.log_lines))
+        self.assertEqual(self.cell._failed, [], "forgotten once the zone is empty")
 
     def test_auto_sorts_items_as_they_are_tossed_in_until_stop(self) -> None:
         self.cell, scene = make_cell()

@@ -68,6 +68,19 @@ MIN_CONTACT = 0.012
 # venue a cigarette pack lying 10 degrees askew was cut at its corner into
 # slices each wide enough, but staggered, and the jaw closed along its edge.
 PARALLEL_SIDES = 0.7
+# Preferred: both sides of the item running along the fingers, each within
+# this angle -- a straight line fitted through its edge under the jaw, so a
+# ragged mask does not count as a slant. The venue's items slipped out where
+# the planner took a spot that widened under the jaw: the fingers then press
+# on a slanted face only. The best such grasp is taken unless it is more than
+# PARALLEL_WIDER wider than the best of all, since width matters more (see
+# PARALLEL_GRASP_WIDTH); without one, the best grasp is taken as before.
+PARALLEL_TILT_DEG = 6.0
+PARALLEL_WIDER = 0.005
+# A grasp that already failed is not planned again: a candidate this close to
+# one, turned this little from it, is passed over while any other will do.
+AVOID_M = 0.02
+AVOID_DEG = 25.0
 MIN_PIXELS = 30
 
 
@@ -122,12 +135,18 @@ def plan_grasp(
     *,
     max_width_m: float = MAX_GRASP_WIDTH,
     fixed_side: tuple[float, float] | None = None,
+    avoid=(),
 ) -> GraspPlan:
     """Choose where to pinch the single item in ``mask``.
 
     ``fixed_side`` is a direction in pixels, (x, y). The fixed finger goes on
     that side of the item -- toward the arm's base, say, or away from a bin
     wall. By default it goes on the upper side of the image.
+
+    ``avoid`` holds grasps that already failed, as ((x, y) centre, (x, y)
+    closing direction) in the mask's pixels: the next best grasp is planned
+    instead -- another place, or the jaw turned -- and one of them again only
+    if nothing else will do.
     """
 
     raw = np.asarray(mask) != 0
@@ -152,7 +171,7 @@ def plan_grasp(
     # The long axis finds a bottle's neck; the other directions find what
     # sticks out sideways, like the cap of a crushed bottle.
     angles = np.arange(ORIENTATIONS) * np.pi / ORIENTATIONS
-    candidates: list[tuple[float, np.ndarray, np.ndarray, float]] = []
+    windows = []
     narrowest = np.inf
     for along in [long_axis] + [np.array([np.cos(a), np.sin(a)]) for a in angles]:
         across = _perpendicular(along, side)
@@ -160,35 +179,69 @@ def plan_grasp(
         # At least MIN_CONTACT, and never under four slices: a coarse mask's
         # ragged pixel must not pass for something to hold.
         contact = min(max(4, int(np.ceil(MIN_CONTACT / m_per_px))), len(low))
-        lo, hi, shared, holding, holes, middles = _windows(low, high, seen, span, contact)
-        extent = hi - lo + 1.0
-        widths_m = extent * m_per_px
+        lo, hi, shared, tilt, holding, holes, middles = _windows(low, high, seen, span, contact)
         whole = holding == len(low)  # all of it between the fingers, like a coin
-        square = (holding >= contact) & ~holes & (whole | (shared + 1.0 >= PARALLEL_SIDES * extent))
-        narrowest = min(narrowest, float(np.min(np.where(square, widths_m, np.inf))))
-        usable = square & (widths_m <= max_width_m)
-        offset = np.abs(first + middles) / max(len(low) / 2, 1.0)
-        wedge = np.maximum(widths_m - PARALLEL_GRASP_WIDTH, 0.0) / PARALLEL_GRASP_WIDTH
-        for pick in np.flatnonzero(usable):
-            score = float(wedge[pick] + offset_weight * offset[pick])
-            candidates.append((score, along, across, float(first + middles[pick])))
+        windows.append((along, across, first, len(low), lo, hi, shared, tilt, holding >= contact, holes, whole,
+                        middles))
 
-    candidates.sort(key=lambda candidate: candidate[0])
-    for _, along, across, middle in candidates[:MAX_CHECKS]:
+    avoided = [(np.asarray(centre, float), np.asarray(direction, float) / max(np.linalg.norm(direction), 1e-9))
+               for centre, direction in avoid]
+
+    def check(along, across, middle: float) -> GraspPlan | None:
+        """The candidate against the full mask; None if too wide there."""
+
         s = (everything - mean) @ along
         under = (s >= middle - span / 2) & (s < middle + span / 2)
         t = (everything[under] - mean) @ across
         width = float((t.max() - t.min() + 1.0) * m_per_px)
         if width > max_width_m:
-            continue
+            return None
         point = mean + along * middle + across * (t.max() + t.min()) / 2
-        return GraspPlan(
-            "pinch",
-            (float(point[0]), float(point[1])),
-            (float(across[0]), float(across[1])),
-            width,
-            f"{width * 1000:.0f} mm under the jaw",
-        )
+        return GraspPlan("pinch", (float(point[0]), float(point[1])), (float(across[0]), float(across[1])),
+                         width, f"{width * 1000:.0f} mm under the jaw")
+
+    def search(dodge: bool) -> GraspPlan | None:
+        nonlocal narrowest
+        candidates: list[tuple[float, bool, np.ndarray, np.ndarray, float]] = []
+        for along, across, first, slices, lo, hi, shared, tilt, holds, holes, whole, middles in windows:
+            extent = hi - lo + 1.0
+            widths_m = extent * m_per_px
+            square = holds & ~holes & (whole | (shared + 1.0 >= PARALLEL_SIDES * extent))
+            narrowest = min(narrowest, float(np.min(np.where(square, widths_m, np.inf))))
+            usable = square & (widths_m <= max_width_m)
+            if dodge:  # grasps that already slipped: near one of them and turned little from it
+                picks = np.flatnonzero(usable)
+                points = mean + np.outer(first + middles[picks], along) + np.outer((lo[picks] + hi[picks]) / 2, across)
+                for centre, direction in avoided:
+                    if abs(float(across @ direction)) > np.cos(np.radians(AVOID_DEG)):
+                        usable[picks[np.linalg.norm(points - centre, axis=1) * m_per_px < AVOID_M]] = False
+            parallel = whole | (tilt <= PARALLEL_TILT_DEG)
+            offset = np.abs(first + middles) / max(slices / 2, 1.0)
+            wedge = np.maximum(widths_m - PARALLEL_GRASP_WIDTH, 0.0) / PARALLEL_GRASP_WIDTH
+            for pick in np.flatnonzero(usable):
+                score = float(wedge[pick] + offset_weight * offset[pick])
+                candidates.append((score, bool(parallel[pick]), along, across, float(first + middles[pick])))
+        candidates.sort(key=lambda candidate: candidate[0])
+        best = None
+        for _, parallel, along, across, middle in candidates[:MAX_CHECKS]:
+            best = check(along, across, middle)
+            if best is not None:
+                if parallel:
+                    return best
+                break
+        if best is None:
+            return None
+        for _, parallel, along, across, middle in [c for c in candidates if c[1]][:MAX_CHECKS]:
+            plan = check(along, across, middle)
+            if plan is not None and plan.width_m <= best.width_m + PARALLEL_WIDER:
+                return plan
+        return GraspPlan(best.mode, best.center, best.across, best.width_m,
+                         best.reason + ", sides not quite parallel")
+
+    for dodge in ([True, False] if avoided else [False]):  # the failed grasps again only if nothing else will do
+        plan = search(dodge)
+        if plan is not None:
+            return plan
 
     # Too wide everywhere: offer the middle of the long edge on the fixed side.
     across = _perpendicular(long_axis, side)
@@ -269,9 +322,10 @@ def _windows(low, high, seen, span: int, contact: int):
 
     Returns, per window: the extent of the item under the fingers (low,
     high), the band across that most of its slices share (a quarter of them
-    left out, for a ragged mask), how many slices of item the fingers hold,
-    whether a slice inside the item is missing, and the window's middle in
-    slice coordinates.
+    left out, for a ragged mask), how far the steeper of its two sides turns
+    away from the fingers (degrees, a line fitted through each), how many
+    slices of item the fingers hold, whether a slice inside the item is
+    missing, and the window's middle in slice coordinates.
 
     The fingers are straight, so a candidate's width is the full extent of
     every slice they cover. A window with a missing slice is refused: an
@@ -294,6 +348,14 @@ def _windows(low, high, seen, span: int, contact: int):
     lows = -np.sort(-view(np.where(seen_p, low_p, -np.inf), span), axis=1)
     highs = np.sort(view(np.where(seen_p, high_p, np.inf), span), axis=1)
     shared = highs[rows, quarter] - lows[rows, quarter]
+    # Least-squares slope of each edge over the slices of item under the jaw.
+    weight = view(seen_p.astype(np.float64), span)
+    x = np.arange(span, dtype=np.float64)
+    n, sx, sxx = weight.sum(axis=1), weight @ x, weight @ (x * x)
+    below = np.maximum(n * sxx - sx * sx, 1e-9)
+    slopes = [np.abs(n * (edge @ x) - sx * edge.sum(axis=1)) / below
+              for edge in (view(np.where(seen_p, low_p, 0.0), span), view(np.where(seen_p, high_p, 0.0), span))]
+    tilt = np.degrees(np.arctan(np.maximum(*slopes)))
     middles = rows - pad + span / 2
-    return (view(low_p, span).min(axis=1), view(high_p, span).max(axis=1), shared,
+    return (view(low_p, span).min(axis=1), view(high_p, span).max(axis=1), shared, tilt,
             holding, view(hole_p, span).any(axis=1), middles)

@@ -2,8 +2,10 @@
 
 Masks are rasterised from an item's width profile, so the test needs numpy
 only. What it pins down are the decisions the real jaw depends on: a bottle
-is taken by the neck, a can across the middle, a sheet only from an edge, and
-the fixed finger never comes down on top of the item.
+is taken by the neck, a can across the middle, a sheet only from an edge, the
+fixed finger never comes down on top of the item, sides that run along the
+fingers win over a slant, and a grasp that failed is not planned again while
+another will do.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ import unittest
 
 import numpy as np
 
-from trashdrop.perception.grasp import plan_grasp
+from trashdrop.perception.grasp import AVOID_DEG, AVOID_M, plan_grasp
 from trashdrop.station import FIXED_JAW_CLEARANCE, JAW_SPAN, MAX_GRASP_WIDTH
 
 M_PER_PX = 0.001
@@ -22,6 +24,9 @@ SIZE = 400
 BOTTLE = ((0.0, 0.065), (0.16, 0.065), (0.19, 0.027), (0.205, 0.027), (0.2051, 0.030), (0.22, 0.030))
 CAN = ((0.0, 0.066), (0.168, 0.066))
 SHEET = ((0.0, 0.10), (0.15, 0.10))
+STICK = ((0.0, 0.03), (0.15, 0.03))
+# A straight 28 mm part, then a cone flaring to 60 mm: the item's middle is on the slant.
+FLARED = ((0.0, 0.028), (0.03, 0.028), (0.09, 0.060))
 
 
 def rasterise(profile, angle_deg: float = 0.0, gap: tuple[float, float] | None = None):
@@ -190,6 +195,40 @@ class GraspPlanTests(unittest.TestCase):
         self.assertGreater(abs(plan.across[0]), 0.95, "across the pack's short side")
         ys, xs = np.nonzero(mask)
         self.assertLess(abs(plan.center[1] - ys.mean()), 3.0, "through its middle, not at an end")
+
+    def test_where_the_sides_run_along_the_fingers_beats_a_slant(self) -> None:
+        # Across the flare the fingers press on its slanted faces only, and a
+        # squeeze pushes the item out; the straight part lies along them.
+        for angle in (0.0, 30.0, 115.0):
+            with self.subTest(angle=angle):
+                mask, to_item = rasterise(FLARED, angle)
+                plan = plan_grasp(mask, M_PER_PX)
+                self.assertEqual(plan.mode, "pinch")
+                s, _ = to_item(*plan.center)
+                self.assertLess(s, 0.032, "on the straight part, not across the flare")
+                self.assertLess(plan.width_m, 0.035)
+                self.assertNotIn("not quite parallel", plan.reason)
+
+    def test_a_grasp_that_failed_is_not_planned_again(self) -> None:
+        mask, _ = rasterise(STICK, 20.0)
+        first = plan_grasp(mask, M_PER_PX)
+        tried = [(first.center, first.across)]
+        for _ in range(2):
+            plan = plan_grasp(mask, M_PER_PX, avoid=tried)
+            self.assertEqual(plan.mode, "pinch")
+            for centre, across in tried:
+                moved = np.hypot(plan.center[0] - centre[0], plan.center[1] - centre[1]) * M_PER_PX
+                turned = np.degrees(np.arccos(min(1.0, abs(float(np.dot(plan.across, across))))))
+                self.assertTrue(moved >= AVOID_M or turned >= AVOID_DEG, (moved, turned))
+            tried.append((plan.center, plan.across))
+
+    def test_with_nothing_else_left_a_failed_grasp_is_tried_again(self) -> None:
+        yy, xx = np.mgrid[0:SIZE, 0:SIZE]
+        cap = np.hypot(xx - 200, yy - 200) <= 15  # a bottle cap lying flat: every grasp is near its middle
+        best = plan_grasp(cap, M_PER_PX)
+        every_way = [((200.0, 200.0), (np.cos(a), np.sin(a))) for a in np.radians(np.arange(0, 180, 20))]
+        again = plan_grasp(cap, M_PER_PX, avoid=every_way)
+        self.assertEqual((again.mode, again.center, again.across), (best.mode, best.center, best.across))
 
     def test_a_narrower_limit_turns_a_can_into_an_edge_plan(self) -> None:
         mask, _ = rasterise(CAN)

@@ -74,6 +74,10 @@ class PickPlan:
     table_cm: float | None = None  # the table's height under the target, in the arm's frame
     tcp_above_table_cm: float = GRASP_HEIGHT_CM
     distances_cm: dict[str, float] = field(default_factory=dict)  # item to each arm's base
+    # The grasp on the table, so a failed one can be passed over next time:
+    # its middle (cm) and the way the jaw closes (a unit vector).
+    grasp_sheet: tuple[float, float] | None = None
+    across_sheet: tuple[float, float] | None = None
 
     @property
     def fingertip_above_table_cm(self) -> float:
@@ -335,14 +339,15 @@ def draw_detection(frame, detection: Detection, valid_small) -> np.ndarray:
 
 def plan_pick(item_small, scale: float, homography, placements: dict[str, Placement], kinematics,
               limits: dict[str, dict[str, tuple[float, float]]], prefer: str | None = None,
-              fingertips_cm: float = FINGERTIPS_CM):
+              fingertips_cm: float = FINGERTIPS_CM, avoid=()):
     """(PickPlan, what the arms passed over said), or (None, why no arm can).
 
     The arm whose base is nearest the item plans first, the other only if it
     cannot; ``prefer`` names an arm to try first regardless. ``kinematics`` is
     one Kinematics for every arm, or one per arm by name: each arm's wrist
     roll has its own zero. ``fingertips_cm`` is how far above the table the
-    fixed fingertip comes down.
+    fixed fingertip comes down. ``avoid`` holds grasps that failed on this
+    item, as (grasp_sheet, across_sheet) of their plans: another is planned.
     """
 
     tcp_cm = max(fingertips_cm, LOWEST_FINGERTIPS_CM) + FINGERTIP_BEYOND_TCP * 100
@@ -354,6 +359,10 @@ def plan_pick(item_small, scale: float, homography, placements: dict[str, Placem
 
     here = sheet_points(homography, np.array([u0]), np.array([v0]))[0]
     distances = {name: float(np.linalg.norm(base_on_sheet(placement) - here)) for name, placement in placements.items()}
+    avoid_px = []  # the failed grasps, in the mask's pixels
+    for middle_cm, across_cm in avoid:
+        middle_px = np.array(homography.world_to_pixel(middle_cm[0] / 100, middle_cm[1] / 100))
+        avoid_px.append((middle_px / scale, sheet_to_pixel_direction(homography, middle_px, across_cm)))
     reasons = []
     order = sorted(placements, key=lambda name: (name != prefer, distances[name]))
     for name in order:
@@ -365,7 +374,7 @@ def plan_pick(item_small, scale: float, homography, placements: dict[str, Placem
         towards_base = sheet_to_pixel_direction(homography, centre, base - sheet_points(homography, np.array([u0]), np.array([v0]))[0])
         grasp = None
         for side_px in (towards_base, -towards_base):
-            grasp = plan_grasp(item_small, m_per_px_small, fixed_side=tuple(side_px))
+            grasp = plan_grasp(item_small, m_per_px_small, fixed_side=tuple(side_px), avoid=avoid_px)
             if grasp.mode != "pinch":
                 break
             fixed_px = np.array(grasp.fixed_finger(m_per_px_small)) * scale
@@ -381,10 +390,14 @@ def plan_pick(item_small, scale: float, homography, placements: dict[str, Placem
             found = _approach(arm_kinematics, target, yaw, limits.get(name))
             if found is not None:
                 above, down, lean = found
+                middle = np.array(grasp.center) * scale
+                middle_sheet = sheet_points(homography, np.array([middle[0]]), np.array([middle[1]]))[0]
+                across_sheet = direction_sheet / max(float(np.linalg.norm(direction_sheet)), 1e-9)
                 return PickPlan(name, above.degrees, down.degrees, gripper_percent_for(grasp.opening_m), grasp,
                                 (float(x), float(y)), (float(fixed_px[0]), float(fixed_px[1])), lean,
                                 (float(moving_px[0]), float(moving_px[1])), table_cm, tcp_cm,
-                                distances), "; ".join(reasons) or None
+                                distances, (float(middle_sheet[0]), float(middle_sheet[1])),
+                                (float(across_sheet[0]), float(across_sheet[1]))), "; ".join(reasons) or None
         if grasp.mode != "pinch":
             reasons.append(f"{name}: {grasp.reason}")
         else:

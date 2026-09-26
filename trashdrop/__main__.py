@@ -859,7 +859,7 @@ def _cmd_pick(args: argparse.Namespace) -> int:
                          descent_speed=rig.arms[name].descent_speed)
             # Caught or not, the overhead camera says: the arm is back in neutral,
             # as it was when the empty zone was photographed.
-            tries = 1
+            tries, failed = 1, []
             while not args.dry_run:
                 after_frame = grab()
                 after = find_item(after_frame, background, valid)
@@ -873,13 +873,17 @@ def _cmd_pick(args: argparse.Namespace) -> int:
                           "leave it for a person (out/pick_after.jpg)")
                     break
                 item, item_scale = refine_item(after_frame, background, after, valid)
+                if plan.grasp_sheet is not None:
+                    failed.append((plan.grasp_sheet, plan.across_sheet))  # the next try holds it another way
                 plan, reason = plan_pick(item, item_scale, homography, {name: placements[name]}, kinematics, limits,
-                                         fingertips_cm=FINGERTIPS_CM if args.fingertips is None else args.fingertips)
+                                         fingertips_cm=FINGERTIPS_CM if args.fingertips is None else args.fingertips,
+                                         avoid=failed)
                 if plan is None:
                     print(f"  it is still in the zone, and the {name} arm cannot take it now: {reason}")
                     break
                 tries += 1
-                print(f"  it is still in the zone -- it slipped out, or was never caught. Try {tries} of {PICK_TRIES}")
+                print(f"  it is still in the zone -- it slipped out, or was never caught. Try {tries} of {PICK_TRIES}, "
+                      "another way to hold it")
                 execute_pick(arms[name], plan, poses[name]["neutral"], kinematics=kinematics[name],
                              descent_speed=rig.arms[name].descent_speed)
     except KeyboardInterrupt:
