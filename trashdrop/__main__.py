@@ -696,7 +696,17 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     from .perception.calibration import HomographyCalibration
     from .placement import Placement
     from .rig import load_rig
-    from .sorter import draw_detection, draw_plan, draw_zone, execute_pick, find_item, plan_pick, reach_mask, zone_mask
+    from .sorter import (
+        draw_detection,
+        draw_plan,
+        draw_zone,
+        execute_pick,
+        find_item,
+        plan_pick,
+        reach_mask,
+        refine_item,
+        zone_mask,
+    )
     from .station import FLAT_PINCH_WIDTH, repository_root
 
     rig = load_rig()
@@ -769,8 +779,9 @@ def _cmd_pick(args: argparse.Namespace) -> int:
             if detection.item is None:
                 print(f"  {detection.reason}  (out/pick_seen.jpg shows what changed)")
                 continue
-            plan, reason = plan_pick(detection.item, detection.scale, homography, placements, kinematics, limits)
-            cv2.imwrite(str(args.out / "pick_plan.jpg"), draw_plan(frame, detection.item, detection.scale, plan))
+            item, item_scale = refine_item(frame, background, detection, valid)
+            plan, reason = plan_pick(item, item_scale, homography, placements, kinematics, limits)
+            cv2.imwrite(str(args.out / "pick_plan.jpg"), draw_plan(frame, item, item_scale, plan))
             if plan is None:
                 print(f"  cannot pick it: {reason}")
                 continue

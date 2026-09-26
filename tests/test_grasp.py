@@ -164,6 +164,21 @@ class GraspPlanTests(unittest.TestCase):
         for finger in (plan.fixed_finger(M_PER_PX), plan.moving_finger(M_PER_PX)):
             self.assertGreater(distance_to_item(mask, finger), FIXED_JAW_CLEARANCE / 2)
 
+    def test_a_ragged_corner_of_a_box_is_not_a_cap(self) -> None:
+        # The venue's cigarette pack, 10 degrees askew, as the detector's 4 mm
+        # pixels saw it. A two-pixel step on its left edge once read as a cap
+        # to hang the jaw on, and the jaw closed along the pack's edge.
+        rows = [
+            ".........#######...", ".################..", *[".#################."] * 7,
+            *["...###############."] * 5, *["..################."] * 7, "...##############..",
+        ]
+        mask = np.array([[c == "#" for c in row] for row in rows])
+        plan = plan_grasp(mask, 0.0039, fixed_side=(-0.61, 0.79))
+        self.assertEqual(plan.mode, "pinch")
+        self.assertGreater(abs(plan.across[0]), 0.95, "across the pack's short side")
+        ys, xs = np.nonzero(mask)
+        self.assertLess(abs(plan.center[1] - ys.mean()), 3.0, "through its middle, not at an end")
+
     def test_a_narrower_limit_turns_a_can_into_an_edge_plan(self) -> None:
         mask, _ = rasterise(CAN)
         self.assertEqual(plan_grasp(mask, M_PER_PX).mode, "pinch")

@@ -56,10 +56,13 @@ MAX_CHECKS = 200
 # The jaw may hang past the end of an item -- fingertips on the tip of a cap
 # are fine -- as long as this much of the item's length is between the pads.
 MIN_CONTACT = 0.012
-# Under the fingers, most slices of the item (all but the thinnest quarter)
-# must be at least this share of the jaw opening. Otherwise the fingers meet
-# slanted faces -- the corner of a box, the tip of a flap -- and squeezing
-# pushes the item out of the jaw.
+# Under the fingers, most slices of the item (all but a quarter) must share a
+# band across at least this share of the jaw opening: both pads then press on
+# faces that run along them. Otherwise the fingers meet slanted faces -- the
+# corner of a box, the tip of a flap -- and squeezing pushes the item out of
+# the jaw. It is the band the slices share, not how wide each one is: at the
+# venue a cigarette pack lying 10 degrees askew was cut at its corner into
+# slices each wide enough, but staggered, and the jaw closed along its edge.
 PARALLEL_SIDES = 0.7
 MIN_PIXELS = 30
 
@@ -148,12 +151,14 @@ def plan_grasp(
     for along in [long_axis] + [np.array([np.cos(a), np.sin(a)]) for a in angles]:
         across = _perpendicular(along, side)
         first, low, high, seen = _slices(points, mean, along, across)
-        contact = min(max(1, round(MIN_CONTACT / m_per_px)), len(low))
-        lo, hi, typical, holding, holes, middles = _windows(low, high, seen, span, contact)
+        # At least MIN_CONTACT, and never under four slices: a coarse mask's
+        # ragged pixel must not pass for something to hold.
+        contact = min(max(4, int(np.ceil(MIN_CONTACT / m_per_px))), len(low))
+        lo, hi, shared, holding, holes, middles = _windows(low, high, seen, span, contact)
         extent = hi - lo + 1.0
         widths_m = extent * m_per_px
         whole = holding == len(low)  # all of it between the fingers, like a coin
-        square = (holding >= contact) & ~holes & (whole | (typical + 1.0 >= PARALLEL_SIDES * extent))
+        square = (holding >= contact) & ~holes & (whole | (shared + 1.0 >= PARALLEL_SIDES * extent))
         narrowest = min(narrowest, float(np.min(np.where(square, widths_m, np.inf))))
         usable = square & (widths_m <= max_width_m)
         offset = np.abs(first + middles) / max(len(low) / 2, 1.0)
@@ -238,9 +243,10 @@ def _windows(low, high, seen, span: int, contact: int):
     """Every place the jaw could sit along one direction.
 
     Returns, per window: the extent of the item under the fingers (low,
-    high), a typical slice width there (the thinnest quarter excluded), how
-    many slices of item the fingers hold, whether a slice inside the item is
-    missing, and the window's middle in slice coordinates.
+    high), the band across that most of its slices share (a quarter of them
+    left out, for a ragged mask), how many slices of item the fingers hold,
+    whether a slice inside the item is missing, and the window's middle in
+    slice coordinates.
 
     The fingers are straight, so a candidate's width is the full extent of
     every slice they cover. A window with a missing slice is refused: an
@@ -257,9 +263,12 @@ def _windows(low, high, seen, span: int, contact: int):
 
     view = np.lib.stride_tricks.sliding_window_view
     holding = view(seen_p, span).sum(axis=1)
-    widths = np.sort(view(np.where(seen_p, high_p - low_p, np.inf), span), axis=1)
+    rows = np.arange(len(holding))
     quarter = (np.maximum(holding - 1, 0) // 4).astype(np.int64)
-    typical = widths[np.arange(len(widths)), quarter]
-    middles = np.arange(len(widths)) - pad + span / 2
-    return (view(low_p, span).min(axis=1), view(high_p, span).max(axis=1), typical,
+    # The quarter-th highest low edge and the quarter-th lowest high edge.
+    lows = -np.sort(-view(np.where(seen_p, low_p, -np.inf), span), axis=1)
+    highs = np.sort(view(np.where(seen_p, high_p, np.inf), span), axis=1)
+    shared = highs[rows, quarter] - lows[rows, quarter]
+    middles = rows - pad + span / 2
+    return (view(low_p, span).min(axis=1), view(high_p, span).max(axis=1), shared,
             holding, view(hole_p, span).any(axis=1), middles)

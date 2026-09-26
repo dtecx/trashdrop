@@ -176,6 +176,61 @@ def find_item(frame, background, valid_small) -> Detection:
     return Detection(filled > 0, scale, "ok", mask)
 
 
+# The detector works at ANALYSIS_WIDTH: about 4 mm per pixel over the zone.
+# That finds an item, but a ragged pixel on a box's edge is then a 4 mm step,
+# and at the venue one read to the grasp planner as a bottle cap sticking out
+# of a cigarette pack. Around the item its outline is found again at this
+# width, about 1.4 mm per pixel, before a grasp is planned on it.
+REFINE_WIDTH = 960
+REFINE_MARGIN_PX = 8  # analysis pixels of table kept around the item, for the exposure fit
+
+
+def refine_item(frame, background, detection: Detection, valid_small) -> tuple[np.ndarray, float]:
+    """(the item's mask at REFINE_WIDTH, full-resolution pixels per pixel of it).
+
+    Falls back to the detector's own mask, scaled up, when the finer look
+    cannot be trusted: the light changed, or it finds a very different item.
+    """
+
+    import cv2
+
+    from .dataset.autolabel import _foreground
+
+    height, width = frame.shape[:2]
+    scale = width / REFINE_WIDTH
+    size = (REFINE_WIDTH, round(height / scale))
+    coarse = cv2.resize(detection.item.astype(np.uint8), size, interpolation=cv2.INTER_NEAREST) > 0
+    ys, xs = np.nonzero(detection.item)
+    ratio = detection.scale / scale  # fine pixels per analysis pixel
+    x0 = max(int((xs.min() - REFINE_MARGIN_PX) * ratio), 0)
+    x1 = min(int((xs.max() + 1 + REFINE_MARGIN_PX) * ratio), size[0])
+    y0 = max(int((ys.min() - REFINE_MARGIN_PX) * ratio), 0)
+    y1 = min(int((ys.max() + 1 + REFINE_MARGIN_PX) * ratio), size[1])
+
+    live = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)[y0:y1, x0:x1]
+    reference = cv2.resize(background, size, interpolation=cv2.INTER_AREA)[y0:y1, x0:x1]
+    valid = cv2.resize(valid_small, size, interpolation=cv2.INTER_NEAREST)[y0:y1, x0:x1]
+    mask, fit = _foreground(live, reference, 28, valid)
+    if not fit.trusted:
+        return coarse, scale
+    # Only what belongs to the item the detector found, a little past its outline.
+    near = cv2.dilate(coarse[y0:y1, x0:x1].astype(np.uint8), np.ones((2 * int(ratio) + 1,) * 2, np.uint8)) > 0
+    item = ((mask > 0) & near).astype(np.uint8) * 255
+    item = cv2.morphologyEx(item, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=2)
+    contours, _ = cv2.findContours(item, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return coarse, scale
+    filled = np.zeros_like(item)
+    cv2.drawContours(filled, [max(contours, key=cv2.contourArea)], -1, 255, -1)
+    found = (filled > 0).sum()
+    expected = coarse[y0:y1, x0:x1].sum()
+    if not 0.6 * expected <= found <= 1.4 * expected:
+        return coarse, scale  # fragments of clear plastic, or something else: the detector knows better
+    fine = np.zeros(coarse.shape, bool)
+    fine[y0:y1, x0:x1] = filled > 0
+    return fine, scale
+
+
 def draw_zone(frame, zone_small, searched_small) -> np.ndarray:
     """The pick zone outlined in green; its part no arm can reach shaded."""
 

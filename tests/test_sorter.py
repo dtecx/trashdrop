@@ -25,6 +25,7 @@ from trashdrop.sorter import (  # noqa: E402
     draw_detection,
     draw_zone,
     find_item,
+    refine_item,
     zone_mask,
     base_on_sheet,
     draw_plan,
@@ -167,6 +168,29 @@ class DetectionTests(unittest.TestCase):
         self.assertIsNotNone(detection.item, detection.reason)
         self.assertEqual(draw_detection(frame, detection, self.zone).shape, frame.shape)
         self.assertEqual(draw_zone(frame, self.zone, self.zone).shape, frame.shape)
+
+    def test_the_item_is_outlined_again_finer_for_the_grasp(self) -> None:
+        # The venue's cigarette pack: 5.5 x 8.5 cm lying 10 degrees askew.
+        from trashdrop.perception.grasp import plan_grasp
+
+        empty = self.table()
+        frame = empty.copy()
+        cv2.fillPoly(frame, [cv2.boxPoints(((960.0, 540.0), (55.0, 85.0), 10.0)).astype(np.int32)], (70, 90, 60))
+        detection = find_item(frame, empty, self.zone)
+        self.assertIsNotNone(detection.item, detection.reason)
+        item, scale = refine_item(frame, empty, detection, self.zone)
+        self.assertEqual(scale, 2.0)
+        plan = plan_grasp(item, scale * 0.001, fixed_side=(0.0, 1.0))
+        coarse = plan_grasp(detection.item, detection.scale * 0.001, fixed_side=(0.0, 1.0))
+        self.assertEqual(plan.mode, "pinch")
+        # The difference image blurs a dark item a little wider than it is:
+        # safe, the jaw opens wider. Never narrower, and much closer than
+        # the detector's own 4 mm pixels (73 mm here).
+        self.assertGreaterEqual(plan.width_m, 0.053)
+        self.assertLess(plan.width_m, 0.066)
+        self.assertLess(plan.width_m, coarse.width_m - 0.005)
+        self.assertGreater(abs(np.dot(plan.across, (np.cos(np.radians(10)), np.sin(np.radians(10))))), 0.97)
+        self.assertLess(np.hypot(*(np.array(plan.center) * scale - (960, 540))), 15.0, "through the middle")
 
     def test_an_item_already_there_in_the_empty_photo_is_explained(self) -> None:
         with_item = self.table()
