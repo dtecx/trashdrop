@@ -53,22 +53,24 @@ to send the Lens to the glasses (see "Lens Studio facts").
 The VR-teleoperation pattern (grip button as a clutch; as the SO-101 Quest
 kits and OPEN TEACH do it), with pinches for buttons.
 
-- **Thumb + index pinch = grab.** Each pinch does *one* thing, whichever the
-  hand does first: the pinch point (thumb/index midpoint, 1-euro filtered)
-  moves more than `DRAG_CM` = 1.5 cm -> **drag**: the jaw goes to where it
-  was at the pinch plus `--scale` x the hand's travel (forward/right/up from
-  the gaze at the pinch, level); the wrist does not turn. The hand twists
-  like a screwdriver more than `TWIST_DEG` = 10 deg -> **twist**: the jaw
-  turns about where it points, the first 10 deg aside, and does not move.
-  A twist about the forearm swings the pinch point ~9 cm round it (12 deg is
-  already 1.9 cm), so a pinch taken for a drag becomes a twist after all
-  past `LATE_TWIST` (25 deg while it has gone < 4 cm), and the jaw goes back
-  to where the pinch found it. Turning into the wrist's limit shows `turning:
-  at the wrist's limit`.
-  Clockwise as the wearer sees the back of the hand = clockwise from above
-  (as the overhead camera shows the jaw); `roll_sense()` derives the joint's
-  sign from the model (on these arms +wrist_roll turns the downward jaw
-  anticlockwise from above). Release: the arm holds. Re-pinch to go on.
+- **Thumb + index pinch = drag.** The jaw goes to where it was at the pinch
+  plus `--scale` x the pinch point's travel (thumb/index midpoint, 1-euro
+  filtered; forward/right/up from the gaze at the pinch, level). **The wrist
+  roll never changes in a drag**, however the hand turns.
+- **Thumb + middle touch = turn** (since 2026-09-27 ~09:10, at the user's
+  request: twisting the hand was the hardest thing to do). Thumb and middle
+  tip < 2.5 cm (part > 3.5), the thumb-index gap > 4 cm, no index pinch,
+  held 0.2 s. Then the hand's sideways travel (the wearer's right, from the
+  gaze at the touch) turns the jaw about where it points, 5 deg/cm, right =
+  clockwise from above (as the overhead camera shows the jaw); the jaw
+  stays where it is. `roll_sense()` derives the joint's sign from the model
+  (on these arms +wrist_roll turns the downward jaw anticlockwise from
+  above). Thumb and middle meet by themselves during index pinches (7 % of
+  pinched frames under 2.5 cm) and in relaxed hands (3 %), hence the index
+  and dwell conditions: on 43 minutes of recordings without the gesture,
+  one false start. Turning into the wrist's limit shows `turning: at the
+  wrist's limit`. The earlier screwdriver-twist rules (`TWIST_DEG`,
+  `LATE_TWIST`, the drag/twist split) are gone; their history is below.
 - **Thumb + pinky touch = toggle the jaw** open (60 %) / closed; once per
   touch (re-arms when > 5.5 cm apart), never while pinching. OPEN TEACH uses
   the same gesture.

@@ -1035,63 +1035,61 @@ class PinchTests(unittest.TestCase):
         _, turned = self.kinematics.pointing({joint: follower.q[joint] for joint in ARM_JOINTS})
         return float(np.degrees(np.arctan2(np.cross(across, turned) @ pointing, across @ turned)))
 
-    def test_a_twist_in_place_turns_the_jaw_the_same_way(self) -> None:
-        follower = self.follower()
-        before = dict(follower.q)
-        self.run_for(follower, pinching(), seconds=0.3)
-        self.run_for(follower, pinching(roll=6.0))
-        self.assertEqual(follower.state, "pinched, jaw closed", "not clear yet what this pinch does")
-        self.assertAlmostEqual(follower.q["wrist_roll"], before["wrist_roll"], delta=0.01)
-        # 30 degrees by the right-hand rule about the fingers: clockwise, seen from behind the hand
-        self.run_for(follower, pinching(roll=30.0))
-        self.assertAlmostEqual(self.jaw_turn(follower, before), 20.0, delta=2.0)  # clockwise from above
-        self.assertEqual(follower.state, "turning, turned 20° cw, jaw closed")
-        self.run_for(follower, pinching(roll=30.0, pinched=False), seconds=0.3)
-        self.run_for(follower, pinching(roll=0.0, pinched=False))
-        self.assertAlmostEqual(self.jaw_turn(follower, before), 20.0, delta=2.0, msg="let go, it stays")
-        self.run_for(follower, pinching(), seconds=0.3)  # pinch again to turn further
-        self.run_for(follower, pinching(roll=-20.0))
-        self.assertAlmostEqual(self.jaw_turn(follower, before), 10.0, delta=2.0)
+    def touching(self, offset=(0.0, 0.0, 0.0), *, index_near: bool = False) -> dict:
+        """Thumb and middle tip together at ``offset`` from REST; the index away, or near as in a relaxed hand."""
 
-    def test_while_turning_the_jaw_stays_put(self) -> None:
-        follower = self.follower()
-        start, before = follower.tcp_cm(), dict(follower.q)
-        self.run_for(follower, pinching(), seconds=0.3)
-        self.run_for(follower, pinching(roll=20.0), seconds=0.5)
-        swung = pinching(roll=40.0)  # the pinch swings round the forearm as the hand turns on
-        swung["thumb"] = list(np.add(swung["thumb"], [4.0, -3.0, 0.0]))
-        swung["index"] = list(np.add(swung["index"], [4.0, -3.0, 0.0]))
-        self.run_for(follower, swung)
-        np.testing.assert_allclose(follower.tcp_cm(), start, atol=0.05)
-        self.assertAlmostEqual(self.jaw_turn(follower, before), 30.0, delta=2.0)
+        hand = pinching(offset, pinched=index_near)
+        hand["middleTip"] = list(np.add(hand["thumb"], [0.6, -0.5, 0.4]))
+        return hand
 
-    def test_while_dragging_the_jaw_does_not_turn(self) -> None:
+    def slide(self, follower, start, end, seconds: float = 1.0, **shape) -> None:
+        steps = round(seconds / 0.02)
+        for step in range(steps):
+            follower.update(self.touching(np.add(start, np.subtract(end, start) * (step + 1) / steps), **shape),
+                            0.02, head=HEAD)
+        self.run_for(follower, self.touching(end, **shape), seconds=1.0)
+
+    def test_the_wrist_roll_stays_while_dragging_and_twisting(self) -> None:
         follower = self.follower()
         before = dict(follower.q)
         self.run_for(follower, pinching(), seconds=0.3)
         self.glide(follower, (0.0, 0.0, 0.0), (0.0, -5.0, 0.0))
-        self.glide(follower, (0.0, -5.0, 0.0), (0.0, -5.0, 0.0), roll=30.0)
+        self.glide(follower, (0.0, -5.0, 0.0), (0.0, -5.0, 0.0), roll=60.0)
         self.assertAlmostEqual(follower.q["wrist_roll"], before["wrist_roll"], delta=0.01)
         self.assertTrue(follower.state.startswith("dragging"))
 
-    def test_a_twist_that_began_as_a_drag_becomes_one_and_the_jaw_goes_back(self) -> None:
+    def test_thumb_and_middle_turn_the_jaw_where_it_is_as_the_hand_goes_sideways(self) -> None:
         follower = self.follower()
         start, before = follower.tcp_cm(), dict(follower.q)
-        self.run_for(follower, pinching(), seconds=0.3)
-        self.glide(follower, (0.0, 0.0, 0.0), (2.5, 0.0, 0.0), seconds=0.3)  # the pinch swings first: a drag
-        self.assertTrue(follower.state.startswith("dragging"))
-        self.run_for(follower, pinching((2.5, 0.0, 0.0), roll=40.0), seconds=1.5)
-        self.assertTrue(follower.state.startswith("turning"), follower.state)
+        self.run_for(follower, self.touching(), seconds=0.3)
+        self.slide(follower, (0.0, 0.0, 0.0), (6.0, 0.0, 0.0))  # 6 cm right
+        self.assertAlmostEqual(self.jaw_turn(follower, before), 30.0, delta=1.5)  # clockwise from above
         np.testing.assert_allclose(follower.tcp_cm(), start, atol=0.3)
-        self.assertAlmostEqual(self.jaw_turn(follower, before), 30.0, delta=2.0)
+        self.assertEqual(follower.state, "turning, turned 30° cw, jaw closed")
+        self.run_for(follower, pinching((6.0, 0.0, 0.0), pinched=False), seconds=0.3)  # fingers apart
+        self.glide(follower, (6.0, 0.0, 0.0), (0.0, 0.0, 0.0), pinched=False)
+        self.assertAlmostEqual(self.jaw_turn(follower, before), 30.0, delta=1.5, msg="apart, it stays")
+        self.assertEqual(follower.state, "free, turned 30° cw, jaw closed")
+        self.run_for(follower, self.touching(), seconds=0.3)
+        self.slide(follower, (0.0, 0.0, 0.0), (-4.0, 0.0, 0.0))  # 4 cm left: anticlockwise, 20 degrees
+        self.assertAlmostEqual(self.jaw_turn(follower, before), 10.0, delta=1.5)
 
-    def test_a_twist_past_the_wrists_limit_says_so(self) -> None:
+    def test_a_brief_touch_or_the_index_near_turns_nothing(self) -> None:
+        follower = self.follower()
+        before = dict(follower.q)
+        for _ in range(5):  # 0.1 s together, then apart: a passing touch
+            follower.update(self.touching(), 0.02, head=HEAD)
+        self.glide(follower, (0.0, 0.0, 0.0), (6.0, 0.0, 0.0), pinched=False)
+        self.slide(follower, (6.0, 0.0, 0.0), (12.0, 0.0, 0.0), index_near=True)  # a relaxed hand
+        self.assertAlmostEqual(follower.q["wrist_roll"], before["wrist_roll"], delta=0.01)
+
+    def test_turning_into_the_wrists_limit_says_so(self) -> None:
         from trashdrop.spectacles import PinchFollower
 
         follower = PinchFollower("left", self.kinematics, self.placement, self.ready,
                                  limits=dict(self.limits, wrist_roll=(self.ready["wrist_roll"] - 20.0, 200.0)))
-        self.run_for(follower, pinching(), seconds=0.3)
-        self.run_for(follower, pinching(roll=60.0))  # clockwise: wrist_roll down, 20 degrees of room
+        self.run_for(follower, self.touching(), seconds=0.3)
+        self.slide(follower, (0.0, 0.0, 0.0), (10.0, 0.0, 0.0))  # 50 degrees clockwise asked, 20 of room
         self.assertEqual(follower.state, "turning: at the wrist's limit, turned 20° cw, jaw closed")
 
     def test_thumb_and_pinky_toggle_the_jaw_once_a_touch(self) -> None:
@@ -1112,7 +1110,7 @@ class PinchTests(unittest.TestCase):
     def test_the_glasses_own_pinch_detection_wins(self) -> None:
         follower = self.follower()
         self.run_for(follower, pinching(pinched=False, told=True), seconds=0.3)
-        self.assertTrue(follower.state.startswith("pinched"))
+        self.assertTrue(follower.state.startswith("dragging"))
         self.run_for(follower, pinching(pinched=True, told=False), seconds=0.3)
         self.assertTrue(follower.state.startswith("free"))
 

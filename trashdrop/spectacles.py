@@ -19,11 +19,13 @@ How a hand drives its arm, --mode pinch (the default; PinchFollower), the
 way VR teleoperation does it with a grip button:
 
 * Thumb and index together grab the jaw: while pinched it goes where it was
-  plus --scale times as far as the pinch point goes, and the wrist roll
-  turns as the hand does. Let go and the arm stays; pinch again anywhere to
-  go on. Thumb and pinky together open a closed jaw or close an open one.
-  No calibration; forward is where the wearer looked when pinching, level.
-  The pinch point is steadied by a 1-euro filter.
+  plus --scale times as far as the pinch point goes; the wrist roll stays.
+  Let go and the arm stays; pinch again anywhere to go on. Thumb and middle
+  together, the index away, turn the jaw where it is as the hand goes
+  sideways (right: clockwise from above). Thumb and pinky together open a
+  closed jaw or close an open one. No calibration; forward is where the
+  wearer looked when pinching, level. The pinch point is steadied by a
+  1-euro filter.
 
 --mode joystick (Follower):
 
@@ -122,16 +124,17 @@ FIST = (1.1, 1.35)  # curl (see curl()): a fist closes below the first, opens ab
 # second it may toggle again (never under 6 cm in that session, fists included).
 GRAB_CM = (2.5, 4.0)
 TOGGLE_CM = (3.5, 5.5)
-# Each pinch does one thing, whichever the hand does first: turning past TWIST_DEG makes it a twist (the
-# jaw turns, and stays put), moving the pinch past DRAG_CM makes it a drag (the jaw moves, and does not
-# turn). A twist about the forearm swings the pinch ~9 cm round it -- 12 degrees is 1.9 cm, past DRAG_CM
-# -- so a twist that began as a drag becomes one after all past LATE_TWIST (degrees, while the pinch has gone
-# less than cm), and the jaw goes back to where the pinch found it. Replayed on three sessions: left-hand
-# twists 8 of 20 came out as twists before (12 degrees, no late switch), 15 of 20 now; drags unchanged (78 of
-# 83 left, 119 of 130 right).
-TWIST_DEG = 10.0
-DRAG_CM = 1.5
-LATE_TWIST = (25.0, 4.0)
+# --mode pinch turns the jaw only with thumb and middle together -- the index away and not pinched, for
+# TURN_DWELL_S -- as the hand goes sideways: right turns it clockwise from above, TURN_DEG_PER_CM a cm. Otherwise
+# the wrist roll stays where it is. (Twisting the hand itself, first as the thumb-and-index pinch's other
+# gesture, proved the hardest thing to do.) Thumb and middle meet by themselves during index pinches and in
+# relaxed hands (under 2.5 cm in 7 and 3 % of recorded frames), hence the index away: in 43 minutes of
+# recordings with no such gesture made, this rule started a turn once. Touch below the first, part above the
+# second.
+TURN_TOUCH_CM = (2.5, 3.5)
+TURN_INDEX_APART_CM = 4.0
+TURN_DWELL_S = 0.2
+TURN_DEG_PER_CM = 5.0
 SCALE = 1.0  # --mode pinch: jaw cm per hand cm
 # 1-euro filter (Casiez, Roussel and Vogel, CHI 2012) on the pinch point: cutoff Hz at rest, and how much
 # faster it gets per cm/s -- steady when the hand is still, little lag when it moves.
@@ -1248,19 +1251,17 @@ def roll_sense(kinematics, pose: dict[str, float]) -> float:
 class PinchFollower(Follower):
     """One arm dragged by one hand's pinch, on the model: thumb and index together grab its jaw.
 
-    A pinch does one thing, whichever the hand does first (TWIST_DEG, DRAG_CM):
-
-    * Moved, it drags: the jaw goes where it was when the pinch closed, plus
-      --scale times as far as the pinch has gone since -- forward, right and
-      up being where the wearer then looked, level.
-    * Twisted in place, like a screwdriver, it turns the jaw the same way
-      about where it points, the first TWIST_DEG aside: clockwise as the
-      wearer sees the back of the hand is clockwise from above, as the
-      overhead camera shows the jaw. The jaw stays where it is meanwhile.
+    * Thumb and index pinched: the jaw goes where it was when the pinch
+      closed, plus --scale times as far as the pinch has gone since --
+      forward, right and up being where the wearer then looked, level. The
+      wrist roll does not change.
+    * Thumb and middle together, the index away (see TURN_TOUCH_CM): the jaw
+      turns where it is, as the hand goes sideways -- right is clockwise from
+      above, as the overhead camera shows the jaw, TURN_DEG_PER_CM a cm.
+    * Thumb and pinky together: a closed jaw opens, an open one closes.
 
     Let go, and the arm stays; pinch again anywhere to go on (a clutch, as VR
-    teleoperation does it) -- to drag further, or turn further. Thumb and
-    pinky together open a closed jaw, or close an open one.
+    teleoperation does it) -- to drag further, or turn further.
     """
 
     calibrates = False
@@ -1271,19 +1272,21 @@ class PinchFollower(Follower):
         self.scale = scale
         self.smooth = OneEuro()
         self.pinched = False
-        self.drag: tuple | None = None  # pinch point, wearer's frame, jaw, hand roll, wrist roll: when it closed
+        self.drag: tuple | None = None  # pinch point, wearer's frame, jaw: when the pinch closed
+        self.turn: tuple | None = None  # wrist, wearer's frame, jaw, wrist roll: when thumb and middle met
+        self.touch_s = 0.0  # how long thumb and middle have been together, the index away
+        self.wrist_smooth = OneEuro()
         self.jaw = self.q["gripper"]  # where the jaw is going, open or closed
         self.toggle_armed = True  # thumb and pinky parted since the last toggle
         self.sense = roll_sense(kinematics, self.q)
         self.start_roll = self.q["wrist_roll"]
-        self.gesture: str | None = None  # what this pinch does: "dragging" or "turning", once it is clear
         self.target = self.tcp_cm()
         self.state = self.mode = "free"
 
     def let_go(self) -> None:
-        if self.drag is not None:
-            self.drag, self.target = None, self.tcp_cm()  # stop where it is, not where it was headed
-        self.gesture = None
+        if self.drag is not None or self.turn is not None:
+            self.target = self.tcp_cm()  # stop where it is, not where it was headed
+        self.drag = self.turn = None
 
     def update(self, hand: dict | None, dt: float, others: list[np.ndarray] | None = None,
                head: dict | None = None) -> dict[str, float]:
@@ -1294,6 +1297,8 @@ class PinchFollower(Follower):
             self.let_go()
             self.pinched = False
             self.smooth.reset()
+            self.wrist_smooth.reset()
+            self.touch_s = 0.0
             self.state, self.mode = "no hand", "lost"
         else:
             thumb, index = (np.asarray(hand[key], dtype=float) for key in ("thumb", "index"))
@@ -1302,55 +1307,59 @@ class PinchFollower(Follower):
             self.pinched = told if isinstance(told, bool) else gap < GRAB_CM[1 if self.pinched else 0]
             point = self.smooth((thumb + index) / 2, dt)
             pinky = hand.get("pinkyTip")
-            if pinky is not None and not self.pinched:
+            if pinky is not None and not self.pinched and self.turn is None:
                 reach = float(np.linalg.norm(thumb - np.asarray(pinky, dtype=float)))
                 if self.toggle_armed and reach < TOGGLE_CM[0]:
                     self.jaw, self.toggle_armed = (0.0 if self.jaw > OPEN / 2 else OPEN), False
                 elif reach > TOGGLE_CM[1]:
                     self.toggle_armed = True
-            if self.pinched and self.drag is None and head:
-                wearer = facing_frame(head["look"], head["p"], point)
-                measured = hand_angles(hand, wearer)
-                self.drag = (point, wearer, self.tcp_cm(), None if measured is None else measured[0], self.roll)
-            if self.pinched and self.drag is not None:
-                start, wearer, jaw_at, hand_roll_at, roll_at = self.drag
-                seen = wearer @ (point - start)
-                measured = hand_angles(hand, wearer)
-                turn = angle_delta(measured[0], hand_roll_at) if measured is not None and hand_roll_at is not None \
-                    else 0.0
-                if self.gesture is None:  # the pinch's first clear motion says what it does
-                    if abs(turn) > TWIST_DEG:
-                        self.gesture = "turning"
-                    elif float(np.linalg.norm(seen)) > DRAG_CM:
-                        self.gesture = "dragging"
-                elif self.gesture == "dragging" and abs(turn) > LATE_TWIST[0] \
-                        and float(np.linalg.norm(seen)) < LATE_TWIST[1]:
-                    self.gesture = "turning"  # a twist after all: the "drag" was the pinch swinging with it
-                wanted, wrist_stopped = jaw_at, False
-                if self.gesture == "turning":
-                    low, high = self.limits.get("wrist_roll", (-math.inf, math.inf))
-                    past = math.copysign(max(abs(turn) - TWIST_DEG, 0.0), turn)
-                    self.roll = min(max(roll_at + self.sense * past, low), high)
-                    wrist_stopped = self.roll != roll_at + self.sense * past
-                elif self.gesture == "dragging":
-                    forward, right, up = seen
+            wrist = self.wrist_smooth(hand["wrist"], dt)
+            middle = hand.get("middleTip")
+            touch = float(np.linalg.norm(thumb - np.asarray(middle, dtype=float))) if middle is not None else math.inf
+            own_side = not (others and self.placement is not None)
+            if self.turn is not None:
+                if touch > TURN_TOUCH_CM[1]:
+                    self.let_go()
+                    self.touch_s = 0.0
+            elif not self.pinched and self.drag is None and touch < TURN_TOUCH_CM[0] and gap > TURN_INDEX_APART_CM:
+                self.touch_s += dt
+                if self.touch_s >= TURN_DWELL_S and head:
+                    self.turn = (wrist, facing_frame(head["look"], head["p"], wrist), self.tcp_cm(), self.roll)
+            else:
+                self.touch_s = 0.0
+            if self.turn is not None:
+                start, wearer, jaw_at, roll_at = self.turn
+                sideways = float((wearer @ (wrist - start))[1])  # the wearer's right
+                low, high = self.limits.get("wrist_roll", (-math.inf, math.inf))
+                wanted_roll = roll_at + self.sense * TURN_DEG_PER_CM * sideways
+                self.roll = min(max(wanted_roll, low), high)
+                target, _ = self.within_reach(jaw_at, own_side=own_side)
+                self.advance(target, dt, others, None, 0.0)
+                self.state, self.mode = "turning", "turning"
+                if self.roll != wanted_roll:  # the left arm, say, turns only 77 degrees clockwise from ready
+                    self.state += ": at the wrist's limit"
+            else:
+                if self.pinched and self.drag is None and head:
+                    self.drag = (point, facing_frame(head["look"], head["p"], point), self.tcp_cm())
+                if self.pinched and self.drag is not None:
+                    start, wearer, jaw_at = self.drag
+                    forward, right, up = wearer @ (point - start)
                     moved = np.array([forward, -right, up] if self.facing == "same" else [-forward, right, up])
                     wanted = jaw_at + self.scale * moved
-                target, stopped = self.within_reach(wanted, own_side=not (others and self.placement is not None))
-                tcp = self.tcp_cm()
-                stopped = self.advance(target, dt, others, stopped, min(float(np.linalg.norm(target - tcp)), 0.2))
-                self.state = self.gesture or "pinched"
-                self.mode = {"turning": "turning", "dragging": "moving"}.get(self.gesture, "holding")
-                if wrist_stopped:  # the left arm, say, turns only 77 degrees clockwise from its ready pose
-                    self.state += ": at the wrist's limit"
-                if stopped and self.gesture == "dragging":
-                    self.state += f": at {stopped}"
-                    push = wanted - tcp  # the arm's frame; back into the wearer's words
-                    seen = np.array([push[0], -push[1], push[2]] if self.facing == "same" else [-push[0], push[1], push[2]])
-                    self.blocked = {"the table": ["down"], "the top": ["up"]}.get(stopped, heading_words(seen, 1.0))
-            else:
-                self.let_go()
-                self.state, self.mode = "free", "holding"
+                    target, stopped = self.within_reach(wanted, own_side=own_side)
+                    tcp = self.tcp_cm()
+                    stopped = self.advance(target, dt, others, stopped, min(float(np.linalg.norm(target - tcp)), 0.2))
+                    self.state, self.mode = "dragging", "moving"
+                    if stopped:
+                        self.state += f": at {stopped}"
+                        push = wanted - tcp  # the arm's frame; back into the wearer's words
+                        seen = np.array([push[0], -push[1], push[2]] if self.facing == "same" else
+                                        [-push[0], push[1], push[2]])
+                        self.blocked = {"the table": ["down"], "the top": ["up"]}.get(stopped,
+                                                                                         heading_words(seen, 1.0))
+                else:
+                    self.let_go()
+                    self.state, self.mode = "free", "holding"
         most = GRIPPER_SPEED * dt
         self.q["gripper"] += min(max(self.jaw - self.q["gripper"], -most), most)
         clockwise = self.sense * (self.q["wrist_roll"] - self.start_roll)  # seen from above
