@@ -168,6 +168,14 @@ rig's models (`Kinematics(rig.arms[n].wrist_roll_offset)`,
 arm's `centre_line()` as `others` and the message's `head`. That is how the
 findings above were made; no replay tool is in the repo yet (worth adding).
 
+- `session-20260927-090127` (manual on, off, on again): after re-enabling,
+  both arms showed `stopped` a second later and never answered.
+  `ManualBridge.stop()` queued a `{"command": "stop"}` and then set the
+  shutdown flag; a loop ending mid-tick never took it, so the next session's
+  `follow()` took it first. Fixed: `stop()` queues nothing, `start()` and
+  `follow()` drop commands left from before (regression test
+  `test_a_stop_left_from_a_session_before_does_not_stop_the_next`).
+
 ## Lens Studio facts and gotchas
 
 - **Use Lens Studio 5.15.4**: installed as `/Applications/Lens Studio

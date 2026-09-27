@@ -958,6 +958,21 @@ def pinching(offset=(0.0, 0.0, 0.0), *, pinched: bool = True, roll: float = 0.0,
     return hand
 
 
+def pressed(clock, hands, *commands):
+    """A sleep for follow() that delivers ``commands`` after its first tick, as menu presses arrive."""
+
+    delivered = []
+
+    def sleep(seconds: float) -> None:
+        if not delivered:
+            for command in commands:
+                hands.receive(command)
+            delivered.append(True)
+        clock.sleep(seconds)
+
+    return sleep
+
+
 @unittest.skipUnless(HAS_MUJOCO, "needs the simulation extra")
 class PinchTests(unittest.TestCase):
     """--mode pinch on the venue's left arm: thumb and index grab the jaw, thumb and pinky open or close it."""
@@ -1130,6 +1145,22 @@ class PinchTests(unittest.TestCase):
         self.assertEqual(follower.q, held)
         self.assertEqual(follower.state, "no hand, jaw closed")
 
+    def test_a_stop_left_from_a_session_before_does_not_stop_the_next(self) -> None:
+        from trashdrop.kinematics import Kinematics
+        from trashdrop.spectacles import PinchFollower, follow
+
+        clock = FakeClock(stop_after=10)
+        followers = {name: PinchFollower(name, Kinematics(), None, dict(NEUTRAL, shoulder_lift=30.0, wrist_flex=60.0))
+                     for name in ("left", "right")}
+        hands = Hands(clock=clock)
+        hands.receive({"command": "stop"})  # queued as manual mode was switched off, never taken
+        hands.put({"head": HEAD, "left": hand_at([-15, -20, -35], gap=12.0), "right": hand_at([15, -20, -35], gap=12.0)})
+        states = []
+        with self.assertRaises(KeyboardInterrupt):
+            follow(followers, hands, None, log=states.append, clock=clock, sleep=clock.sleep)
+        self.assertFalse(any("stopped" in state for state in states), states)
+        self.assertTrue(states[0].startswith("left: free"), states[0])
+
     def test_no_calibration_first(self) -> None:
         from trashdrop.kinematics import Kinematics
         from trashdrop.spectacles import PinchFollower, follow
@@ -1153,10 +1184,10 @@ class PinchTests(unittest.TestCase):
                                  dict(NEUTRAL, shoulder_lift=30.0, wrist_flex=60.0))
         hands = Hands(clock=clock)
         hands.put({"head": HEAD, "left": hand_at([-15, -20, -35], gap=12.0)})
-        hands.receive({"command": "precision", "enabled": True})
-        hands.receive({"command": "jaw", "open": True})
         with self.assertRaises(KeyboardInterrupt):
-            follow({"left": follower}, hands, None, log=lambda _: None, clock=clock, sleep=clock.sleep)
+            follow({"left": follower}, hands, None, log=lambda _: None, clock=clock,
+                   sleep=pressed(clock, hands, {"command": "precision", "enabled": True},
+                                 {"command": "jaw", "open": True}))
         self.assertEqual(follower.scale, 0.5)
         self.assertGreater(follower.q["gripper"], 0.0)
         report = json.loads(hands.report)
@@ -1168,36 +1199,36 @@ class PinchTests(unittest.TestCase):
         homing = FakeClock(stop_after=20)
         home_hands = Hands(clock=homing)
         home_hands.put({"head": HEAD, "left": hand_at([-15, -20, -35], gap=12.0)})
-        home_hands.receive({"command": "home"})
         with self.assertRaises(KeyboardInterrupt):
-            follow({"left": follower}, home_hands, None, log=lambda _: None, clock=homing, sleep=homing.sleep)
+            follow({"left": follower}, home_hands, None, log=lambda _: None, clock=homing,
+                   sleep=pressed(homing, home_hands, {"command": "home"}))
         self.assertAlmostEqual(follower.q["shoulder_pan"], follower.home_q["shoulder_pan"])
 
         held = FakeClock(stop_after=2)
         hold_hands = Hands(clock=held)
         hold_hands.put({"head": HEAD, "left": hand_at([-15, -20, -35], gap=12.0)})
-        hold_hands.receive({"command": "hold", "enabled": True})
         before = dict(follower.q)
         with self.assertRaises(KeyboardInterrupt):
-            follow({"left": follower}, hold_hands, None, log=lambda _: None, clock=held, sleep=held.sleep)
+            follow({"left": follower}, hold_hands, None, log=lambda _: None, clock=held,
+                   sleep=pressed(held, hold_hands, {"command": "hold", "enabled": True}))
         self.assertEqual(follower.q, before)
         self.assertTrue(json.loads(hold_hands.report)["stopped"])
 
         resumed = FakeClock(stop_after=2)
         resume_hands = Hands(clock=resumed)
         resume_hands.put({"head": HEAD, "left": hand_at([-15, -20, -35], gap=12.0)})
-        resume_hands.receive({"command": "hold", "enabled": False})
         with self.assertRaises(KeyboardInterrupt):
-            follow({"left": follower}, resume_hands, None, log=lambda _: None, clock=resumed, sleep=resumed.sleep)
+            follow({"left": follower}, resume_hands, None, log=lambda _: None, clock=resumed,
+                   sleep=pressed(resumed, resume_hands, {"command": "hold", "enabled": False}))
         self.assertFalse(json.loads(resume_hands.report)["stopped"])
 
         stopped = FakeClock(stop_after=2)
         stop_hands = Hands(clock=stopped)
         stop_hands.put({"head": HEAD, "left": hand_at([-15, -20, -35], gap=12.0)})
-        stop_hands.receive({"command": "stop"})
         before = dict(follower.q)
         with self.assertRaises(KeyboardInterrupt):
-            follow({"left": follower}, stop_hands, None, log=lambda _: None, clock=stopped, sleep=stopped.sleep)
+            follow({"left": follower}, stop_hands, None, log=lambda _: None, clock=stopped,
+                   sleep=pressed(stopped, stop_hands, {"command": "stop"}))
         self.assertEqual(follower.q, before)
         self.assertTrue(json.loads(stop_hands.report)["stopped"])
 

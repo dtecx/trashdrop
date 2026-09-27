@@ -258,6 +258,7 @@ class ManualBridge:
             self.mode, self.scale, self.facing = mode, float(scale), facing
             self.dry_run = bool(self.cell.options.dry_run)
             self.error = None
+            self.hands.take_commands()  # nothing from before this session
             self._shutdown.clear()
             self._thread = threading.Thread(target=self._run, name="spectacles-follow", daemon=True)
             self._thread.start()
@@ -317,7 +318,8 @@ class ManualBridge:
             if not self.active and not self.starting:
                 return "Spectacles manual mode is already stopped"
             self.cell.stop_event.set()
-            self.hands.receive({"command": "stop"})
+            # No "stop" command: the loop ends on _shutdown and _run holds the arms. One queued here outlived
+            # a loop that ended first, and stopped the next session at once.
             self._shutdown.set()
             thread = self._thread
         if thread is not None:

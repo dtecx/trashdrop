@@ -1419,6 +1419,9 @@ def follow(followers: dict[str, Follower], hands: Hands, arms: dict | None = Non
     calibration = Calibration(sorted(set(sides.values())), hold_s)
     period, last, said, reported, unseen = 1.0 / RATE_HZ, clock(), None, -math.inf, 0.0
     stopped, home_queue = False, []
+    # Commands left from a session before this one: a stale "stop" held both arms from the first tick when
+    # manual mode was switched off and on again, and nothing answered after that.
+    hands.take_commands()
     while shutdown is None or not shutdown.is_set():
         now = clock()
         dt, last = min(max(now - last, 0.0), 0.1), now
