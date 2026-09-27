@@ -4,7 +4,7 @@
   Resolution:
     x: 900
     y: 1600
-  ResolutionScale: 0.300000
+  ResolutionScale: 1.000000
   AntialiasingMode: Disabled
   AntialiasingQuality: Ultra
   MSAAStrategy: OnlyWhenRequired

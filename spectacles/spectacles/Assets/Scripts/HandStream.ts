@@ -99,7 +99,10 @@ export class HandStream extends BaseScriptComponent {
       const cameraModule = require("LensStudio:CameraModule") as CameraModule;
       const request = CameraModule.createCameraRequest();
       request.cameraId = CameraModule.CameraId.Default_Color;
-      request.imageSmallerDimension = 720;
+      // The full 1392x1590 display Render Target crashes SnapOS readback on
+      // this Spectacles build. A small raw camera frame is the documented
+      // video-like source and is enough for the jury's spectator page.
+      request.imageSmallerDimension = 360;
       this.cameraTexture = cameraModule.requestCamera(request);
       const provider = this.cameraTexture.control as CameraTextureProvider;
       // Snap's composite-streaming pattern starts texture readback only from a
@@ -260,17 +263,14 @@ export class HandStream extends BaseScriptComponent {
     if (this.snap !== null) {
       return;
     }
-    if (!this.view || (kind === "snap" && this.cameraTexture === null)) {
+    if (this.cameraTexture === null || (kind === "snap" && !this.view)) {
       this.say("snapshot unavailable: run the Lens on Spectacles and assign its Render Target");
       return;
     }
     this.snap = { id: id, kind: kind };
     this.textureEncoding = false;
     if (kind === "spectator") {
-      // The Render Target already has Device Camera Texture as its background,
-      // so it is the complete optical view. Encoding CameraModule as well made
-      // the real Lens exit to Lens Explorer on the first spectator request.
-      print("HandStream: queued spectator composite " + id);
+      print("HandStream: queued spectator camera " + id);
       return;
     }
     this.textureEncoding = true;
@@ -299,14 +299,14 @@ export class HandStream extends BaseScriptComponent {
 
   private encodeSpectatorFrame() {
     if (this.snap === null || this.snap.kind !== "spectator" || this.textureEncoding ||
-        getTime() < this.captureReadyAt || !this.view || this.view.getWidth() <= 0) {
+        getTime() < this.captureReadyAt || this.cameraTexture === null || this.cameraTexture.getWidth() <= 0) {
       return;
     }
     const id = this.snap.id;
     this.textureEncoding = true;
-    print("HandStream: encoding spectator composite " + id + " at " +
-      this.view.getWidth() + "x" + this.view.getHeight());
-    Base64.encodeTextureAsync(this.view, (jpeg: string) => {
+    print("HandStream: encoding spectator camera " + id + " at " +
+      this.cameraTexture.getWidth() + "x" + this.cameraTexture.getHeight());
+    Base64.encodeTextureAsync(this.cameraTexture, (jpeg: string) => {
       this.textureEncoding = false;
       if (this.snap !== null && this.snap.id === id) {
         this.snap = null;
@@ -314,7 +314,7 @@ export class HandStream extends BaseScriptComponent {
       }
     }, () => {
       this.textureEncoding = false;
-      this.failSnapshot(id, "cannot encode the spectator view");
+      this.failSnapshot(id, "cannot encode the spectator camera");
     }, CompressionQuality.LowQuality, EncodingType.Jpg);
   }
 

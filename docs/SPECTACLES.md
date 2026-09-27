@@ -195,15 +195,14 @@ findings above were made; no replay tool is in the repo yet (worth adding).
   the real Spectacles throw `Unable to access camera` and the rest of that
   callback (including the hand socket) never starts. Create it from an
   `OnStartEvent`, and keep camera failure non-fatal so controls still connect.
-- The Render Target already uses `Device Camera Texture` as its background, so
-  it contains the real optical image plus the Lens UI. The 2 fps spectator
-  stream encodes that one composite at low JPEG quality. Follow Snap's live
-  streaming example: its resolution scale is 0.3 (not the display-size 1.0),
-  wait five seconds for the GPU to fill it, and begin readback only from
-  `CameraTextureProvider.onNewFrame`. At scale 1.0, readback killed the Lens
-  inside `Base64.encodeTextureAsync`, before either callback. Explicit
-  snapshots still encode the render target and camera separately at high
-  quality.
+- The active display Render Target reports 1392 x 1590 on the real glasses even
+  with asset `ResolutionScale` set to 0.3. Reading it back kills the Lens inside
+  `Base64.encodeTextureAsync`, before either callback. The 2 fps spectator
+  stream therefore follows the raw-camera path from Snap's live-streaming
+  example: a 360 px `CameraModule` texture, low JPEG quality, five seconds of
+  startup time, and readback only from `CameraTextureProvider.onNewFrame`.
+  This is the real optical camera without the Lens overlay. Explicit snapshots
+  retain the separate high-quality render-target path for later investigation.
 - `adb` works (`adb reverse` for the sockets) but the glasses' shell is
   closed: `adb exec-out screencap` answers `error: closed`.
 - The Spectacles UI Kit (`Packages/SpectaclesUIKit.lspkg`: Frame, Capsule/
