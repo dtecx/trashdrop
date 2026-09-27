@@ -38,7 +38,7 @@ to send the Lens to the glasses (see "Lens Studio facts").
 | `trashdrop/web/manual.py` | The unified page's owner of both Spectacles sockets, overhead stream and exclusive manual session. It reuses the cell's already-open camera and arm objects, so no bus is opened twice |
 | `spectacles/spectacles/` | Lens Studio **5.15.4** project (committed). Scripts in `Assets/Scripts/` |
 | `.../Assets/Scripts/HandStream.ts` | Sends both hands ~30/s and handles requested optical snapshots / spectator frames by encoding the colour camera and Lens render target. `previewToo` is off, so the LS preview does not connect |
-| `.../Assets/Scripts/SpectaclesUI.ts` | Movable video Frame, compact hand tags and a wrist-revealed UIKit menu: manual hand control, auto sort, neutral and exit |
+| `.../Assets/Scripts/SpectaclesUI.ts` | Movable video Frame, compact hand tags and a palm-summoned UIKit menu: manual hand control, auto sort, neutral and exit |
 | `.../Assets/Scripts/WebcamView.ts` | Video WebSocket 8766 -> `Base64.decodeTextureAsync` -> a movable/resizable UIKit Frame. Sorting overlays are burned into the camera stream by `trashdrop/web/overlay.py`; manual mode keeps the camera unobscured |
 | `tests/test_spectacles.py` | Socket, snapshots, spectator stream, video pacing, wearer frame, calibration, joystick, pinch, fist/jaw and two-arm-clearance tests |
 | `trashdrop/kinematics.py` `links()` | The arm's centre line (foot, lift, elbow, wrist, TCP) for keeping the arms apart |
@@ -262,15 +262,18 @@ findings above were made; no replay tool is in the repo yet (worth adding).
    after the next Preview Lens push.
 2. **Spatial UIKit interface: built after `bc097ef`; device QA pending.**
    The video stays in a movable, resizable Frame. Compact status tags follow
-   the wearer's tracked hands during manual control. Raise either wrist within
-   45 cm below head height, 20-85 cm from the glasses, and look at it for
-   0.45 s to reveal the menu beside it. The menu stays fixed in space while
-   pressed and hides after 1.6 s without a look at the wrist or menu.
+   the wearer's tracked hands during manual control. **The menu comes to a
+   palm held to the glasses** (SIK `isFacingCamera()`, sent as `palm`), not
+   pinching, 20-75 cm away, for 0.6 s; it opens beside that hand, stays fixed
+   in space, and closes 1 s after the palm turns away or after a mode choice
+   (then the palm must go down before it reopens). Buttons are 9 x 5 cm about
+   2.5 cm apart. Until 2026-09-27 ~08:45 it came to a *look* at a raised wrist
+   in a 30-degree cone for 0.45 s -- where the eyes are while driving -- so it
+   kept opening and holding the arms mid-drive ("manual control sometimes
+   stops working"), and its buttons were 0.3-0.7 cm apart ("too close").
    While it is open, hand packets are marked untracked so menu pinches hold
    the robot instead of dragging it. Grabbing, resizing or pressing the video
    Frame also holds both arms; release both pinches before hand control resumes.
-   Mode actions close the menu after the UIKit trigger has finished, so manual
-   control does not stay blocked by a menu still under the wearer's gaze.
    **MANUAL** starts or stops following the
    wearer's tracked hands; **AUTO** starts or stops ordinary sorting; **NEUTRAL**
    stops the active mode and returns both arms to their saved neutral poses;

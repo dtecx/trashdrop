@@ -70,14 +70,17 @@ say which way ("back to the middle: up 6 cm"). Both hands out of sight for
 
 For the unified jury demo, run `uv run trashdrop web --dry-run --open` and
 select **Enter Spectacles UI** on the page. Entering only opens the glasses
-interface; it does not move the arms. Raise a hand near your face and look at
-its wrist briefly to open the menu beside it. The two large controls are
+interface; it does not move the arms. Turn one palm towards your face, not
+pinching, and hold it there a moment: the menu opens beside that hand; press
+its buttons with the other hand's fingertip. The two large controls are
 **MANUAL** (follow the wearer's tracked hands) and **AUTO** (sort without
 hand control); the active mode is highlighted. **NEUTRAL** returns both arms
 to their saved upright pose, and the small **EXIT UI** returns to the web
 controls. The menu holds the arms while it is open, so tapping it cannot
-become a robot-hand gesture. It closes after a mode choice, or after you look
-away for a short pause. Grabbing, resizing or pressing the video Frame holds
+become a robot-hand gesture. It closes after a mode choice, or a second after
+you turn the palm down again. Driving is palm down and pinched, so the menu
+does not open while you watch your hands (it used to open to a look at the
+wrist, and so kept holding the arms mid-drive). Grabbing, resizing or pressing the video Frame holds
 both arms too; release your pinches before driving again. If AUTO says it
 needs an empty zone, clear the taped area, tap **EMPTY ZONE** in the menu to
 photograph it, then tap **AUTO** again. Do not capture an item as background.

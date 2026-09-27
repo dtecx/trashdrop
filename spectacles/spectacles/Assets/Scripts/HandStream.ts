@@ -439,5 +439,7 @@ function hand(side: Side) {
     pinkyTip: point(tracked.pinkyTip.position),
     // The glasses' own pinch detection: steadier than thumb-to-index distance alone.
     pinch: tracked.isPinching(),
+    // Palm turned to the glasses: summons the menu (SpectaclesUI); driving is palm down.
+    palm: tracked.isFacingCamera(),
   };
 }
