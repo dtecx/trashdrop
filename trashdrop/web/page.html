@@ -134,6 +134,7 @@
     <div class="card">
       <h2>Spectacles</h2>
       <div class="manual-status" id="manual-status">bridge starting…</div>
+      <div class="row"><label for="manual-target">Robot</label><select id="manual-target"><option value="so101">two SO-101 arms</option><option value="b601">center B601 · preview</option></select></div>
       <div class="row"><label for="manual-mode">Hand control</label><select id="manual-mode"><option value="pinch">pinch and drag</option><option value="joystick">joystick</option></select></div>
       <div class="row"><label for="manual-scale">Precision</label><select id="manual-scale"><option value="1">normal · 1×</option><option value="0.5">precise · ½×</option></select></div>
       <div class="row"><label for="manual-facing">Wearer stands</label><select id="manual-facing"><option value="same">behind the arms</option><option value="them">facing the arms</option></select></div>
@@ -144,6 +145,7 @@
         <button id="snapshot" style="grid-column:1/-1">Take optical snapshot</button>
       </div>
       <div class="arm-cards" id="manual-arms"></div>
+      <div class="manual-status" id="b601-note" hidden>B601 preview tracks the right hand only. It does not move any robot. First use Neutral for both SO-101 arms; B601 motor control needs verified zero, USB-CAN and clearance.</div>
       <div class="snapshots" id="snapshots"></div>
     </div>
     <div class="card">
@@ -362,6 +364,10 @@ function renderLog(lines) {
 
 function renderManual(s) {
   const p = s.spectacles || {};
+  const b601Selected = $('manual-target').value === 'b601';
+  $('b601-note').hidden = !b601Selected;
+  $('manual-start').textContent = b601Selected ? 'Start B601 preview' : 'Start manual';
+  $('manual-mode').disabled = b601Selected;
   document.body.classList.toggle('presentation', !!p.presentation);
   const link = p.connected ? '<b>glasses connected</b>' : 'waiting for the glasses';
   const running = p.starting ? ' · moving to ready' : p.active ? ` · ${esc(p.status || 'manual active')}` : '';
@@ -369,12 +375,16 @@ function renderManual(s) {
   $('manual-start').disabled = !p.available || !!p.active || !!s.busy;
   $('manual-stop').disabled = !p.active;
   $('presentation').disabled = !p.connected;
-  $('manual-grip').disabled = !p.active;
-  $('manual-home').disabled = !p.active;
+  $('manual-grip').disabled = !p.active || p.target === 'b601';
+  $('manual-home').disabled = !p.active || p.target === 'b601';
   $('snapshot').disabled = !p.connected;
   $('dry').disabled = !!p.active;
   const arms = p.arms || {};
-  $('manual-arms').innerHTML = ['left', 'right'].map((name) => {
+  $('manual-arms').innerHTML = p.target === 'b601' && p.active ? (() => {
+    const guide = arms.b601 || {};
+    const offset = Array.isArray(guide.offset) ? guide.offset.join(', ') : '—';
+    return `<div class="arm-card" style="grid-column:1/-1"><b>B601 hand preview</b>${esc(guide.state || 'waiting')}<br>Lens-world hand displacement: ${esc(offset)} cm · no motor output</div>`;
+  })() : ['left', 'right'].map((name) => {
     const arm = arms[name];
     if (!arm) return `<div class="arm-card"><b>${name} arm</b>offline</div>`;
     const blocked = arm.blocked && arm.blocked.length;
@@ -440,13 +450,23 @@ $('relax').addEventListener('click', () => {
 $('dry').addEventListener('click', () => post('/api/options', { dry_run: !(state && state.options.dry_run) }));
 
 function manualOptions() {
-  return { mode: $('manual-mode').value, scale: Number($('manual-scale').value), facing: $('manual-facing').value };
+  return { mode: $('manual-mode').value, scale: Number($('manual-scale').value),
+           facing: $('manual-facing').value, target: $('manual-target').value };
 }
 async function startManual() {
   if (!state) return;
-  if (!state.options.dry_run && !confirm('The real arms will move to their ready pose, then follow your hands. Is the shared volume clear?')) return;
+  if ($('manual-target').value === 'b601' && !state.options.dry_run) {
+    alert('B601 is preview-only until its driver, zero, base transform and clearance are verified. Turn on Dry run.');
+    return;
+  }
+  if ($('manual-target').value === 'so101' && !state.options.dry_run &&
+      !confirm('The real SO-101 arms will move to their ready poses, then follow your hands. Is the shared volume clear?')) return;
   await post('/api/spectacles/start', manualOptions());
 }
+$('manual-target').addEventListener('change', () => {
+  if ($('manual-target').value === 'b601') $('manual-mode').value = 'pinch';
+  renderManual(state || {});
+});
 $('manual-start').addEventListener('click', startManual);
 $('manual-stop').addEventListener('click', () => post('/api/spectacles/stop'));
 $('presentation').addEventListener('click', () => post('/api/spectacles/presentation', { ...manualOptions(), enabled: true }));

@@ -167,7 +167,8 @@ def make_handler(cell, spectacles=None):
                     return self._json({"ok": True, "message": manual or stopped})
                 if path == "/api/spectacles/start" and spectacles is not None:
                     error = spectacles.start(mode=body.get("mode", "pinch"), scale=float(body.get("scale", 1.0)),
-                                             facing=body.get("facing", "same"))
+                                             facing=body.get("facing", "same"),
+                                             target=body.get("target", "so101"))
                     return self._json({"ok": error is None, "error": error}, 200 if error is None else 409)
                 if path == "/api/spectacles/stop" and spectacles is not None:
                     spectacles.set_presentation(False)
@@ -180,7 +181,8 @@ def make_handler(cell, spectacles=None):
                         return self._json({"ok": True, "message": message})
                     error = spectacles.configure(mode=body.get("mode", "pinch"),
                                                  scale=float(body.get("scale", 1.0)),
-                                                 facing=body.get("facing", "same"))
+                                                 facing=body.get("facing", "same"),
+                                                 target=body.get("target", "so101"))
                     if error is None:
                         error = spectacles.set_presentation(True)
                     if error is not None:

@@ -70,6 +70,7 @@ class StandInSpectacles:
                 "view_sequence": 4, "snapshots": [], "hands": {}, "arms": {}}
 
     def start(self, **options):
+        self.manual_options = options
         self.active = True
         return None
 
@@ -172,7 +173,8 @@ class SpectaclesServerTests(unittest.TestCase):
         self.assertEqual((status, reply["ok"]), (200, True))
         self.assertFalse(self.spectacles.active)
         self.assertTrue(self.spectacles.presentation)
-        self.assertEqual(self.spectacles.manual_options, {"mode": "pinch", "scale": 0.5, "facing": "same"})
+        self.assertEqual(self.spectacles.manual_options, {"mode": "pinch", "scale": 0.5,
+                                                        "facing": "same", "target": "so101"})
         self.post("/api/spectacles/presentation", {"enabled": False})
         self.assertFalse(self.spectacles.active)
         self.assertFalse(self.spectacles.presentation)
@@ -181,6 +183,12 @@ class SpectaclesServerTests(unittest.TestCase):
         self.spectacles.active = True
         self.post("/api/spectacles/command", {"command": "home"})
         self.assertEqual(self.spectacles.commands, [{"command": "home"}])
+
+    def test_web_passes_the_central_arm_target(self) -> None:
+        status, reply = self.post("/api/spectacles/start", {"target": "b601", "mode": "pinch"})
+        self.assertEqual((status, reply["ok"]), (200, True))
+        self.assertTrue(self.spectacles.active)
+        self.assertEqual(self.spectacles.manual_options["target"], "b601")
 
 
 class SpectaclesControlsTests(unittest.TestCase):

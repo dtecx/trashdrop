@@ -43,7 +43,7 @@ const MENU_SHIFT = 0.05; // of the view's width
 // press with either hand.
 const MENU_GRACE_S = 2.5;
 const MENU_REACH_CM = 18;
-const EMPTY_Y = -6.1; // the third row, shown only while the empty zone is still to photograph
+const EMPTY_Y = -9.8; // below B601 preview, shown only until the zone is photographed
 // The hint card: this far ahead, catching up with the view by this share a frame.
 const HINT_DISTANCE = 60;
 const HINT_FOLLOW = 0.1;
@@ -53,10 +53,13 @@ export class SpectaclesUI {
   private tags: { left: HandTag; right: HandTag };
   private view: Camera;
   private manualActive = false;
+  private b601Active = false;
   private autoActive = false;
   private manualHighlight: boolean | null = null;
+  private b601Highlight: boolean | null = null;
   private autoHighlight: boolean | null = null;
   private manualLabel: Text;
+  private b601Label: Text;
   private autoLabel: Text;
   private modeLabel: Text;
   private menu: SceneObject;
@@ -136,14 +139,19 @@ export class SpectaclesUI {
       this.menuCloseAt = 0;
     }
     this.manualActive = report.manual === true;
+    this.b601Active = this.manualActive && report.manualTarget === "b601";
     this.autoActive = report.auto === true;
-    const arms = report.manual ? report.arms || report.hands || {} : {};
+    const arms = report.manual ? this.b601Active ? report.hands || {} : report.arms || report.hands || {} : {};
     for (const side of ["left", "right"] as const) {
       this.tags[side].guide = arms[side] && typeof arms[side] === "object" ? arms[side] as ArmGuide : null;
     }
-    if (this.manualHighlight !== this.manualActive) {
-      this.highlight(this.manualLabel, this.manualActive, new vec4(0.15, 0.8, 1, 1));
-      this.manualHighlight = this.manualActive;
+    if (this.manualHighlight !== (this.manualActive && !this.b601Active)) {
+      this.highlight(this.manualLabel, this.manualActive && !this.b601Active, new vec4(0.15, 0.8, 1, 1));
+      this.manualHighlight = this.manualActive && !this.b601Active;
+    }
+    if (this.b601Highlight !== this.b601Active) {
+      this.highlight(this.b601Label, this.b601Active, new vec4(0.8, 0.5, 1, 1));
+      this.b601Highlight = this.b601Active;
     }
     if (this.autoHighlight !== this.autoActive) {
       this.highlight(this.autoLabel, this.autoActive, new vec4(0.3, 1, 0.5, 1));
@@ -152,7 +160,8 @@ export class SpectaclesUI {
     const error = typeof report.controlError === "string" ? report.controlError : "";
     const mode = error === "photograph the empty zone first" ? "CLEAR ZONE · TAP EMPTY" : error ||
       (report.busy === "empty" ? "CAPTURING EMPTY ZONE" :
-       this.manualActive ? "MANUAL · HAND CONTROL" : this.autoActive ? "AUTO · SORTING" :
+       this.b601Active ? "B601 · HAND PREVIEW ONLY" :
+       this.manualActive ? "SO-101 · HAND CONTROL" : this.autoActive ? "AUTO · SORTING" :
        report.busy === "neutral" ? "MOVING TO NEUTRAL" :
        this.emptyNeeded ? "CLEAR ZONE · TAP EMPTY" : "EMPTY READY · TAP AUTO");
     this.setText(this.modeLabel, mode.toUpperCase());
@@ -233,7 +242,7 @@ export class SpectaclesUI {
     // cm (about 20 degrees at MENU_DISTANCE). Hand tracking is good to a
     // centimetre or two; the old 0.3-0.7 cm gaps took the neighbouring button.
     this.manualLabel = this.createButton(menu, "MANUAL", -4.5, 5, 7, 4, 20, () => {
-      this.send({ command: "manual", enabled: !this.manualActive });
+      this.send({ command: "manual", enabled: !(this.manualActive && !this.b601Active) });
       this.queueMenuClose();
     });
     this.autoLabel = this.createButton(menu, "AUTO", 4.5, 5, 7, 4, 20, () => {
@@ -250,6 +259,10 @@ export class SpectaclesUI {
       this.send({ command: "presentation", enabled: false });
     });
     exit.textFill.color = new vec4(0.72, 0.75, 0.82, 1);
+    this.b601Label = this.createButton(menu, "B601 PREVIEW", 0, -5.6, 16, 3.2, 16, () => {
+      this.send({ command: "b601", enabled: !this.b601Active });
+      this.queueMenuClose();
+    });
     const empty = this.createButton(menu, "EMPTY ZONE", 0, EMPTY_Y, 16, 3.2, 16,
       () => this.send({ command: "empty" }));
     empty.textFill.color = new vec4(1, 0.82, 0.35, 1);

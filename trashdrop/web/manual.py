@@ -87,6 +87,7 @@ class ManualBridge:
         self.active = False
         self.starting = False
         self.mode = "pinch"
+        self.target = "so101"
         self.scale = SCALE
         self.facing = "same"
         self.dry_run = True
@@ -99,7 +100,8 @@ class ManualBridge:
 
         manual = self.active or self.starting
         auto = self.cell.auto or self.cell.busy == "auto"
-        context = {"manual": manual, "auto": auto, "busy": self.cell.busy,
+        context = {"manual": manual, "manualTarget": self.target if manual else None,
+                   "auto": auto, "busy": self.cell.busy,
                    "controlError": self.control_error,
                    "emptyPhotographed": getattr(self.cell, "background", None) is not None}
         if not manual:
@@ -111,7 +113,7 @@ class ManualBridge:
         """Run Lens controls through the same cell owner as the web page."""
 
         action = message.get("command")
-        if action not in ("presentation", "manual", "auto", "neutral", "empty"):
+        if action not in ("presentation", "manual", "b601", "auto", "neutral", "empty"):
             return False
         with self._command_lock:
             self.control_error = self._run_lens_command(message)
@@ -142,13 +144,38 @@ class ManualBridge:
                     self.stop()
                 return None
             if self.active or self.starting:
-                return None
+                if self.target == "so101":
+                    return None
+                self.stop()
+                error = self._wait_for_cell()
+                if error:
+                    return error
             if self.cell.busy == "auto":
                 self.cell.stop()
                 error = self._wait_for_cell()
                 if error:
                     return error
             return self.start(mode=self.mode, scale=self.scale, facing=self.facing)
+        if action == "b601":
+            if message.get("enabled") is False:
+                if (self.active or self.starting) and self.target == "b601":
+                    self.stop()
+                return None
+            if not self.cell.options.dry_run:
+                return "B601 hardware is not commissioned: enable dry run for input preview"
+            if self.active or self.starting:
+                if self.target == "b601":
+                    return None
+                self.stop()
+                error = self._wait_for_cell()
+                if error:
+                    return error
+            if self.cell.busy == "auto":
+                self.cell.stop()
+                error = self._wait_for_cell()
+                if error:
+                    return error
+            return self.start(mode="pinch", scale=self.scale, facing=self.facing, target="b601")
         if action == "auto":
             if message.get("enabled") is False:
                 if self.cell.busy == "auto":
@@ -176,13 +203,18 @@ class ManualBridge:
         error = self._wait_for_cell()
         return error or self.cell.begin("neutral")
 
-    def configure(self, *, mode: str = "pinch", scale: float = SCALE, facing: str = "same") -> str | None:
+    def configure(self, *, mode: str = "pinch", scale: float = SCALE, facing: str = "same",
+                  target: str = "so101") -> str | None:
         """Save the manual settings selected before entering the glasses UI."""
 
         if mode not in ("pinch", "joystick"):
             return "mode must be pinch or joystick"
         if facing not in ("same", "them"):
             return "facing must be same or them"
+        if target not in ("so101", "b601"):
+            return "target must be so101 or b601"
+        if target == "b601" and mode != "pinch":
+            return "B601 preview uses pinch control"
         if not 0 < float(scale) <= 3:
             return "scale must be above 0 and at most 3"
         self.mode, self.scale, self.facing = mode, float(scale), facing
@@ -233,13 +265,20 @@ class ManualBridge:
                 self.cell.log(f"Spectacles video overlay unavailable: {error}")
             return frame
 
-    def start(self, *, mode: str = "pinch", scale: float = SCALE, facing: str = "same") -> str | None:
+    def start(self, *, mode: str = "pinch", scale: float = SCALE, facing: str = "same",
+              target: str = "so101") -> str | None:
         """Reserve the arms and start following hands; return why that was refused."""
 
         if mode not in ("pinch", "joystick"):
             return "mode must be pinch or joystick"
         if facing not in ("same", "them"):
             return "facing must be same or them"
+        if target not in ("so101", "b601"):
+            return "target must be so101 or b601"
+        if target == "b601" and mode != "pinch":
+            return "B601 preview uses pinch control"
+        if target == "b601" and not self.cell.options.dry_run:
+            return "B601 hardware is not commissioned: use dry run to check hand tracking"
         if not 0 < float(scale) <= 3:
             return "scale must be above 0 and at most 3"
         if self.network_error:
@@ -252,21 +291,24 @@ class ManualBridge:
             with self.cell._lock:
                 if self.cell.busy:
                     return f"busy: {self.cell.busy}"
-                self.cell.busy = "spectacles"
+                self.cell.busy = "spectacles-b601" if target == "b601" else "spectacles"
                 self.cell.stop_event.clear()
             self.active, self.starting = True, True
-            self.mode, self.scale, self.facing = mode, float(scale), facing
+            self.mode, self.scale, self.facing, self.target = mode, float(scale), facing, target
             self.dry_run = bool(self.cell.options.dry_run)
             self.error = None
             self.hands.take_commands()  # nothing from before this session
             self._shutdown.clear()
             self._thread = threading.Thread(target=self._run, name="spectacles-follow", daemon=True)
             self._thread.start()
-        self.cell.log(f"Spectacles manual mode starting: {mode}, scale {scale:g}" +
+        self.cell.log(f"Spectacles {target} manual mode starting: {mode}, scale {scale:g}" +
                       (" (dry run)" if self.dry_run else ""))
         return None
 
     def _run(self) -> None:
+        if self.target == "b601":
+            self._run_b601_preview()
+            return
         from ..arm import move_together
 
         names = list(self.cell.arms)
@@ -311,6 +353,34 @@ class ManualBridge:
             self.cell.version += 1
             self.cell.log("Spectacles manual mode stopped; the arms hold where they are")
 
+    def _run_b601_preview(self) -> None:
+        """Exercise the one-hand clutch without energising any of the three arms."""
+
+        from ..b601 import B601Preview
+
+        preview = B601Preview(scale=self.scale)
+        self.starting = False
+        try:
+            while not self._shutdown.is_set():
+                for command in self.hands.take_commands():
+                    if command.get("command") == "stop":
+                        self._shutdown.set()
+                message, age = self.hands.playout()
+                guide = preview.update(message, age)
+                status = "B601 preview only: " + preview.state + " (SO-101 not commanded)"
+                self.hands.status = status
+                self.hands.report = json.dumps({"status": status, "manualTarget": "b601",
+                                                "hands": {"right": guide}, "arms": {"b601": guide},
+                                                "mode": "pinch", "stopped": False}, separators=(",", ":"))
+                self._shutdown.wait(1 / 30)
+        finally:
+            self.starting = self.active = False
+            with self.cell._lock:
+                if self.cell.busy == "spectacles-b601":
+                    self.cell.busy = None
+            self.cell.version += 1
+            self.cell.log("B601 preview stopped; no arm was commanded")
+
     def stop(self) -> str:
         """Stop following and hold the arms; safe to call when already stopped."""
 
@@ -327,7 +397,7 @@ class ManualBridge:
         return "Spectacles manual mode stopped; the arms hold where they are"
 
     def command(self, message: dict) -> str | None:
-        if message.get("command") in ("presentation", "manual", "auto", "neutral", "empty"):
+        if message.get("command") in ("presentation", "manual", "b601", "auto", "neutral", "empty"):
             self._lens_command(message)
             return self.control_error
         if not self.active:
@@ -380,6 +450,7 @@ class ManualBridge:
             "starting": self.starting,
             "connected": self.hands.connected,
             "mode": self.mode,
+            "target": self.target,
             "scale": self.scale,
             "facing": self.facing,
             "dry_run": self.dry_run,
