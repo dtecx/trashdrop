@@ -29,7 +29,21 @@ const HIDE_DELAY_S = 1;
 // driving, so it kept opening and holding the arms.)
 const MENU_DWELL_S = 0.6;
 const MENU_HIDE_S = 1.0;
-const EMPTY_Y = -8; // the third row, shown only while the empty zone is still to photograph
+// It opens this far ahead, whatever the palm's distance, just below the line
+// of sight and a little towards the other hand. At the wrist, as it was, a
+// comfortably bent arm (palm 30-40 cm away) put 20 x 22 cm of menu nearer
+// than 35 cm, past the edges of the glasses' ~30 x 35 degree view: the
+// wearer held the palm out at 45-58 cm to open it, almost every time
+// (2026-09-27 10:42 session).
+const MENU_DISTANCE = 45;
+const MENU_SCREEN_Y = 0.56;
+const MENU_SHIFT = 0.05; // of the view's width
+// Open this long whatever the hands do, then while the palm stays up, a
+// fingertip is within reach of it, or a pinch holds: lower the palm and
+// press with either hand.
+const MENU_GRACE_S = 2.5;
+const MENU_REACH_CM = 18;
+const EMPTY_Y = -6.1; // the third row, shown only while the empty zone is still to photograph
 // The hint card: this far ahead, catching up with the view by this share a frame.
 const HINT_DISTANCE = 60;
 const HINT_FOLLOW = 0.1;
@@ -52,6 +66,8 @@ export class SpectaclesUI {
   private palmSince = 0;
   private lastPalm = 0;
   private lastMenuPinch = 0;
+  private lastNear = 0;
+  private menuOpenedAt = 0;
   private menuCloseAt = 0;
   private menuNeedsPalmDown = false;
   private emptyButton: SceneObject;
@@ -210,31 +226,31 @@ export class SpectaclesUI {
     this.place(menu, new vec2(0.5, 0.7), 55);
     const modeObject = global.scene.createSceneObject("Control Mode");
     modeObject.setParent(menu);
-    modeObject.getTransform().setLocalPosition(new vec3(0, 11, 0));
-    this.modeLabel = this.createText(modeObject, 20, 2.3, 17);
+    modeObject.getTransform().setLocalPosition(new vec3(0, 9, 0));
+    this.modeLabel = this.createText(modeObject, 16, 2, 14);
     this.modeLabel.text = "READY";
-    // Targets a fingertip hits: 9 x 5 cm, about 2.5 cm apart. Hand tracking
-    // is good to a centimetre or two; the old 0.3-0.7 cm gaps took the
-    // neighbouring button.
-    this.manualLabel = this.createButton(menu, "MANUAL", -5.75, 5.5, 9, 5, 24, () => {
+    // Targets a fingertip hits: 7 x 4 cm, 2 cm apart, the whole menu 16 x 18
+    // cm (about 20 degrees at MENU_DISTANCE). Hand tracking is good to a
+    // centimetre or two; the old 0.3-0.7 cm gaps took the neighbouring button.
+    this.manualLabel = this.createButton(menu, "MANUAL", -4.5, 5, 7, 4, 20, () => {
       this.send({ command: "manual", enabled: !this.manualActive });
       this.queueMenuClose();
     });
-    this.autoLabel = this.createButton(menu, "AUTO", 5.75, 5.5, 9, 5, 24, () => {
+    this.autoLabel = this.createButton(menu, "AUTO", 4.5, 5, 7, 4, 20, () => {
       this.send({ command: "auto", enabled: !this.autoActive });
       this.queueMenuClose();
     });
-    const neutral = this.createButton(menu, "NEUTRAL", -5.75, -1.5, 9, 4.5, 22,
+    const neutral = this.createButton(menu, "NEUTRAL", -4.5, -0.75, 7, 3.5, 18,
       () => {
         this.send({ command: "neutral" });
         this.queueMenuClose();
       });
     neutral.textFill.color = new vec4(1, 0.82, 0.35, 1);
-    const exit = this.createButton(menu, "EXIT UI", 5.75, -1.5, 9, 4.5, 20, () => {
+    const exit = this.createButton(menu, "EXIT UI", 4.5, -0.75, 7, 3.5, 16, () => {
       this.send({ command: "presentation", enabled: false });
     });
     exit.textFill.color = new vec4(0.72, 0.75, 0.82, 1);
-    const empty = this.createButton(menu, "EMPTY ZONE", 0, EMPTY_Y, 20.5, 4, 20,
+    const empty = this.createButton(menu, "EMPTY ZONE", 0, EMPTY_Y, 16, 3.2, 16,
       () => this.send({ command: "empty" }));
     empty.textFill.color = new vec4(1, 0.82, 0.35, 1);
     this.emptyButton = empty.getSceneObject().getParent();
@@ -325,12 +341,14 @@ export class SpectaclesUI {
     if (!this.menuVisible && palm !== null && now - this.palmSince >= MENU_DWELL_S) {
       this.menuSide = palm;
       this.positionEmptyButton();
-      this.placeMenuByWrist(message[palm].wrist, message.head);
+      this.placeMenu();
       this.menuVisible = true;
+      this.menuOpenedAt = now;
       this.lastPalm = now;
     }
     if (!this.menuVisible) return;
     if (palm === this.menuSide) this.lastPalm = now;
+    if (this.fingertipNearMenu(message)) this.lastNear = now;
     const pinching = !!((message.left && message.left.pinch) || (message.right && message.right.pinch));
     if (pinching) this.lastMenuPinch = now;
     if (this.menuCloseAt > 0 && now >= this.menuCloseAt && !pinching) {
@@ -339,9 +357,22 @@ export class SpectaclesUI {
       this.menuNeedsPalmDown = true;
       return;
     }
-    if (!pinching && now - Math.max(this.lastPalm, this.lastMenuPinch) > MENU_HIDE_S) {
+    const inUse = Math.max(this.lastPalm, this.lastMenuPinch, this.lastNear, this.menuOpenedAt + MENU_GRACE_S);
+    if (!pinching && now - inUse > MENU_HIDE_S) {
       this.closeMenu(now);
     }
+  }
+
+  /** Either index fingertip within reach of the open menu: about to press it. */
+  private fingertipNearMenu(message: any): boolean {
+    const centre = this.menu.getTransform().getWorldPosition();
+    for (const side of ["left", "right"] as const) {
+      const hand = message && message[side];
+      if (!hand || hand.tracked !== true || !Array.isArray(hand.index) || hand.index.length !== 3) continue;
+      const tip = new vec3(hand.index[0], hand.index[1], hand.index[2]);
+      if (tip.distance(centre) <= MENU_REACH_CM) return true;
+    }
+    return false;
   }
 
   private closeMenu(now: number) {
@@ -372,17 +403,11 @@ export class SpectaclesUI {
     return !!hand && hand.tracked === true && Array.isArray(hand.wrist) && hand.wrist.length === 3;
   }
 
-  private placeMenuByWrist(wrist: number[], head: any) {
-    const right = this.camera.getTransform().right;
-    const side = this.menuSide === "left" ? 1 : -1;
-    const dx = head.p[0] - wrist[0];
-    const dy = head.p[1] - wrist[1];
-    const dz = head.p[2] - wrist[2];
-    const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    this.menu.getTransform().setWorldPosition(new vec3(
-      wrist[0] + right.x * side * 10 + dx / distance * 4,
-      wrist[1] + right.y * side * 10 + 5 + dy / distance * 4,
-      wrist[2] + right.z * side * 10 + dz / distance * 4));
+  /** In view at MENU_DISTANCE, a little towards the other hand, and there it stays. */
+  private placeMenu() {
+    const towardsOtherHand = this.menuSide === "left" ? 1 : -1;
+    this.menu.getTransform().setWorldPosition(this.view.screenSpaceToWorldSpace(
+      new vec2(0.5 + towardsOtherHand * MENU_SHIFT, MENU_SCREEN_Y), MENU_DISTANCE));
     this.menu.getTransform().setWorldRotation(this.camera.getTransform().getWorldRotation());
   }
 

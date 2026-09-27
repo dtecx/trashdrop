@@ -71,14 +71,16 @@ glasses show a card saying so: "GLASSES UI IS OFF / ON THE WEB PAGE: ENTER
 SPECTACLES UI". Before the Mac answers, the card says "CONNECTING TO THE MAC"
 or "NO ANSWER FROM THE MAC". The glasses used to show nothing then, which
 looks just like a crashed Lens. Turn one palm towards your face, not
-pinching, and hold it there a moment: the menu opens beside that hand; press
-its buttons with the other hand's fingertip. The two large controls are
+pinching, and hold it there a moment, the arm bent as it likes: the menu
+opens 45 cm ahead, a little below your line of sight, whatever the palm's
+distance. Press its buttons with a fingertip, the other hand's or, palm
+lowered, the same one's. The two large controls are
 **MANUAL** (follow the wearer's tracked hands) and **AUTO** (sort without
 hand control); the active mode is highlighted. **NEUTRAL** returns both arms
 to their saved upright pose, and the small **EXIT UI** returns to the web
 controls. The menu holds the arms while it is open, so tapping it cannot
 become a robot-hand gesture. It closes after a mode choice, or a second after
-you turn the palm down again. Driving is palm down and pinched, so the menu
+the palm is down and no fingertip is near it (it stays at least 2.5 s). Driving is palm down and pinched, so the menu
 does not open while you watch your hands (it used to open to a look at the
 wrist, and so kept holding the arms mid-drive). Grabbing, resizing or pressing the video Frame holds
 both arms too; release your pinches before driving again. If AUTO says it

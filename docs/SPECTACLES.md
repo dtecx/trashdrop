@@ -300,10 +300,17 @@ findings above were made; no replay tool is in the repo yet (worth adding).
    The video stays in a movable, resizable Frame. Compact status tags follow
    the wearer's tracked hands during manual control. **The menu comes to a
    palm held to the glasses** (SIK `isFacingCamera()`, sent as `palm`), not
-   pinching, 20-75 cm away, for 0.6 s; it opens beside that hand, stays fixed
-   in space, and closes 1 s after the palm turns away or after a mode choice
-   (then the palm must go down before it reopens). Buttons are 9 x 5 cm about
-   2.5 cm apart. Until 2026-09-27 ~08:45 it came to a *look* at a raised wrist
+   pinching, 20-75 cm away, for 0.6 s. It opens 45 cm ahead, just below the
+   line of sight and a little towards the other hand, stays fixed in space,
+   and closes after a mode choice (then the palm must go down before it
+   reopens), or 1 s after nothing uses it: not in its first 2.5 s, and not
+   while the palm is up, an index fingertip is within 18 cm of it, or a pinch
+   holds. Buttons are 7 x 4 cm, 2 cm apart; the menu is 16 x 18 cm, about 20
+   degrees. Until 2026-09-27 ~11:00 it opened at the wrist and was 20 x 22 cm:
+   a comfortably bent arm (palm 30-40 cm away) put it nearer than 35 cm and
+   past the edges of the glasses' view, and the session recording showed the
+   wearer opening it at 45-58 cm, almost every time ("I have to hold my arm out very
+   far"). Until 2026-09-27 ~08:45 it came to a *look* at a raised wrist
    in a 30-degree cone for 0.45 s -- where the eyes are while driving -- so it
    kept opening and holding the arms mid-drive ("manual control sometimes
    stops working"), and its buttons were 0.3-0.7 cm apart ("too close").
