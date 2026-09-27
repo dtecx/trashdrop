@@ -48,6 +48,8 @@ from trashdrop.spectacles import (
     STALE_S,
     Calibration,
     Hands,
+    JITTER_MAX_S,
+    blend as blend_messages,
     JAW_DELAY_S,
     Snapshots,
     SpectatorFrames,
@@ -174,6 +176,13 @@ class SocketTests(unittest.TestCase):
             reply += connection.recv(1024)
         connection.sendall(client_frame(json.dumps({"head": HEAD}).encode()))
         read_server_frame(connection)  # answered: the bridge has taken this socket in
+
+    def test_every_message_is_answered_changed_or_not(self) -> None:
+        # Answered only on a change, the glasses' messages came in bunches of three every ~100 ms.
+        self.upgrade(self.connection)
+        for _ in range(3):
+            self.connection.sendall(client_frame(json.dumps({"head": HEAD}).encode()))
+            self.assertEqual(read_server_frame(self.connection), (1, b"waiting for the arms"))
 
     def test_a_lens_replaced_before_its_socket_closed_leaves_its_successor_connected(self) -> None:
         self.upgrade(self.connection)
@@ -338,6 +347,77 @@ class SnapshotTests(unittest.TestCase):
         self.assertTrue(report["auto"])
         self.assertFalse(report["manual"])
         self.assertEqual(report["status"], "auto sort: running")
+
+
+class PlayoutTests(unittest.TestCase):
+    """The glasses' messages reach the Mac in bunches; the arms get them evened out, by the Lens's clock."""
+
+    @staticmethod
+    def message(t: float, x: float, *, tracked: bool = True) -> dict:
+        hand = hand_at([x, -20.0, -35.0]) if tracked else {"tracked": False}
+        return {"t": t, "head": HEAD, "left": hand, "right": {"tracked": False}}
+
+    def drive(self, arrivals: list[float], *, ticks: int = 150) -> tuple[list[float], list[float], Hands]:
+        """The Lens sends one message every 33 ms, the hand 1 cm further each time; the Mac gets
+        message k at ``arrivals[k]`` and reads the hands 50 times a second. The wrist's x, both ways."""
+
+        now = [0.0]
+        hands = Hands(clock=lambda: now[0])
+        played, newest, k = [], [], 0
+        for tick in range(1, ticks):
+            while k < len(arrivals) and arrivals[k] <= tick / 50:
+                now[0] = arrivals[k]
+                hands.put(self.message(k / 30, float(k)))
+                k += 1
+            now[0] = tick / 50
+            if tick / 50 > 0.5 and k < len(arrivals):
+                played.append(hands.playout()[0]["left"]["wrist"][0])
+                newest.append(hands.latest()[0]["left"]["wrist"][0])
+        return played, newest, hands
+
+    def test_bunched_arrivals_are_played_back_evenly(self) -> None:
+        # Three at once every 100 ms, as the recordings show them arriving over adb.
+        arrivals = [0.02 + 0.1 * (k // 3 + 1) + 0.001 * (k % 3) for k in range(90)]
+        played, newest, hands = self.drive(arrivals)
+        self.assertGreater(max(np.diff(newest)), 2.5, "steered by the newest, the arm lunges 3 cm at a time")
+        steps = np.diff(played)
+        self.assertGreaterEqual(min(steps), 0.0)
+        self.assertLess(max(steps), 1.0)  # 30 cm/s is 0.6 cm a tick
+        self.assertAlmostEqual(hands._eased(3.0), 0.1, delta=0.02)  # a bunch's span behind, no more
+        self.assertLessEqual(hands._eased(3.0), JITTER_MAX_S)
+
+    def test_messages_on_time_are_played_a_lens_frame_behind(self) -> None:
+        arrivals = [k / 30 + 0.02 for k in range(90)]
+        played, newest, hands = self.drive(arrivals)
+        self.assertLess(max(np.diff(played)), 1.0)
+        self.assertLess(hands._eased(2.0), 0.04)
+        lag = np.array(newest) - np.array(played)
+        self.assertLess(lag.max(), 1.6)  # a frame and a half at most: 1 cm a frame
+
+    def test_without_the_lens_clock_it_is_the_newest(self) -> None:
+        hands = Hands(clock=lambda: 1.0)
+        hands.put({"left": hand_at([0, 0, 0])})
+        hands.put({"left": hand_at([5, 0, 0])})
+        self.assertEqual(hands.playout()[0]["left"]["wrist"][0], 5.0)
+
+    def test_a_new_lens_starts_the_clock_afresh(self) -> None:
+        now = [10.0]
+        hands = Hands(clock=lambda: now[0])
+        for k in range(10):
+            now[0] = 10.0 + k / 30
+            hands.put(self.message(100.0 + k / 30, float(k)))
+        now[0] = 11.0
+        hands.put(self.message(0.5, 42.0))  # pushed again: the Lens's time starts near zero
+        self.assertEqual(hands.playout()[0]["left"]["wrist"][0], 42.0)
+
+    def test_a_hand_found_or_lost_between_two_messages_is_not_blended(self) -> None:
+        a = self.message(0.0, 0.0)
+        b = self.message(1 / 30, 10.0, tracked=False)
+        self.assertEqual(blend_messages(a, b, 0.25)["left"], a["left"])
+        self.assertEqual(blend_messages(a, b, 0.75)["left"], {"tracked": False})
+        mixed = blend_messages(a, self.message(1 / 30, 10.0), 0.25)["left"]
+        self.assertAlmostEqual(mixed["wrist"][0], 2.5)
+        self.assertIs(mixed["tracked"], True)
 
 
 class VideoSocketTests(unittest.TestCase):

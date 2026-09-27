@@ -72,7 +72,8 @@ way VR teleoperation does it with a grip button:
 Each tick (50 Hz) every arm takes one damped least-squares step towards its
 target on the model -- far quicker than solving afresh, and a target out of
 reach just leaves the arm at the nearest it gets -- no joint turning faster
-than --speed.
+than --speed. The hands it steers by are played back by the Lens's own clock
+(Hands.playout): over adb they arrive in bunches.
 """
 
 from __future__ import annotations
@@ -104,6 +105,10 @@ RATE_HZ = 50
 SPEED = 120.0  # deg/s a joint turns at most while following
 GRIPPER_SPEED = 150.0  # percent a second
 STALE_S = 0.3  # a hand not heard of for this long holds its arm
+# Hands.playout(): the hands are played back behind the newest by as much as their bunched
+# arrival needs, at most this, and that allowance shrinks this much a second while they come on time.
+JITTER_MAX_S = 0.15
+JITTER_EASE_S = 0.05
 SMOOTHING = 0.5  # the share of each new hand position; the rest is the last: steadies the tracking's jitter
 ORIENTATION_SMOOTHING = 0.4  # knuckles jitter while pinching; filter angles without averaging across the 180-degree seam
 OPEN = 60.0  # percent open with thumb and index well apart
@@ -200,6 +205,36 @@ def frame(payload: bytes, opcode: int = 1) -> bytes:
     return head + payload
 
 
+def _point(value) -> bool:
+    return (isinstance(value, (list, tuple)) and len(value) == 3
+            and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in value))
+
+
+def blend(a: dict, b: dict, w: float) -> dict:
+    """Message ``a`` moved ``w`` of the way to ``b``: every point in between, the rest from the nearer.
+
+    A hand found or lost between the two is not blended: it is as the nearer says.
+    """
+
+    near = a if w < 0.5 else b
+    out = dict(near)
+    for key in ("head", "left", "right"):
+        first, second = a.get(key), b.get(key)
+        if not isinstance(first, dict) or not isinstance(second, dict):
+            continue
+        if key != "head" and not (first.get("tracked") and second.get("tracked")):
+            continue
+        mixed = dict(near[key])
+        for name, start in first.items():
+            end = second.get(name)
+            if _point(start) and _point(end):
+                mixed[name] = [s + (e - s) * w for s, e in zip(start, end)]
+        out[key] = mixed
+    if isinstance(a.get("t"), (int, float)) and isinstance(b.get("t"), (int, float)):
+        out["t"] = a["t"] + (b["t"] - a["t"]) * w
+    return out
+
+
 class Hands:
     """The newest message from the glasses, and what to tell them back; shared between threads.
 
@@ -221,6 +256,9 @@ class Hands:
         self.report: str | None = None  # what the glasses are sent: JSON with the status, boxes and stops (report())
         self.connected = False
         self._sockets = 0  # a replaced Lens's socket can close after its successor's opened
+        self._samples: collections.deque = collections.deque(maxlen=32)  # (the Lens's time, message), oldest first
+        self._transit = math.inf  # the quickest arrival less Lens time seen: the link with nothing in the way
+        self._delay, self._delay_at = 0.0, -math.inf  # how far behind the newest the hands are played, and when set
         self.presentation: bool | None = None  # web demo mode; omitted by the standalone bridge
 
     def receive(self, message: dict) -> None:
@@ -245,6 +283,61 @@ class Hands:
             self._message, self._at = message, self.clock()
             if self.record is not None and isinstance(message, dict):
                 self.record.write(json.dumps({"at": round(self._at, 3), **message}, separators=(",", ":")) + "\n")
+            self._keep(message, self._at)
+
+    def _keep(self, message, now: float) -> None:
+        """Into the playback buffer, by the time the Lens sent it (its "t")."""
+
+        t = message.get("t") if isinstance(message, dict) else None
+        if not isinstance(t, (int, float)) or isinstance(t, bool):
+            self._samples.clear()  # no clock to play by: the newest it is
+            return
+        if self._samples and t < self._samples[-1][0] - 1.0:  # a new Lens: its clock started again
+            self._samples.clear()
+        if not self._samples:
+            self._transit, self._delay = math.inf, 0.0
+        elif t <= self._samples[-1][0]:
+            return
+        else:  # the quickest transit may creep up a millisecond a second: the two clocks drift
+            self._transit += 0.001 * max(now - self._delay_at, 0.0)
+        self._transit = min(self._transit, now - t)
+        # Played this far behind, it came before it was wanted: as the one before it was played.
+        # Coming on time that is one Lens frame (33 ms); the first of a bunch, some 100 ms.
+        need = now - self._transit - (self._samples[-1][0] if self._samples else t)
+        self._delay = min(max(self._eased(now), need), JITTER_MAX_S)
+        self._delay_at = now
+        self._samples.append((t, message))
+
+    def _eased(self, now: float) -> float:
+        return max(self._delay - JITTER_EASE_S * max(now - self._delay_at, 0.0), 0.0)
+
+    def playout(self) -> tuple[dict | None, float]:
+        """The hands as the Lens saw them a moment ago, evened out; and how many seconds old the newest is.
+
+        Over adb the glasses' messages reach the Mac in bunches -- three at once
+        every ~100 ms while the Lens sends one every 33 ms -- and the arms,
+        steered by the newest, lunged and waited ten times a second ("jerky").
+        Played by the Lens's own clock, as far behind as the bunching needs (up
+        to JITTER_MAX_S, easing off while messages come on time) and interpolated
+        between the two around that moment, the hands move as they did. Coming
+        on time, that is one Lens frame (33 ms) behind.
+        """
+
+        with self._lock:
+            now = self.clock()
+            age = now - self._at
+            samples = self._samples
+            if len(samples) < 2:
+                return self._message, age
+            wanted = now - self._transit - self._eased(now)
+            if wanted >= samples[-1][0]:
+                return samples[-1][1], age
+            if wanted <= samples[0][0]:
+                return samples[0][1], age
+            for (t0, a), (t1, b) in zip(samples, list(samples)[1:]):
+                if t0 <= wanted < t1:
+                    return blend(a, b, (wanted - t0) / (t1 - t0)), age
+            return samples[-1][1], age
 
     def stop_recording(self) -> None:
         with self._lock:
@@ -491,8 +584,14 @@ def make_server(hands: Hands, host: str = "0.0.0.0", port: int = PORT) -> socket
             self.wfile.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                               f"Sec-WebSocket-Accept: {accept_key(headers['sec-websocket-key'])}\r\n\r\n").encode())
             hands.opened()
-            told, parts = None, []
+            parts = []
             try:
+                # Every message is answered at once, changed or not. Answered only on a change,
+                # the glasses' messages reached the Mac in bunches, three every ~100 ms, whenever
+                # answers came and went (while dragging) -- most likely as an unanswered message's
+                # acknowledgement waited, and the Lens's socket (no TCP_NODELAY to be had there)
+                # held what followed until it came.
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 while True:
                     final, opcode, payload = read_frame(self.rfile)
                     if opcode == 8:
@@ -511,10 +610,7 @@ def make_server(hands: Hands, host: str = "0.0.0.0", port: int = PORT) -> socket
                         hands.receive(json.loads(text))
                     except ValueError:
                         continue
-                    answer = hands.answer()
-                    if answer != told:
-                        told = answer
-                        self.wfile.write(frame(told.encode()))
+                    self.wfile.write(frame(hands.answer().encode()))
             except (OSError, struct.error):
                 pass  # the glasses went away
             finally:
@@ -1485,7 +1581,7 @@ def follow(followers: dict[str, Follower], hands: Hands, arms: dict | None = Non
                 home_queue = list(followers)
                 for follower in followers.values():
                     follower.begin_home()
-        message, age = hands.latest()
+        message, age = hands.playout()
         fresh = message if message is not None and age <= STALE_S else {}
         hand_of = {name: fresh.get(side) for name, side in sides.items()}
         seen = {name: bool(hand and hand.get("tracked") and hand.get("wrist")) for name, hand in hand_of.items()}

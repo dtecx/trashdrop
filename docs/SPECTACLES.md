@@ -244,6 +244,24 @@ findings above were made; no replay tool is in the repo yet (worth adding).
   `out/spectacles/session-*.jsonl` (the `t` field restarts with each Lens) for
   its hands stopping. About 7 messages a second instead of 30 means the
   glasses were throttling the Lens: they were put down, or taken off.
+- **"Jerky" arms (2026-09-27 11:14): the hands arrive in bunches.** The Lens
+  sends one message every 33 ms (its `t`, steady). They reach the Mac (`at` in
+  the recording) three at once every ~100 ms, in 15% of the gaps while
+  pinching, 7% with hands in view, 1% with none. This was so in every session
+  that day (5-24% while pinching). Steered by the newest message, the jaw
+  lunged and waited ten times a second. Replayed through the real 50 Hz loop:
+  jaw speed as a 10 Hz sawtooth, p95 acceleration 777 cm/s2, against 611 with
+  the same messages arriving evenly.
+  Likely cause: the Mac answered only when its report changed. While dragging,
+  answers came and went. The glasses' socket (Snap offers no TCP_NODELAY)
+  waits for the acknowledgement of what it sent, and an unanswered message's
+  acknowledgement was delayed. The Mac now answers every message and sets
+  TCP_NODELAY; the next recording shows whether the bunches are gone.
+  In any case `follow()` now steers by `Hands.playout()`. The hands are played
+  back by the Lens's clock, interpolated, and held behind by what the bunching
+  needs: 33 ms when messages come on time, about 100 ms with bunches, 150 ms
+  at most. Replayed, p95 acceleration 333 cm/s2, with no sawtooth.
+  To check a session: `at` gaps against `t` gaps in `out/spectacles/session-*.jsonl`.
 - The active display Render Target reports 1392 x 1590 on the real glasses even
   with asset `ResolutionScale` set to 0.3. Reading it back kills the Lens inside
   `Base64.encodeTextureAsync`, before either callback. The 2 fps spectator
