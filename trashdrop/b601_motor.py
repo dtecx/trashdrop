@@ -26,7 +26,7 @@ B601_PCBUSB = Path(os.environ.get("TRASHDROP_B601_PCBUSB", "/private/tmp/trashdr
 # The one motion limit for now (the user, 2026-09-27 14:40): no travel, turn or floor envelope. The
 # old demo envelope (5 cm, 15 degrees, not below the start) refused 77% of the drag ticks of the
 # 14:18 session, and a refused target left the arm standing until the next one got through.
-JOINT_SPEED = math.radians(15.0)
+JOINT_SPEED = math.radians(20.0)  # 15 until 2026-09-27 ~15:50
 # The gripper motor turns about 340 degrees shut to open (b601_park.toml): at 15 degrees/s one
 # opening took 23 s. 90 degrees/s of the motor opens it in about 4 s.
 GRIP_SPEED = math.radians(90.0)
@@ -36,6 +36,7 @@ GRIP_ENVELOPE = math.radians(5.0)
 # the gripper is never commanded further than this from where it is (kp 50: about 4.4 N m).
 GRIP_SQUEEZE = math.radians(5.0)
 FOLLOW_ERROR = math.radians(5.0)  # the arm joints only: an item in the jaw blocks the gripper by design
+FOLLOW_TICKS = 3  # ...and only when it lasts: one late reply is not a joint that failed to follow
 # Each tick takes one damped least-squares step of the six arm joints towards the tool target.
 IK_GAIN = 6.0  # 1/s: the step heads for the target at this rate, then JOINT_SPEED caps it
 IK_DAMPING = 0.02  # m: keeps the step small and steady near a singular pose
@@ -150,7 +151,7 @@ class B601Motor:
         self.tip_id = None
         self.start = self.command = self.desired = None
         self.feedback = None
-        self._feedback_index = 0
+        self._lagging = 0
         self._last_at = 0.0
         self._park_settle_since = 0.0
         self.target: tuple[np.ndarray, np.ndarray] | None = None  # where the tool is headed, base frame
@@ -275,6 +276,32 @@ class B601Motor:
         else:
             self.state = f"following the hand · {math.degrees(JOINT_SPEED):.0f}°/s max"
 
+    def _update_feedback(self) -> None:
+        """Every motor's latest reply, as the vendor's SDK reads them (RebotArm.get_positions).
+
+        A request frame each, the receive queue drained, the cached state read: nothing waits
+        for an answer. The loop used to read a parameter and wait up to 500 ms for it; one that
+        timed out (14:55) took the bridge down with all seven motors disabled, and the arm fell.
+        A motor that has not answered keeps its last reading.
+        """
+
+        for motor in self.motors:
+            try:
+                motor.request_feedback()
+            except Exception:
+                pass
+        try:
+            self.controller.poll_feedback_once()
+        except Exception:
+            return
+        for index, motor in enumerate(self.motors):
+            try:
+                state = motor.get_state()
+            except Exception:
+                continue
+            if state is not None and math.isfinite(state.pos):
+                self.feedback[index] = state.pos
+
     def _gravity(self, now: float) -> np.ndarray:
         """This tick's gravity torques for the six arm joints, N m, faded in after enabling."""
 
@@ -330,22 +357,21 @@ class B601Motor:
         previous = float(self.command[6])
         self.command = velocity_step(self.command, self.desired, elapsed)
         self._last_at = now
-        # The gripper is read every tick: its set point must stay within GRIP_SQUEEZE of it.
-        self.feedback[6] = self._read(self.motors[6])
+        self._update_feedback()
+        # The gripper's set point stays within GRIP_SQUEEZE of where it is.
         self.command[6], grip_velocity = grip_step(previous, float(self.command[6]), float(self.feedback[6]),
                                                    min(elapsed, 0.05))
         torque = np.append(self._gravity(now), 0.0)  # the gripper holds by position alone
         velocity = [0.0] * 6 + [grip_velocity]
         for motor, angle, (kp, kd), speed, feed in zip(self.motors, self.command, GAINS, velocity, torque):
             motor.send_mit(float(angle), float(speed), kp, kd, float(feed))
-        motor = self.motors[self._feedback_index]
-        actual = self._read(motor)
-        self.feedback[self._feedback_index] = actual
-        if abs(actual - self.command[self._feedback_index]) > FOLLOW_ERROR:
+        behind = np.abs(self.feedback[:6] - self.command[:6]) > FOLLOW_ERROR
+        self._lagging = self._lagging + 1 if behind.any() else 0
+        if self._lagging >= FOLLOW_TICKS:
+            self._lagging = 0
             self.hold()
-            self.fault = f"J{self._feedback_index + 1} did not follow: holding"
+            self.fault = f"J{int(np.argmax(behind)) + 1} did not follow: holding"
             self.state = self.fault
-        self._feedback_index = (self._feedback_index + 1) % 6  # the arm joints; the gripper is read above
         if self.parking:  # the gripper stays as it is: it may hold an item
             close_command = np.max(np.abs(self.command[:6] - self.park[:6])) < math.radians(0.2)
             close_feedback = np.max(np.abs(self.feedback[:6] - self.park[:6])) < math.radians(1)

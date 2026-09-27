@@ -237,10 +237,13 @@ class B601GlassesBridge:
             try:
                 parked = self.driver.step()
             except Exception as exc:
-                self.error = f"B601 CAN/control fault: {exc}"
-                self.driver.close()
-                self.driver = None
-                self.mode = "off"
+                # Never disable on a fault: disabled, the motors let the arm fall. It did, 14:55, after
+                # one position read timed out. Hold instead: the motors keep their last set point,
+                # the next tick tries again, and the hand has to re-pinch.
+                self.error = f"B601 CAN hiccup, holding: {exc}"
+                self.driver.hold()
+                self.motion = self._fresh_motion()
+                self.anchor_pose = None
             else:
                 if parked:
                     self.driver = None

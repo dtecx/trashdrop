@@ -298,6 +298,36 @@ class B601ControlTests(unittest.TestCase):
         self.assertAlmostEqual(blocked, 1.0 - GRIP_SQUEEZE)
         self.assertAlmostEqual(velocity, 0.0)  # held there: no feed-forward pushing on
 
+    def test_a_can_fault_holds_the_arm_and_never_disables_the_motors(self) -> None:
+        # 14:55: one position read timed out, the bridge closed the driver, all seven motors went
+        # limp and the arm fell.
+        class FlakyMotor:
+            state = "following"
+            feedback = np.zeros(7)
+            closed = held = 0
+
+            def step(self):
+                raise RuntimeError("robstride_get_param_f32_host_id failed")
+
+            def hold(self):
+                self.held += 1
+
+            def close(self):
+                self.closed += 1
+
+            def grip_fraction(self):
+                return 0.4
+
+        bridge = B601GlassesBridge(live_allowed=True, sdk_root=Path("/unused"))
+        motor = FlakyMotor()
+        bridge.driver, bridge.mode = motor, "live"
+        bridge.tick()
+        self.assertIs(bridge.driver, motor)
+        self.assertEqual(motor.closed, 0)
+        self.assertGreater(motor.held, 0)
+        self.assertIn("holding", bridge.error)
+        self.assertEqual(bridge.motion.jaw, 0.4)  # the jaw is not dropped either
+
     def test_web_b601_carries_on_in_the_sdk_environment_without_motorbridge(self) -> None:
         import argparse
         import os

@@ -441,6 +441,24 @@ degree/s cap, the tool 1.8 cm behind its target at the median, 6.7 cm at p90.
     in the jaw blocks the gripper by design. Parking leaves the gripper as it
     is.
 
+**The arm fell (2026-09-27 14:55), fixed ~15:55.** One position read,
+`robstride_get_param_f32_host_id` waiting up to 500 ms, failed. The bridge's
+fault handler then closed the driver, which disables all seven motors, and the
+arm dropped under its own weight. That handler came with the first B601
+bridge; reading the gripper every tick (0cce721) doubled the blocking reads
+and made the timeout likelier. Now:
+- no fault disables the motors: `B601GlassesBridge.tick` holds, keeps the jaw,
+  and asks for a re-pinch; the motors keep their last MIT set point. Only a
+  finished park, or leaving the program (the second Ctrl+C, which warns to
+  support the arm), disables them;
+- positions come as the vendor SDK reads them (`RebotArm.get_positions`):
+  `request_feedback()` per motor, `poll_feedback_once()`, the cached
+  `get_state().pos`. Nothing in the loop waits for an answer; the blocking
+  parameter read is left to the checks in `connect()`;
+- did-not-follow needs `FOLLOW_TICKS` (3) ticks in a row, since every tick now
+  reads every joint;
+- `JOINT_SPEED` is 20 degrees/s (the user).
+
 With the SO-101 arms removed, stop any earlier bridge (the Lens hand socket
 can have only one owner), then run the camera-only unified page in the
 operator's camera-enabled terminal:

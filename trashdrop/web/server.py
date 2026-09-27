@@ -213,7 +213,10 @@ def make_handler(cell, spectacles=None):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the browser gave up on this picture; the next poll asks again
 
         def _json(self, payload, status: int = 200) -> None:
             self._send(status, json.dumps(payload, default=_plain).encode(), "application/json")
