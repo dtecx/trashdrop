@@ -1,13 +1,13 @@
-"""Safe Spectacles input preview for a centrally mounted reBot B601-RS.
+"""Spectacles hand input for the centrally mounted reBot B601-RS.
 
 The coordinates here are displacements in the Lens world, not robot poses.
-No B601 motor driver is wired until its zero, base transform, limits and
-clearance from the two SO-101 arms have been measured on the actual rig.
+The motor driver owns the physical limits and the separate LIVE gate.
 """
 
 from __future__ import annotations
 
 import math
+import time
 
 import numpy as np
 
@@ -115,68 +115,104 @@ class B601Preview:
 
 
 class B601HandMotion:
-    """A clutched six-axis hand displacement, expressed in the robot base frame.
+    """Separate translation and orientation clutches in the robot base frame.
 
-    This class does not solve IK or command hardware. One unpinched hand packet
-    is required before the first clutch, so releasing a UIKit button cannot
-    become an arm movement. Missing tracking immediately releases the clutch.
+    Index pinch translates from the palm centre, rather than moving fingertips.
+    Thumb-middle touch rotates the tool without translating it. Coupling both
+    to an index pinch made normal wrist motion exceed the orientation limit and
+    silently blocked lifting. Missing tracking releases either clutch.
     """
 
-    def __init__(self, scale: float = 0.5) -> None:
+    def __init__(self, scale: float = 1.0) -> None:
         self.scale = scale
         self.ready = False
         self.anchor: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        self.gesture = "free"
+        self.anchor_generation = 0
+        self._middle_since: float | None = None
         self.state = "release pinch to arm"
 
-    def update(self, packet: dict | None, age: float) -> tuple[np.ndarray, np.ndarray] | None:
+    def update(self, packet: dict | None, age: float, *, now: float | None = None
+               ) -> tuple[np.ndarray, np.ndarray] | None:
+        now = time.monotonic() if now is None else now
         hand = packet.get("right") if isinstance(packet, dict) and age <= 0.3 else None
         head = packet.get("head") if isinstance(packet, dict) else None
         if not isinstance(hand, dict) or not hand.get("tracked") or not isinstance(head, dict):
             self.anchor = None
             self.ready = False
+            self.gesture = "free"
+            self._middle_since = None
             self.state = "hand lost: holding"
             return None
         try:
             thumb = np.asarray(hand["thumb"], dtype=float)
             index = np.asarray(hand["index"], dtype=float)
+            middle = np.asarray(hand["middleTip"], dtype=float)
+            wrist = np.asarray(hand["wrist"], dtype=float)
+            knuckle = np.asarray(hand["middleKnuckle"], dtype=float)
             look = np.asarray(head["look"], dtype=float)
             eye = np.asarray(head["p"], dtype=float)
             if any(value.shape != (3,) or not np.isfinite(value).all()
-                   for value in (thumb, index, look, eye)):
+                   for value in (thumb, index, middle, wrist, knuckle, look, eye)):
                 raise ValueError("invalid tracking vector")
         except (KeyError, TypeError, ValueError):
             self.anchor = None
             self.ready = False
+            self.gesture = "free"
+            self._middle_since = None
             self.state = "tracking incomplete: holding"
             return None
-        point = (thumb + index) / 2
-        frame = _hand_frame(hand)
-        if frame is None:
+
+        point = (wrist + knuckle) / 2
+        index_gap = float(np.linalg.norm(thumb - index))
+        middle_gap = float(np.linalg.norm(thumb - middle))
+        detected = hand.get("pinch")
+        pinched = detected if isinstance(detected, bool) else index_gap < 2.5
+        middle_touch = not pinched and index_gap > 4.0 and middle_gap < 2.5
+        if middle_touch:
+            if self._middle_since is None:
+                self._middle_since = now
+        else:
+            self._middle_since = None
+        turning = (self.gesture == "turn" and not pinched and index_gap > 3.5 and middle_gap < 3.5)
+        turning = turning or (middle_touch and self._middle_since is not None and
+                              now - self._middle_since >= 0.15)
+        gesture = "drag" if pinched else "turn" if turning else "free"
+        if gesture == "free":
             self.anchor = None
-            self.ready = False
-            self.state = "knuckles missing: holding"
-            return None
-        frame = np.asarray(frame, dtype=float)
-        pinch = hand.get("pinch")
-        pinched = pinch if isinstance(pinch, bool) else float(np.linalg.norm(thumb - index)) < 2.5
-        if not pinched:
-            self.anchor = None
+            self.gesture = "free"
             self.ready = True
-            self.state = "free: pinch to move"
+            self.state = "hold thumb-middle to turn" if middle_touch else "free: index pinch to move"
             return None
         if not self.ready:
             self.state = "release pinch to arm"
             return None
+        if gesture != self.gesture and self.anchor is not None:
+            self.anchor = None
+            self.ready = False
+            self.gesture = "free"
+            self.state = "release between gestures"
+            return None
+        frame = _hand_frame(hand) if gesture == "turn" else None
+        if gesture == "turn" and frame is None:
+            self.anchor = None
+            self.ready = False
+            self.state = "knuckles missing: holding"
+            return None
+        orientation = np.asarray(frame, dtype=float) if frame is not None else np.eye(3)
         if self.anchor is None:
             wearer = facing_frame(look, eye, point)
             # The robot's +X points forward, -Y to the wearer's right, +Z up.
             mapping = np.stack((wearer[0], -wearer[1], wearer[2]))
-            self.anchor = point, frame, mapping
-            self.state = "clutch set: move slowly"
+            self.anchor = point, orientation, mapping
+            self.anchor_generation += 1
+            self.gesture = gesture
+            self.state = "drag: move palm up/forward/sideways" if gesture == "drag" else "turn: rotate hand"
             return np.zeros(3), np.eye(3)
         start, first_frame, mapping = self.anchor
-        delta_m = mapping @ (point - start) * (self.scale / 100)
-        rotation_world = frame.T @ first_frame
-        rotation_robot = mapping @ rotation_world @ mapping.T
-        self.state = "following right hand"
-        return delta_m, rotation_robot
+        if gesture == "drag":
+            self.state = "drag: move palm up/forward/sideways"
+            return mapping @ (point - start) * (self.scale / 100), np.eye(3)
+        rotation_world = orientation.T @ first_frame
+        self.state = "turn: rotate hand; position held"
+        return np.zeros(3), mapping @ rotation_world @ mapping.T

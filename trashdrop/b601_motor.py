@@ -16,12 +16,12 @@ from pathlib import Path
 import numpy as np
 
 
-JOINT_SPEED = math.radians(4.0)  # below the first J1 test's five-degree-per-second ramp
-GRIP_SPEED = math.radians(2.0)
-JOINT_ENVELOPE = math.radians(8.0)  # small first live workspace, relative to session start
+JOINT_SPEED = math.radians(8.0)  # still far below the SO-101 teleop rate; user requested a less sluggish B601
+GRIP_SPEED = math.radians(4.0)
+JOINT_ENVELOPE = math.radians(15.0)  # 5 cm lift at the recorded pose needs about 12 degrees at J3
 GRIP_ENVELOPE = math.radians(5.0)
-MAX_TOOL_TRAVEL = 0.03  # metres from the session's starting tool position
-MAX_TOOL_ROTATION = math.radians(10.0)
+MAX_TOOL_TRAVEL = 0.05  # metres from the session's starting tool position
+MAX_TOOL_ROTATION = math.radians(15.0)
 FOLLOW_ERROR = math.radians(5.0)
 HOST_ID = 0xFD
 MECH_POS = 0x7019
@@ -189,7 +189,7 @@ class B601Motor:
             self.state = "at a joint limit: holding"
             return False
         self.desired[:6] = candidate
-        self.state = "following right hand · 4°/s max"
+        self.state = "following right hand · 8°/s max"
         return True
 
     def set_grip(self, open_grip: bool) -> None:

@@ -43,7 +43,7 @@ const MENU_SHIFT = 0.05; // of the view's width
 // press with either hand.
 const MENU_GRACE_S = 2.5;
 const MENU_REACH_CM = 18;
-const EMPTY_Y = -9.8; // below B601 preview, shown only until the zone is photographed
+const EMPTY_Y = -9.8; // below B601, shown only until the zone is photographed
 // The hint card: this far ahead, catching up with the view by this share a frame.
 const HINT_DISTANCE = 60;
 const HINT_FOLLOW = 0.1;
@@ -56,14 +56,13 @@ export class SpectaclesUI {
   private b601Active = false;
   private b601LiveActive = false;
   private b601Only = false;
+  private so101Offline = false;
   private videoAvailable = true;
   private autoActive = false;
   private manualHighlight: boolean | null = null;
-  private b601Highlight: boolean | null = null;
   private b601LiveHighlight: boolean | null = null;
   private autoHighlight: boolean | null = null;
   private manualLabel: Text;
-  private b601Label: Text;
   private b601LiveLabel: Text;
   private autoLabel: Text;
   private exitLabel: Text;
@@ -135,6 +134,10 @@ export class SpectaclesUI {
       this.b601Only = report.standaloneB601;
       this.layoutB601Buttons();
     }
+    if (typeof report.so101Offline === "boolean" && report.so101Offline !== this.so101Offline) {
+      this.so101Offline = report.so101Offline;
+      this.layoutB601Buttons();
+    }
     if (typeof report.videoAvailable === "boolean" && report.videoAvailable !== this.videoAvailable) {
       this.videoAvailable = report.videoAvailable;
       if (this.video !== null) this.video.enabled = this.videoAvailable && this.presentationVisible;
@@ -155,6 +158,7 @@ export class SpectaclesUI {
     this.manualActive = report.manual === true;
     this.b601Active = this.manualActive && report.manualTarget === "b601";
     this.b601LiveActive = this.manualActive && report.manualTarget === "b601_live";
+    this.setText(this.b601LiveLabel, this.b601LiveActive ? "B601 HOLD" : "B601 LIVE");
     this.autoActive = report.auto === true;
     const arms = report.manual ? this.b601Active || this.b601LiveActive ?
       report.hands || {} : report.arms || report.hands || {} : {};
@@ -166,13 +170,10 @@ export class SpectaclesUI {
         new vec4(0.15, 0.8, 1, 1));
       this.manualHighlight = this.manualActive && !this.b601Active && !this.b601LiveActive;
     }
-    if (this.b601Highlight !== this.b601Active) {
-      this.highlight(this.b601Label, this.b601Active, new vec4(0.8, 0.5, 1, 1));
-      this.b601Highlight = this.b601Active;
-    }
-    if (this.b601LiveHighlight !== this.b601LiveActive) {
-      this.highlight(this.b601LiveLabel, this.b601LiveActive, new vec4(1, 0.46, 0.28, 1));
-      this.b601LiveHighlight = this.b601LiveActive;
+    if (this.b601LiveHighlight !== (this.b601Active || this.b601LiveActive)) {
+      this.highlight(this.b601LiveLabel, this.b601Active || this.b601LiveActive,
+        new vec4(1, 0.46, 0.28, 1));
+      this.b601LiveHighlight = this.b601Active || this.b601LiveActive;
     }
     if (this.autoHighlight !== this.autoActive) {
       this.highlight(this.autoLabel, this.autoActive, new vec4(0.3, 1, 0.5, 1));
@@ -181,11 +182,11 @@ export class SpectaclesUI {
     const error = typeof report.controlError === "string" ? report.controlError : "";
     const mode = error === "photograph the empty zone first" ? "CLEAR ZONE · TAP EMPTY" : error ||
       (report.busy === "empty" ? "CAPTURING EMPTY ZONE" :
-       this.b601LiveActive ? "B601 LIVE · 4°/S MAX · PINCH TO MOVE" :
+       this.b601LiveActive ? "B601 LIVE · 8°/S · INDEX MOVE / MIDDLE TURN" :
        this.b601Active ? "B601-RS · HAND PREVIEW ONLY" :
        report.b601Parking ? "B601 · PARKING TO SLEEP POSE" :
        report.b601Holding ? "B601 HOLD · LIVE TO RESUME / NEUTRAL TO PARK" :
-       this.b601Only ? "B601 READY · LIVE OR PREVIEW" :
+       this.b601Only ? "B601 READY · TAP B601" :
        this.manualActive ? "SO-101 · HAND CONTROL" : this.autoActive ? "AUTO · SORTING" :
        report.busy === "neutral" ? "MOVING TO NEUTRAL" :
        this.emptyNeeded ? "CLEAR ZONE · TAP EMPTY" : "EMPTY READY · TAP AUTO");
@@ -284,11 +285,7 @@ export class SpectaclesUI {
       this.send({ command: "presentation", enabled: false });
     });
     this.exitLabel.textFill.color = new vec4(0.72, 0.75, 0.82, 1);
-    this.b601Label = this.createButton(menu, "B601 PREV", -4.5, -5.6, 7, 3.2, 14, () => {
-      this.send({ command: "b601", enabled: !this.b601Active });
-      this.queueMenuClose();
-    });
-    this.b601LiveLabel = this.createButton(menu, "B601 LIVE", 4.5, -5.6, 7, 3.2, 14, () => {
+    this.b601LiveLabel = this.createButton(menu, "B601 LIVE", 0, -5.6, 16, 3.2, 18, () => {
       this.send({ command: "b601_live", enabled: !this.b601LiveActive });
       this.queueMenuClose();
     });
@@ -301,13 +298,10 @@ export class SpectaclesUI {
   }
 
   private layoutB601Buttons() {
-    // Never disable a hovered UIKit hierarchy: on-device that can crash the Lens.
-    const oldY = this.b601Only ? -10000 : 5;
-    this.manualLabel.getSceneObject().getParent().getTransform().setLocalPosition(new vec3(-4.5, oldY, 0));
-    this.autoLabel.getSceneObject().getParent().getTransform().setLocalPosition(new vec3(4.5, oldY, 0));
-    const y = this.b601Only ? 5 : -5.6;
-    this.b601Label.getSceneObject().getParent().getTransform().setLocalPosition(new vec3(-4.5, y, 0));
-    this.b601LiveLabel.getSceneObject().getParent().getTransform().setLocalPosition(new vec3(4.5, y, 0));
+    // Keep the main Lens layout and Frame; only the fourth button changes
+    // meaning because this B601-only bridge has no web controls to return to.
+    this.setText(this.manualLabel, this.so101Offline ? "SO101 OFF" : "MANUAL");
+    this.setText(this.autoLabel, this.so101Offline ? "AUTO OFF" : "AUTO");
     this.setText(this.exitLabel, this.b601Only ? "HOLD" : "EXIT UI");
   }
 
@@ -534,7 +528,7 @@ export class SpectaclesUI {
       guide.state.split(": at ")[1].toUpperCase() : "";
     if (reason) return prefix + " · " + state + "\n" + reason;
     const jaw = typeof guide.jaw === "number" ? (guide.jaw >= 30 ? "OPEN" : "CLOSED") : "GRIP --";
-    if (this.b601LiveActive) return "B601 · " + state + "\n" + jaw + " · 4°/S";
+    if (this.b601LiveActive) return "B601 · " + state + "\n" + jaw + " · 8°/S";
     if (this.b601Active) return "B601 · " + state + "\nPREVIEW ONLY";
     const tip = typeof guide.tip === "number" ? Math.round(guide.tip) + " CM" : "--";
     return prefix + " · " + state + "\n" + jaw + " · " + tip;

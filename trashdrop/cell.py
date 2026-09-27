@@ -182,6 +182,7 @@ class Cell:
         self.version = 0  # bumped whenever what the page draws changes
         self._lock = threading.Lock()
         self._frame_used: np.ndarray | None = None
+        self.b601_only = False
         self._failed: list = []  # grasps that failed on the item in the zone now: the next plan avoids them
         self._stale_limits: set[str] = set()  # arms whose servo speed limit waits for the bus to be free
         # Drawn over the stream and fixed while the cell runs. Worked out here,
@@ -242,6 +243,32 @@ class Cell:
             classifier=classifier, camera=Camera(read), limits={name: arm.limits_degrees() for name, arm in arms.items()},
             log=log, save_rig=save_rig,
         )
+        cell._release = capture.release
+        return cell
+
+    @classmethod
+    def open_camera_only(cls, *, camera: str = "auto", log=print) -> Cell:
+        """Show the overhead camera while SO-101 adapters are unplugged."""
+
+        from .__main__ import _resolve_camera
+        from .dataset.capture import open_camera
+        from .perception.calibration import HomographyCalibration
+        from .rig import load_rig
+        from .station import repository_root
+
+        rig = load_rig()
+        sheet = repository_root() / "camera_sheet.json"
+        if not sheet.is_file():
+            raise RuntimeError("calibrate the overhead camera first: uv run trashdrop camera tape")
+        capture = open_camera(_resolve_camera(camera, 1920, 1080), 1920, 1080)
+
+        def read():
+            ok, frame = capture.read()
+            return frame if ok else None
+
+        cell = cls(rig=rig, homography=HomographyCalibration.load(sheet), placements={}, arms={}, poses={},
+                   kinematics={}, classifier=None, camera=Camera(read), limits={}, log=log)
+        cell.b601_only = True
         cell._release = capture.release
         return cell
 
@@ -314,6 +341,8 @@ class Cell:
     def begin(self, action: str) -> str | None:
         """Start an action on the worker thread; the reason it cannot start, if it cannot."""
 
+        if self.b601_only:
+            return "SO-101 arms are unplugged; use the B601 controls in Spectacles"
         actions = {"empty": self.photograph_empty, "look": self.look, "pick": self.pick,
                    "neutral": self.neutral, "auto": self.run_auto, "relax": self.relax}
         if action not in actions:
@@ -559,6 +588,8 @@ class Cell:
     # --- settings ---------------------------------------------------------------
 
     def set_options(self, changes: dict) -> None:
+        if self.b601_only:
+            raise ValueError("sorting options are unavailable while SO-101 arms are unplugged")
         known = asdict(self.options)
         for key, value in changes.items():
             if key not in known:
@@ -629,6 +660,7 @@ class Cell:
                 "pose": self.arm_poses.get(name),
             }
         return {
+            "b601_only": self.b601_only,
             "version": self.version,
             "busy": self.busy,
             "auto": self.auto,

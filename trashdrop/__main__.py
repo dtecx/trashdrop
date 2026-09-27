@@ -909,32 +909,60 @@ def _cmd_web(args: argparse.Namespace) -> int:
     from .web.manual import ManualBridge
     from .web.server import make_server
 
-    if args.demo:
+    if args.b601 and args.demo:
+        print("--b601 uses the live overhead camera; --demo is a separate saved-picture mode")
+        return 1
+    if args.b601 and args.arm:
+        print("--b601 runs with the SO-101 arms unplugged; omit --arm")
+        return 1
+    if args.b601:
+        from .web.b601 import B601WebControl
+
+        cell = Cell.open_camera_only(camera=args.camera)
+        spectacles = B601WebControl(cell, live_allowed=not args.dry_run,
+                                    sdk_root=Path("/private/tmp/trashdrop-rebot-sdk"))
+    elif args.demo:
         out = repository_root() / "out"
         cell = Cell.demo(empty=out / "pick_background.jpg", item=out / "pick_frame.jpg")
     else:
         cell = Cell.open(camera=args.camera, only_arm=args.arm)
     cell.options.dry_run = args.dry_run
-    spectacles = ManualBridge(cell, repository_root() / "out" / "spectacles")
+    if not args.b601:
+        spectacles = ManualBridge(cell, repository_root() / "out" / "spectacles")
     try:
         cell.start()
         spectacles.start_network()
         server = make_server(cell, args.host, args.port, spectacles)
-    except OSError as error:
+    except (OSError, RuntimeError) as error:
         spectacles.close()
         cell.close()
-        print(f"cannot listen on {args.host}:{args.port} ({error}); try --port 8001")
+        print(f"cannot start web on {args.host}:{args.port} ({error}); check the camera or try --port 8001")
         return 1
     url = f"http://{'localhost' if args.host in ('127.0.0.1', '0.0.0.0') else args.host}:{server.server_address[1]}"
     try:
-        print(f"open the page in a browser: {url}\n  Ctrl+C here stops it; the arms hold where they are.")
+        print(f"open the page in a browser: {url}\n  Ctrl+C here stops it; "
+              + ("B601 holds until parked." if args.b601 else "the arms hold where they are."))
         if args.host != "127.0.0.1":
             print("  listening beyond this machine: anyone who can open the page can move the arms")
         if args.open:
             webbrowser.open(url)
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nstopped")
+        interrupted = False
+        while True:
+            try:
+                server.serve_forever()
+                break
+            except KeyboardInterrupt:
+                if args.b601 and spectacles.bridge.driver is not None and not interrupted:
+                    interrupted = True
+                    spectacles.stop()
+                    print("\nB601 holding. Tap NEUTRAL in the glasses to park and disable; "
+                          "a second Ctrl+C releases the motors.")
+                    continue
+                if args.b601 and spectacles.bridge.driver is not None:
+                    print("\nEmergency release: support B601; disabling motors")
+                else:
+                    print("\nstopped")
+                break
     finally:
         spectacles.close()
         cell.stop()
@@ -1701,6 +1729,8 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")
     web.add_argument("--arm", default=None, help="use only this arm: left, right (or its label)")
     web.add_argument("--demo", action="store_true", help="no camera or arms: out/'s saved pictures and pretend arms")
+    web.add_argument("--b601", action="store_true",
+                     help="overhead camera and B601 Spectacles control without opening SO-101 adapters")
     web.add_argument("--dry-run", action="store_true",
                      help="start with picking and Spectacles control simulated; toggle it on the page")
     web.add_argument("--open", action="store_true", help="open the page in the default browser")

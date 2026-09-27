@@ -12,6 +12,7 @@
     --radius: 14px;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #111821, #0b0e13); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
   .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; letter-spacing: .2px; }
@@ -100,6 +101,7 @@
   body.presentation #cell-view .toggles, body.presentation #cell-view .hint,
   body.presentation #cell-view .caption { display: none; }
   body.presentation .presentation-hud { display: flex; }
+  body.b601-only #sorting-control, body.b601-only #last-look, body.b601-only #sorting-settings { display: none; }
   svg text { font-family: system-ui, -apple-system, sans-serif; font-weight: 700; paint-order: stroke; stroke: rgba(0,0,0,.75); stroke-width: 6px; }
 </style>
 </head>
@@ -146,9 +148,12 @@
       </div>
       <div class="arm-cards" id="manual-arms"></div>
       <div class="manual-status" id="b601-note" hidden>B601-RS preview tracks the right hand only and moves no robot. The SO-101 arms are not moved to neutral automatically. Verify clearance before pressing Neutral: Dry run does not disable that action. The 48 V supply and XCAN-USB adapter have been identified, but CAN access, motor zero, base transform and clearance are not commissioned.</div>
+      <div class="buttons" id="b601-web-controls" hidden>
+        <button id="b601-hold">Hold B601</button><button id="b601-park">Park and disable</button>
+      </div>
       <div class="snapshots" id="snapshots"></div>
     </div>
-    <div class="card">
+    <div class="card" id="sorting-control">
       <h2>Control</h2>
       <div class="buttons">
         <button id="look" data-action="look">Look<span class="kbd">L</span></button>
@@ -161,14 +166,14 @@
         <button id="relax" class="relax" title="torque off: the arms go limp and fall -- hold them">Relax arms (limp)</button>
       </div>
     </div>
-    <div class="card">
+    <div class="card" id="last-look">
       <h2>Last look</h2>
       <div class="material"><span class="badge" id="material">—</span><span class="side" id="side"></span></div>
       <div class="bars" id="bars"></div>
       <div class="facts" id="facts"></div>
       <div class="message" id="message"></div>
     </div>
-    <div class="card">
+    <div class="card" id="sorting-settings">
       <h2>Settings</h2>
       <div class="switch"><span>Sort by material (off: the nearer arm takes all)</span><input type="checkbox" id="sort"></div>
       <div class="row"><label for="material_over">What it is</label>
@@ -277,6 +282,13 @@ function drawOverlay(s) {
 function chip(dot, label, value, title) { return `<span class="chip" title="${esc(title || '')}"><span class="dot ${dot}"></span>${label}${value !== undefined ? ` <b>${esc(value)}</b>` : ''}</span>`; }
 function renderChips(s) {
   if (!online) { $('chips').innerHTML = chip('bad', 'cell', 'offline'); return; }
+  if (s.b601_only) {
+    const p = s.spectacles || {};
+    $('chips').innerHTML = chip(s.camera_fps > 4 ? 'ok' : 'bad', 'camera', `${s.camera_fps} fps`)
+      + chip(p.connected ? 'ok' : 'warn', 'glasses', p.connected ? 'connected' : 'waiting')
+      + chip(p.active ? 'warn' : 'ok', 'B601', p.status || 'motors off');
+    return;
+  }
   const mode = s.auto ? ['warn', 'auto'] : s.busy ? ['warn', s.busy] : ['ok', 'idle'];
   let html = chip(s.camera_fps > 4 ? 'ok' : 'bad', 'camera', `${s.camera_fps} fps`)
     + chip(s.classifier ? 'ok' : 'warn', 'classifier', s.classifier ? 'on' : 'off')
@@ -364,10 +376,20 @@ function renderLog(lines) {
 
 function renderManual(s) {
   const p = s.spectacles || {};
+  const b601Only = !!s.b601_only;
+  if (b601Only) $('manual-target').value = 'b601';
   const b601Selected = $('manual-target').value === 'b601';
   $('b601-note').hidden = !b601Selected;
+  $('b601-note').textContent = b601Only ?
+    'SO-101 arms are unplugged. The B601 button in the glasses enables the central arm; index pinch moves it, middle touch turns it. Keep a person at the 48 V switch. Park before exiting the glasses UI.' :
+    'B601 preview tracks the right hand without moving the robot. The SO-101 arms are not moved to neutral automatically.';
   $('manual-start').textContent = b601Selected ? 'Start B601-RS preview' : 'Start manual';
+  $('manual-target').disabled = b601Only;
   $('manual-mode').disabled = b601Selected;
+  for (const id of ['manual-start', 'manual-stop', 'manual-grip', 'manual-home', 'snapshot']) {
+    $(id).hidden = b601Only;
+  }
+  $('b601-web-controls').hidden = !b601Only;
   document.body.classList.toggle('presentation', !!p.presentation);
   const link = p.connected ? '<b>glasses connected</b>' : 'waiting for the glasses';
   const running = p.starting ? ' · moving to ready' : p.active ? ` · ${esc(p.status || 'manual active')}` : '';
@@ -380,11 +402,13 @@ function renderManual(s) {
   $('snapshot').disabled = !p.connected;
   $('dry').disabled = !!p.active;
   const arms = p.arms || {};
-  $('manual-arms').innerHTML = p.target === 'b601' && p.active ? (() => {
+  $('manual-arms').innerHTML = p.target === 'b601' && (p.active || b601Only) ? (() => {
     const guide = arms.b601 || {};
     const offset = Array.isArray(guide.offset) ? guide.offset.join(', ') : '—';
     const rotation = Array.isArray(guide.rotation) ? guide.rotation.join(', ') : '—';
-    return `<div class="arm-card" style="grid-column:1/-1"><b>B601-RS hand preview</b>${esc(guide.state || 'waiting')}<br>Translation: ${esc(offset)} cm · wrist R/P/Y: ${esc(rotation)}°<br>No motor output</div>`;
+    const joints = Array.isArray(guide.joints) ? `Joints: ${esc(guide.joints.join(', '))}°` :
+      `Translation: ${esc(offset)} cm · wrist R/P/Y: ${esc(rotation)}°`;
+    return `<div class="arm-card" style="grid-column:1/-1"><b>B601-RS ${b601Only ? 'control' : 'hand preview'}</b>${esc(guide.state || 'waiting')}<br>${joints}${b601Only ? '' : '<br>No motor output'}</div>`;
   })() : ['left', 'right'].map((name) => {
     const arm = arms[name];
     if (!arm) return `<div class="arm-card"><b>${name} arm</b>offline</div>`;
@@ -412,12 +436,13 @@ function render() {
   const s = state;
   renderChips(s || {});
   if (!s) return;
+  document.body.classList.toggle('b601-only', !!s.b601_only);
   const busy = !!s.busy;
   for (const id of ['look', 'pick', 'auto', 'empty', 'neutral', 'relax']) $(id).disabled = busy && !(id === 'auto' && s.auto);
   $('auto').textContent = s.auto ? 'Auto: on — stop' : 'Auto sort';
   $('auto').classList.toggle('on', s.auto);
   for (const id of ['look', 'pick', 'auto']) if (!s.empty_photographed) $(id).disabled = true;
-  $('hint').hidden = s.empty_photographed;
+  $('hint').hidden = !!s.b601_only || s.empty_photographed;
   $('nosignal').hidden = s.camera_fps > 0;
   const key = `${s.version}|${JSON.stringify(show)}|${s.scene.size}|${s.scene.searched.length}`;
   if (drawn !== key) { drawOverlay(s); drawn = key; }
@@ -456,6 +481,7 @@ function manualOptions() {
 }
 async function startManual() {
   if (!state) return;
+  if (state.b601_only) { toast('Tap B601 in the glasses to enable the arm', true); return; }
   if ($('manual-target').value === 'b601' && !state.options.dry_run) {
     alert('B601 is preview-only until its driver, zero, base transform and clearance are verified. Turn on Dry run.');
     return;
@@ -473,6 +499,11 @@ $('manual-stop').addEventListener('click', () => post('/api/spectacles/stop'));
 $('presentation').addEventListener('click', () => post('/api/spectacles/presentation', { ...manualOptions(), enabled: true }));
 $('manual-grip').addEventListener('click', () => post('/api/spectacles/command', { command: 'jaw' }));
 $('manual-home').addEventListener('click', () => post('/api/spectacles/command', { command: 'home' }));
+$('b601-hold').addEventListener('click', () => post('/api/spectacles/command', { command: 'hold' }));
+$('b601-park').addEventListener('click', () => {
+  if (confirm('Move B601 slowly to the saved sleep pose and disable its motors? Keep clear.'))
+    post('/api/spectacles/command', { command: 'neutral' });
+});
 $('snapshot').addEventListener('click', () => post('/api/spectacles/snapshot'));
 $('sort').addEventListener('change', () => post('/api/options', { any_arm: !$('sort').checked }));
 for (const [id, key] of [['material_over', 'material'], ['only_arm', 'only_arm']]) {

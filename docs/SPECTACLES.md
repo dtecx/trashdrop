@@ -360,35 +360,50 @@ project's `uv.lock` nor the SO-101 buses are changed by B601 work.
 The SDK's `RebotArmEndPose.start()` begins with a zero target. The new
 `trashdrop.b601_glasses` bridge does not use it: it reads and validates all
 seven actual positions, seeds MIT targets to those positions, then enables
-one motor at a time. The LIVE mode uses the right hand's thumb/index pinch
-as a clutch. Hand translation controls tool XYZ; hand rotation controls tool
-orientation through the official RS URDF and Pinocchio IK; thumb/pinky touch
-requests the gripper. First trials are capped at 4 degrees/s on arm joints,
-2 degrees/s on the gripper, 8 degrees per arm joint from the session start,
-5 degrees of gripper travel, 3 cm tool travel and 10 degrees tool rotation.
+one motor at a time. The first live test exposed a control problem: the
+thumb/index midpoint and hand orientation were both attached to one clutch.
+Small wrist turns while lifting could exceed the orientation limit, blocking
+the entire IK target. Also, the recorded sleep pose needs about 12 degrees
+of J3 travel for a 5 cm vertical lift, beyond the initial eight-degree
+envelope; four degrees/s made the small allowed motion hard to see. The
+revised B601 algorithm uses right thumb/index pinch for palm-centre XYZ only
+and thumb/middle touch for orientation only, with release between gestures.
+Thumb/pinky toggles the gripper. It is capped at 8 degrees/s on arm joints,
+4 degrees/s on the gripper, 15 degrees per arm joint from the session start,
+5 degrees of gripper travel, 5 cm tool travel and 15 degrees tool rotation.
 Downward movement below the starting gripper height is refused because the
 parked gripper is close to the table. Hand loss or menu interaction holds the
 command and requires an unpinch/re-pinch. This is a cautious commissioning
 envelope, **not a measured collision checker**. The six non-base axes have
 not yet had a real movement test.
 
-With the SO-101 arms removed, stop `trashdrop web` (the Lens hand socket can
-have only one owner), then run in the operator's terminal:
+With the SO-101 arms removed, stop any earlier bridge (the Lens hand socket
+can have only one owner), then run the camera-only unified page in the
+operator's camera-enabled terminal:
 
 ```bash
-DYLD_LIBRARY_PATH=/private/tmp/trashdrop-pcbusb/PCBUSB uv run --no-sync --project /private/tmp/trashdrop-rebot-sdk python -m trashdrop.b601_glasses --live
+DYLD_LIBRARY_PATH=/private/tmp/trashdrop-pcbusb/PCBUSB uv run --no-sync --project /private/tmp/trashdrop-rebot-sdk python -m trashdrop web --b601 --open
 ```
 
-Without `--live`, the dedicated B601 LIVE button is refused and B601 PREV
-only previews hand input. With it, the Lens menu's **B601 LIVE** is the
-second, on-device enable gate. **NEUTRAL** slowly moves to `b601_park.toml`
+`--b601` does not open either SO-101 bus. It shares the live overhead camera
+between the web page and the Lens's cropped Frame, and runs the B601 motor
+owner in that same process. `--dry-run` locks motor enabling; otherwise the
+Lens's single B601 button is the separate on-device enable gate. The SDK
+environment needs OpenCV, installed for this venue session. The standalone
+fallback is `python -m trashdrop.b601_glasses --live --video` under the same
+SDK `uv run` invocation. **NEUTRAL** slowly moves to `b601_park.toml`
 and disables after encoder confirmation; switching LIVE off only holds the
 present position. The standalone menu replaces EXIT UI with HOLD so the
 parking control cannot disappear. First Ctrl+C also holds; second Ctrl+C forcibly disables
-and requires a person to support the arm. The dedicated bridge does not open
-the overhead webcam or SO-101 buses, so it hides the empty video Frame in
-the glasses; the normal unified web demo still owns those features. The user
-must press Preview Lens to send the updated UI to Spectacles.
+and requires a person to support the arm. The B601 bridge never opens SO-101
+buses. The main Lens keeps MANUAL and AUTO labelled offline while those buses
+are removed; its one B601 button and movable camera Frame remain visible. The
+web page provides hold and park controls if the Lens goes away, and EXIT UI
+works after parking. The bridge records raw hand packets and five-Hz
+joint/control traces in `out/spectacles/b601-*.jsonl`. The default
+`trashdrop web` command still requires SO-101 adapters, so use explicit
+`web --b601` while those arms are removed. The user must press Preview Lens
+to send the updated UI to Spectacles.
 
 - https://wiki.seeedstudio.com/rebot_b601_rs_getting_started/
 - https://wiki.seeedstudio.com/rebot_arm_b601_rs_pinocchio_meshcat/
