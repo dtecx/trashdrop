@@ -37,8 +37,8 @@ to send the Lens to the glasses (see "Lens Studio facts").
 | `trashdrop/spectacles.py` | The bridge: WebSocket servers (hands on 8765, video on 8766), `adb reverse` for both, calibration, `Follower` (joystick), `PinchFollower` (pinch), IK steps, limits, clearance between arms, JSON report to the glasses, session recording, video pacing |
 | `trashdrop/web/manual.py` | The unified page's owner of both Spectacles sockets, overhead stream and exclusive manual session. It reuses the cell's already-open camera and arm objects, so no bus is opened twice |
 | `spectacles/spectacles/` | Lens Studio **5.15.4** project (committed). Scripts in `Assets/Scripts/` |
-| `.../Assets/Scripts/HandStream.ts` | Sends both hands ~30/s and handles requested optical snapshots / spectator frames by encoding the colour camera and Lens render target. `previewToo` is off, so the LS preview does not connect |
-| `.../Assets/Scripts/SpectaclesUI.ts` | Movable video Frame, compact hand tags and a palm-summoned UIKit menu: manual hand control, auto sort, neutral and exit |
+| `.../Assets/Scripts/HandStream.ts` | Sends both hands ~30/s and handles requested optical snapshots / spectator frames by encoding the colour camera (started by the first request, not at launch) and Lens render target. `previewToo` is off, so the LS preview does not connect |
+| `.../Assets/Scripts/SpectaclesUI.ts` | Movable video Frame, compact hand tags, a palm-summoned UIKit menu (manual hand control, auto sort, neutral and exit), and a hint card whenever nothing else would show (no Mac yet, or the glasses UI off) |
 | `.../Assets/Scripts/WebcamView.ts` | Video WebSocket 8766 -> `Base64.decodeTextureAsync` -> a movable/resizable UIKit Frame. Sorting overlays are burned into the camera stream by `trashdrop/web/overlay.py`; manual mode keeps the camera unobscured |
 | `tests/test_spectacles.py` | Socket, snapshots, spectator stream, video pacing, wearer frame, calibration, joystick, pinch, fist/jaw and two-arm-clearance tests |
 | `trashdrop/kinematics.py` `links()` | The arm's centre line (foot, lift, elbow, wrist, TCP) for keeping the arms apart |
@@ -216,8 +216,34 @@ findings above were made; no replay tool is in the repo yet (worth adding).
   survive a preview reset: restart the bridge after such a test.
 - `CameraModule.createCameraRequest()` cannot run from a script's `onAwake`:
   the real Spectacles throw `Unable to access camera` and the rest of that
-  callback (including the hand socket) never starts. Create it from an
-  `OnStartEvent`, and keep camera failure non-fatal so controls still connect.
+  callback (including the hand socket) never starts. It ran from an
+  `OnStartEvent` until 2026-09-27; now the first snapshot request starts the
+  camera, not the launch (see "Crash at launch" below). Keep camera failure
+  non-fatal so controls still connect.
+- **"Crash at launch" (2026-09-27 10:12).** The user relaunched the Lens four
+  times in a minute and called it a crash. It was the same build that had run
+  fine at 09:02 (6 895 515 bytes sent each time). What the log and the session
+  recording show:
+  (1) `trashdrop web` had just been restarted, and a restart turns the glasses
+  UI off until the page's **Enter Spectacles UI**. With it off, the Lens
+  hides the video a second after it connects; the menu does not open, and
+  `Arm Status` is disabled in the scene. So the wearer saw the video flash
+  and then nothing at all. Three of the four Lenses were alive the whole time
+  (their hands kept arriving until the next push replaced them).
+  (2) The second one died right after starting: `connecting to` was its last
+  print, it never connected, and there was no script exception. That is a
+  native kill. At that moment the only thing the Lens had asked of the system
+  was the colour camera, which it then requested at every launch.
+  Fixes: a card in front of the wearer whenever nothing else is shown
+  ("CONNECTING TO THE MAC", "NO ANSWER FROM THE MAC", "GLASSES UI IS OFF / ON
+  THE WEB PAGE: ENTER SPECTACLES UI"); the camera only on a snapshot request;
+  no JPEG decoding while the video is hidden; and a pending snapshot is
+  dropped when the glasses disconnect, so a capture that kills the Lens is
+  not asked of every relaunch. Lens Studio logs nothing when a Lens on the
+  glasses dies. Look for its prints stopping, and in
+  `out/spectacles/session-*.jsonl` (the `t` field restarts with each Lens) for
+  its hands stopping. About 7 messages a second instead of 30 means the
+  glasses were throttling the Lens: they were put down, or taken off.
 - The active display Render Target reports 1392 x 1590 on the real glasses even
   with asset `ResolutionScale` set to 0.3. Reading it back kills the Lens inside
   `Base64.encodeTextureAsync`, before either callback. The 2 fps spectator

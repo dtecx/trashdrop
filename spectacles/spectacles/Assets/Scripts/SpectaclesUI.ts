@@ -30,6 +30,10 @@ const HIDE_DELAY_S = 1;
 const MENU_DWELL_S = 0.6;
 const MENU_HIDE_S = 1.0;
 const EMPTY_Y = -8; // the third row, shown only while the empty zone is still to photograph
+// The hint card: this far ahead, catching up with the view by this share a frame.
+const HINT_DISTANCE = 60;
+const HINT_FOLLOW = 0.1;
+const UI_OFF = "GLASSES UI IS OFF\nON THE WEB PAGE: ENTER SPECTACLES UI";
 
 export class SpectaclesUI {
   private tags: { left: HandTag; right: HandTag };
@@ -60,12 +64,39 @@ export class SpectaclesUI {
   private uiReleaseAfter = 0;
   private presentationVisible = true;
   private hideAt = 0;
+  private hint: Text;
 
   constructor(private camera: SceneObject, private send: (command: Command) => void) {
     this.view = camera.getComponent("Component.Camera") as Camera;
     this.tags = { left: this.createTag("left"), right: this.createTag("right") };
     this.menu = this.createMenu();
     this.parkMenu();
+    this.hint = this.createHint();
+  }
+
+  /**
+   * Every frame, the Mac answering or not: the glasses must never show nothing.
+   * With the glasses UI off -- as the web page starts, and after EXIT UI -- the
+   * video goes and the menu with it, and Arm Status is off in the scene: the
+   * Lens showed the video for a second and then nothing, which looks just like
+   * a crash (2026-09-27: relaunched four times in a minute). A card in front
+   * of the wearer now says why, and what to do.
+   */
+  public tick(linked: boolean, link: string) {
+    this.applyDelayedHide();
+    const words = !linked ? link : !this.presentationVisible && this.hideAt === 0 ? UI_OFF : "";
+    const object = this.hint.getSceneObject();
+    if (!words) {
+      if (object.enabled) object.enabled = false;
+      return;
+    }
+    this.setText(this.hint, words);
+    const target = this.view.screenSpaceToWorldSpace(new vec2(0.5, 0.5), HINT_DISTANCE);
+    const transform = object.getTransform();
+    transform.setWorldPosition(object.enabled ?
+      vec3.lerp(transform.getWorldPosition(), target, HINT_FOLLOW) : target);
+    transform.setWorldRotation(this.camera.getTransform().getWorldRotation());
+    if (!object.enabled) object.enabled = true;
   }
 
   public placeVideo(frame: SceneObject) {
@@ -161,6 +192,17 @@ export class SpectaclesUI {
     text.backgroundSettings.margins = Rect.create(0.7, 0.7, 0.4, 0.4);
     object.enabled = false;
     return { text: text, guide: null, colourKey: "" };
+  }
+
+  private createHint(): Text {
+    const object = global.scene.createSceneObject("Status Hint");
+    const text = this.createText(object, 26, 5, 20);
+    text.backgroundSettings.enabled = true;
+    text.backgroundSettings.cornerRadius = 0.4;
+    text.backgroundSettings.margins = Rect.create(1, 1, 0.6, 0.6);
+    text.backgroundSettings.fill.color = new vec4(0.05, 0.07, 0.1, 0.88);
+    object.enabled = false;
+    return text;
   }
 
   private createMenu(): SceneObject {

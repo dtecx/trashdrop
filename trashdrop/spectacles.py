@@ -220,6 +220,7 @@ class Hands:
         self.status = "waiting for the arms"  # what the arms do, in words
         self.report: str | None = None  # what the glasses are sent: JSON with the status, boxes and stops (report())
         self.connected = False
+        self._sockets = 0  # a replaced Lens's socket can close after its successor's opened
         self.presentation: bool | None = None  # web demo mode; omitted by the standalone bridge
 
     def receive(self, message: dict) -> None:
@@ -256,6 +257,28 @@ class Hands:
 
         with self._lock:
             return self._message, self.clock() - self._at
+
+    def opened(self) -> None:
+        with self._lock:
+            self._sockets += 1
+            self.connected = True
+
+    def closed(self) -> None:
+        """A Lens went away. With none left, what it was asked to capture is not asked again.
+
+        A capture can kill the Lens (reading back the display Render Target does:
+        docs/SPECTACLES.md). Left pending, it went to the next Lens with the first
+        answer, and would take that one down too: every launch, until a restart.
+        """
+
+        with self._lock:
+            self._sockets = max(0, self._sockets - 1)
+            self.connected = self._sockets > 0
+            gone = not self.connected
+        if gone and self.snapshots is not None:
+            self.snapshots.cancel()
+        if gone and self.spectator is not None:
+            self.spectator.cancel()
 
     def take_commands(self) -> list[dict]:
         """Commands pressed in the Lens since the last control tick."""
@@ -310,6 +333,14 @@ class Snapshots:
                 self._pending = self._last_id
                 self.log(f"requesting Spectacles snapshot {self._pending}")
             return self._pending
+
+    def cancel(self) -> None:
+        """Forget the outstanding request: the Lens it went to has gone."""
+
+        with self._lock:
+            pending, self._pending = self._pending, None
+        if pending is not None:
+            self.log(f"Spectacles snapshot {pending}: the glasses went away without it; not asked again")
 
     @staticmethod
     def _jpeg(message: dict, name: str) -> bytes:
@@ -388,6 +419,10 @@ class SpectatorFrames:
             if not enabled:
                 self._pending = None
 
+    def cancel(self) -> None:
+        with self._lock:
+            self._pending = None
+
     def requested(self) -> int | None:
         with self._lock:
             now = self.clock()
@@ -455,7 +490,8 @@ def make_server(hands: Hands, host: str = "0.0.0.0", port: int = PORT) -> socket
                 return
             self.wfile.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                               f"Sec-WebSocket-Accept: {accept_key(headers['sec-websocket-key'])}\r\n\r\n").encode())
-            hands.connected, told, parts = True, None, []
+            hands.opened()
+            told, parts = None, []
             try:
                 while True:
                     final, opcode, payload = read_frame(self.rfile)
@@ -482,7 +518,7 @@ def make_server(hands: Hands, host: str = "0.0.0.0", port: int = PORT) -> socket
             except (OSError, struct.error):
                 pass  # the glasses went away
             finally:
-                hands.connected = False
+                hands.closed()
 
     return _Server((host, port), Handler)
 

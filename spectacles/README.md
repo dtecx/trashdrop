@@ -66,7 +66,11 @@ say which way ("back to the middle: up 6 cm"). Both hands out of sight for
 
 For the unified jury demo, run `uv run trashdrop web --dry-run --open` and
 select **Enter Spectacles UI** on the page. Entering only opens the glasses
-interface; it does not move the arms. Turn one palm towards your face, not
+interface; it does not move the arms. Until then (and after **EXIT UI**) the
+glasses show a card saying so: "GLASSES UI IS OFF / ON THE WEB PAGE: ENTER
+SPECTACLES UI". Before the Mac answers, the card says "CONNECTING TO THE MAC"
+or "NO ANSWER FROM THE MAC". The glasses used to show nothing then, which
+looks just like a crashed Lens. Turn one palm towards your face, not
 pinching, and hold it there a moment: the menu opens beside that hand; press
 its buttons with the other hand's fingertip. The two large controls are
 **MANUAL** (follow the wearer's tracked hands) and **AUTO** (sort without

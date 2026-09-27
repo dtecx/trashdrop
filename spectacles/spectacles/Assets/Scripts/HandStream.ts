@@ -23,6 +23,7 @@ type Side = "left" | "right";
 // far longer. Past this it is dropped and tried afresh.
 const CONNECT_TIMEOUT_S = 5;
 const RETRY_S = 2;
+const NO_MAC = "NO ANSWER FROM THE MAC\nis uv run trashdrop web running?";
 
 @component
 export class HandStream extends BaseScriptComponent {
@@ -72,6 +73,7 @@ export class HandStream extends BaseScriptComponent {
   private lastSnap: { id: number; view: string; camera: string } | null = null;
   private ui: SpectaclesUI;
   private lastSaid = "";
+  private link = "CONNECTING TO THE MAC"; // what the glasses show until the Mac answers
 
   onAwake() {
     this.ui = new SpectaclesUI(this.camera, (command: any) => this.sendCommand(command));
@@ -86,17 +88,26 @@ export class HandStream extends BaseScriptComponent {
       return;
     }
     this.createEvent("UpdateEvent").bind(() => this.update());
-    if (!global.deviceInfoSystem.isEditor()) {
-      // Spectacles rejects createCameraRequest during onAwake. Defer it until
-      // OnStart, after the Lens and its camera permissions are initialized.
-      this.createEvent("OnStartEvent").bind(() => this.startCamera());
-    }
   }
 
-  private startCamera() {
-    try {
+  /**
+   * The colour camera, for snapshots only: started by the first request, not
+   * with the Lens. Started at launch, it ran through every session for
+   * nothing, and it is the one thing the Lens asked of the system while
+   * starting: a launch on 2026-09-27 died right then, before it connected,
+   * without a script error.
+   */
+  private startCamera(): boolean {
+    if (this.cameraTexture !== null) {
+      return true;
+    }
+    if (global.deviceInfoSystem.isEditor()) {
       // CameraModule is @wearableOnly: even requiring it in the editor makes
       // the preview fail before it can show the rest of the Lens.
+      return false;
+    }
+    try {
+      // Spectacles rejects createCameraRequest during onAwake; a request from the Mac comes long after.
       const cameraModule = require("LensStudio:CameraModule") as CameraModule;
       const request = CameraModule.createCameraRequest();
       request.cameraId = CameraModule.CameraId.Default_Color;
@@ -110,11 +121,13 @@ export class HandStream extends BaseScriptComponent {
       // real camera frame and lets the GPU fill its render target first.
       this.captureReadyAt = getTime() + 5;
       provider.onNewFrame.add(() => this.onCameraFrame());
+      return true;
     } catch (error) {
       // A missing optical camera must not take the hand link or control UI
       // down with it; snapshots stay unavailable while teleoperation works.
       this.cameraTexture = null;
       this.say("optical camera unavailable: " + error);
+      return false;
     }
   }
 
@@ -151,6 +164,7 @@ export class HandStream extends BaseScriptComponent {
     };
     socket.onerror = () => {
       if (socket === this.socket) {
+        this.link = NO_MAC;
         this.say("connection error: is the Mac side running? (uv run python -m trashdrop.spectacles)");
       }
     };
@@ -163,6 +177,7 @@ export class HandStream extends BaseScriptComponent {
     this.open = false;
     this.retryAt = getTime() + RETRY_S;
     if (why !== null) {
+      this.link = NO_MAC;
       this.say(why);
     }
     if (socket !== null) {
@@ -176,6 +191,7 @@ export class HandStream extends BaseScriptComponent {
 
   private update() {
     const now = getTime();
+    this.ui.tick(this.open, this.link);
     if (this.socket === null) {
       if (now >= this.retryAt) {
         this.connect();
@@ -269,7 +285,7 @@ export class HandStream extends BaseScriptComponent {
     if (this.snap !== null) {
       return;
     }
-    if (this.cameraTexture === null || (kind === "snap" && !this.view)) {
+    if ((kind === "snap" && !this.view) || !this.startCamera()) {
       this.say("snapshot unavailable: run the Lens on Spectacles and assign its Render Target");
       return;
     }

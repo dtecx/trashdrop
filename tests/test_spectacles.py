@@ -165,6 +165,34 @@ class SocketTests(unittest.TestCase):
         self.connection.sendall(client_frame(b"", opcode=8))
         self.assertEqual(read_server_frame(self.connection)[0], 8)
 
+    @staticmethod
+    def upgrade(connection: socket.socket) -> None:
+        connection.sendall(b"GET / HTTP/1.1\r\nHost: mac\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                           b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+        reply = b""
+        while b"\r\n\r\n" not in reply:
+            reply += connection.recv(1024)
+        connection.sendall(client_frame(json.dumps({"head": HEAD}).encode()))
+        read_server_frame(connection)  # answered: the bridge has taken this socket in
+
+    def test_a_lens_replaced_before_its_socket_closed_leaves_its_successor_connected(self) -> None:
+        self.upgrade(self.connection)
+        successor = socket.create_connection(self.server.server_address, timeout=5)
+        try:
+            self.upgrade(successor)
+            self.connection.close()  # Preview Lens again: the old socket goes after the new one opened
+            deadline = time.monotonic() + 5
+            while self.hands._sockets > 1 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(self.hands._sockets, 1)
+            self.assertTrue(self.hands.connected)
+            successor.close()
+            while self.hands.connected and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(self.hands.connected)
+        finally:
+            successor.close()
+
     def test_a_browser_is_told_what_this_is(self) -> None:
         self.connection.sendall(b"GET / HTTP/1.1\r\nHost: mac\r\n\r\n")
         self.assertIn(b"Spectacles", self.connection.recv(1024))
@@ -223,6 +251,33 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(json.loads(hands.answer())["snap"], 1000)
             hands.receive({"snap": 999, "view": "late", "camera": "late"})
             self.assertEqual(hands.latest()[0], {"left": {"tracked": True}})
+
+    def test_a_snapshot_the_glasses_went_away_on_is_not_asked_of_the_next_lens(self) -> None:
+        # Reading back the display Render Target kills the Lens. Still pending, the
+        # request went to the relaunched Lens in its first answer, and so on.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trigger = root / "snap"
+            trigger.touch()
+            logs = []
+            snapshots = Snapshots(root / "snaps", trigger, wall_clock=lambda: 3.0, log=logs.append)
+            now = [10.0]
+            spectator = SpectatorFrames(fps=2, clock=lambda: now[0], log=lambda _: None)
+            spectator.set_enabled(True)
+            hands = Hands(snapshots=snapshots, spectator=spectator)
+            hands.opened()
+            hands.opened()  # pushed anew before the old Lens's socket closed
+            report = json.loads(hands.answer())
+            self.assertEqual((report["snap"], report["spectator"]), (3000, 1))
+            hands.closed()
+            self.assertTrue(hands.connected)
+            self.assertEqual(snapshots.requested(), 3000, "still asked of the Lens that is there")
+            hands.closed()
+            self.assertFalse(hands.connected)
+            self.assertIsNone(snapshots.requested())
+            self.assertIn("not asked again", logs[-1])
+            now[0] += 0.5
+            self.assertEqual(spectator.requested(), 2, "a fresh request, not the one that went unanswered")
 
     def test_bad_image_keeps_the_request_pending_for_a_retry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
