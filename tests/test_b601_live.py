@@ -115,6 +115,9 @@ class B601LiveTests(unittest.TestCase):
         class FakeCell:
             version = 0
 
+            def log(self, text):
+                pass
+
         web = B601WebControl(FakeCell(), live_allowed=True, sdk_root=Path("/unused"))
         web.bridge._report()
         self.assertFalse(web.state()["presentation"])
@@ -327,6 +330,49 @@ class B601ControlTests(unittest.TestCase):
         self.assertGreater(motor.held, 0)
         self.assertIn("holding", bridge.error)
         self.assertEqual(bridge.motion.jaw, 0.4)  # the jaw is not dropped either
+
+    def test_a_drag_points_the_jaw_straight_down_turning_it_the_least(self) -> None:
+        from trashdrop.b601 import pointing_down
+
+        tilt = math.radians(40)  # parked: the jaw 40 degrees below the horizontal, along +x
+        parked = np.array([[math.cos(tilt), 0.0, math.sin(tilt)], [0.0, 1.0, 0.0],
+                           [-math.sin(tilt), 0.0, math.cos(tilt)]])
+        down = pointing_down(parked)
+        np.testing.assert_allclose(down[:, 0], [0, 0, -1], atol=1e-12)
+        np.testing.assert_allclose(down.T @ down, np.eye(3), atol=1e-12)
+        np.testing.assert_allclose(down[:, 1], parked[:, 1], atol=1e-12)  # turned about y alone: 50 degrees
+        np.testing.assert_allclose(pointing_down(down), down, atol=1e-12)
+
+    def test_letting_go_of_thumb_and_pinky_stops_the_jaw_where_it_is(self) -> None:
+        class Motion:
+            gesture, jaw, anchor_generation, state = "free", 0.9, 0, "free"
+
+            def update(self, packet, age):
+                return None
+
+        class Motor:
+            state = "holding"
+            feedback = np.zeros(7)
+            set_to = None
+
+            def hold(self):
+                pass
+
+            def grip_fraction(self, *, now=False):
+                return 0.35 if now else 0.9
+
+            def set_grip_fraction(self, fraction):
+                self.set_to = fraction
+
+            def step(self):
+                return False
+
+        bridge = B601GlassesBridge(live_allowed=True, sdk_root=Path("/unused"))
+        bridge.driver, bridge.mode, bridge.motion, bridge.gripping = Motor(), "live", Motion(), True
+        bridge.hands.connected = True
+        bridge.tick()
+        self.assertEqual(bridge.motion.jaw, 0.35)  # where it was being driven, not on to 0.9
+        self.assertEqual(bridge.driver.set_to, 0.35)
 
     def test_web_b601_carries_on_in_the_sdk_environment_without_motorbridge(self) -> None:
         import argparse

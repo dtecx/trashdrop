@@ -81,6 +81,8 @@ export class SpectaclesUI {
   private emptyButton: SceneObject;
   private emptyNeeded: boolean | null = null;
   private video: SceneObject | null = null;
+  // Where the video Frame was when it was parked out of view; null while it shows.
+  private videoParked: { position: vec3; rotation: quat } | null = null;
   private frameEventsBound = false;
   private frameInteracting = false;
   private frameInteractionAt = 0;
@@ -140,7 +142,7 @@ export class SpectaclesUI {
     }
     if (typeof report.videoAvailable === "boolean" && report.videoAvailable !== this.videoAvailable) {
       this.videoAvailable = report.videoAvailable;
-      if (this.video !== null) this.video.enabled = this.videoAvailable && this.presentationVisible;
+      this.showVideo(this.videoAvailable && this.presentationVisible);
     }
     if (typeof report.presentation === "boolean") {
       this.setPresentation(report.presentation);
@@ -462,10 +464,30 @@ export class SpectaclesUI {
     this.menu.getTransform().setWorldPosition(new vec3(0, -10000, 0));
   }
 
+  /**
+   * Hide the video Frame by parking it out of view, as the menu is, never by disabling it: a
+   * UIKit Frame disabled and enabled again stayed blank. The glasses UI entered from the web page
+   * after the Lens had started "loaded for ever" until the Lens was sent again, which started it
+   * with the UI already on and the Frame never disabled (2026-09-27).
+   */
+  private showVideo(show: boolean) {
+    if (this.video === null) return;
+    const transform = this.video.getTransform();
+    if (!show && this.videoParked === null) {
+      this.videoParked = { position: transform.getWorldPosition(), rotation: transform.getWorldRotation() };
+      transform.setWorldPosition(new vec3(0, -10000, 0));
+    } else if (show && this.videoParked !== null) {
+      transform.setWorldPosition(this.videoParked.position);
+      transform.setWorldRotation(this.videoParked.rotation);
+      this.videoParked = null;
+    }
+  }
+
   private setPresentation(visible: boolean) {
     if (visible === this.presentationVisible) {
       return;
     }
+    print("SpectaclesUI: glasses UI " + (visible ? "on" : "off"));
     this.presentationVisible = visible;
     if (visible) {
       this.hideAt = 0;
@@ -473,7 +495,7 @@ export class SpectaclesUI {
       this.menuCloseAt = 0;
       this.menuNeedsPalmDown = false;
       this.parkMenu();
-      if (this.video !== null) this.video.enabled = this.videoAvailable;
+      this.showVideo(this.videoAvailable);
       return;
     }
     for (const side of ["left", "right"] as const) {
@@ -487,7 +509,7 @@ export class SpectaclesUI {
       this.hideAt = 0;
       this.menuVisible = false;
       this.parkMenu();
-      if (this.video !== null) this.video.enabled = false;
+      this.showVideo(false);
     }
   }
 

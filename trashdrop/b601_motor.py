@@ -322,8 +322,11 @@ class B601Motor:
         share = min(max(float(fraction), 0.0), 1.0)
         self.desired[6] = self.grip_closed + share * (self.grip_open - self.grip_closed)
 
-    def grip_fraction(self) -> float:
-        share = float(self.desired[6] - self.grip_closed) / (self.grip_open - self.grip_closed)
+    def grip_fraction(self, *, now: bool = False) -> float:
+        """How far open the jaw is to be, 0 to 1; ``now``: where it is being driven this moment."""
+
+        angle = self.command[6] if now else self.desired[6]
+        share = float(angle - self.grip_closed) / (self.grip_open - self.grip_closed)
         return min(max(share, 0.0), 1.0)
 
     def hold(self) -> None:

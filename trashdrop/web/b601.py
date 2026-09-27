@@ -64,6 +64,8 @@ class B601WebControl:
             return "the glasses are not connected"
         if not enabled and self.bridge.driver is not None:
             return "Park B601 with NEUTRAL before leaving the glasses UI"
+        if bool(self.bridge.hands.presentation) != enabled:
+            self.cell.log("Spectacles UI " + ("entered: the glasses show it" if enabled else "left"))
         self.bridge.hands.presentation = enabled
         self.cell.version += 1
         return None

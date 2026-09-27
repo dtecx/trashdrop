@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .b601 import B601HandMotion, B601Preview
+from .b601 import B601HandMotion, B601Preview, pointing_down
 from .b601_motor import B601_SDK, JOINT_SPEED, B601Motor
 from .spectacles import (
     VIDEO_CAPTURE_HEIGHT, VIDEO_CAPTURE_WIDTH, VIDEO_FPS, VIDEO_PORT, VIDEO_QUALITY, VIDEO_WIDTH,
@@ -49,6 +49,7 @@ class B601GlassesBridge:
         self.driver: B601Motor | None = None
         self.anchor_pose: tuple[np.ndarray, np.ndarray] | None = None
         self.anchor_generation = 0
+        self.gripping = False  # the thumb-pinky gesture was on last tick
         self.server = None
         self.video = self.video_server = None
         self.telemetry = None
@@ -219,12 +220,18 @@ class B601GlassesBridge:
                 self.anchor_generation = 0
             else:
                 displacement = self.motion.update(packet, age)
+                gripping = self.motion.gesture == "grip"
+                if self.gripping and not gripping:
+                    # Let go: the jaw stops where it is. It used to go on to where the hand had set it.
+                    self.motion.jaw = self.driver.grip_fraction(now=True)
+                self.gripping = gripping
                 if displacement is None:
                     self.driver.hold()
                     self.anchor_pose = None
                 else:
                     if self.anchor_generation != self.motion.anchor_generation:
-                        self.anchor_pose = self.driver.tool_pose()
+                        position, rotation = self.driver.tool_pose()
+                        self.anchor_pose = position, pointing_down(rotation)
                         self.anchor_generation = self.motion.anchor_generation
                     if self.anchor_pose is not None:
                         delta, rotation = displacement

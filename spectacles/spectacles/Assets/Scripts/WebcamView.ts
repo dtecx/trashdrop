@@ -112,15 +112,6 @@ export class WebcamView extends BaseScriptComponent {
     if (this.decoding || this.pending === null) {
       return;
     }
-    if (!this.image.getSceneObject().isEnabledInHierarchy) {
-      // Hidden (the glasses UI is off): decoding, this Lens's heaviest work,
-      // waits for the next frame after it shows again.
-      this.shown = 0;
-      this.reportAt = 0;
-      this.totalAgeMs = 0;
-      this.agedFrames = 0;
-      return;
-    }
     const packet = this.pending;
     this.pending = null;
     this.decoding = true;

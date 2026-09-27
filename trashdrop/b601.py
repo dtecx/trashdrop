@@ -16,6 +16,31 @@ from .spectacles import TURN_DEG_PER_CM, facing_frame
 JAW_PER_CM = 0.1  # thumb-pinky touch: the jaw's opening changes this share of its travel a sideways centimetre
 
 
+def pointing_down(rotation) -> np.ndarray:
+    """The tool frame turned the least way that points the jaw straight down.
+
+    The jaw points along the gripper_end frame's +x: the gripper's own mass lies behind it, along
+    -x (URDF). Parked, it points 40 degrees below the horizontal, and a drag kept whatever it had,
+    so the jaw could not be put square to the table (the user, 2026-09-27); now, as the SO-101's,
+    it points down, turned about the vertical only by the thumb-middle gesture.
+    """
+
+    rotation = np.asarray(rotation, dtype=float)
+    approach, down = rotation[:, 0], np.array([0.0, 0.0, -1.0])
+    axis = np.cross(approach, down)
+    sine, cosine = float(np.linalg.norm(axis)), float(np.dot(approach, down))
+    if sine < 1e-9:
+        if cosine > 0:
+            return rotation.copy()
+        axis, sine = np.array([0.0, 1.0, 0.0]), 0.0  # pointing straight up: half a turn about y
+    else:
+        axis = axis / sine
+    angle = math.atan2(sine, cosine)
+    cross = np.array([[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]])
+    turn = np.eye(3) + math.sin(angle) * cross + (1 - math.cos(angle)) * cross @ cross
+    return turn @ rotation
+
+
 def _hand_frame(hand: dict) -> list[list[float]] | None:
     """A right-handed frame from the wrist and knuckles, if tracking is sound."""
 

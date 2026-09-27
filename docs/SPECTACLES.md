@@ -459,6 +459,30 @@ and made the timeout likelier. Now:
   reads every joint;
 - `JOINT_SPEED` is 20 degrees/s (the user).
 
+**~16:15:**
+- The jaw points straight down. Before, a drag held whatever orientation
+  the tool had at the pinch, and the park pose points it 40 degrees below the
+  horizontal, so the jaw could never be put square to the table.
+  `b601.pointing_down` turns the anchor orientation the least way that puts
+  the jaw's axis (+x of `gripper_end`; the gripper's mass lies along -x) at
+  (0, 0, -1). The first drag rotates the tool there within the speed cap.
+  Checked on the URDF: from the park pose to the table (3 cm above the base
+  plane), the jaw axis ends at (0, 0, -1).
+- Letting go of thumb and pinky stops the jaw where it is. Before, the motor
+  went on at 90 degrees/s to where the hand had set it. On release the bridge
+  sets the jaw target to the gripper's present set point
+  (`grip_fraction(now=True)`).
+- Entering the glasses UI from the page after the Lens had started "loaded
+  for ever" until the Lens was sent again. The Mac side was reproduced without
+  hardware (web page, bridge, fake camera, fake Lens sockets) and worked: the
+  Lens was told `presentation: true` and video kept flowing. What differed on
+  the glasses was that the running Lens hid the video Frame by disabling it
+  and enabled it again, while a freshly sent Lens starts with the UI already
+  on and never disables it. The Frame is now parked out of view and put back
+  (`SpectaclesUI.showVideo`), never disabled; `WebcamView` decodes all the
+  time again. The glasses print "SpectaclesUI: glasses UI on/off", and the web
+  log says when the UI is entered or left, for next time.
+
 With the SO-101 arms removed, stop any earlier bridge (the Lens hand socket
 can have only one owner), then run the camera-only unified page in the
 operator's camera-enabled terminal:
