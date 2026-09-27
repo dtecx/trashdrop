@@ -343,24 +343,45 @@ class B601ControlTests(unittest.TestCase):
             self.assertAlmostEqual(frame[2, 1], 0.0)  # the fingers' axis stays level
             np.testing.assert_allclose(heading_and_pitch(frame), (heading, pitch), atol=1e-9)
 
-    def test_while_dragging_the_jaw_points_as_far_down_as_the_hand(self) -> None:
-        from trashdrop.b601 import hand_pitch
+    def test_thumb_ring_and_a_move_right_tilt_the_jaw_down_while_the_arm_holds(self) -> None:
+        from trashdrop.b601 import TILT_DEG_PER_CM
 
-        level = {"wrist": [0, 0, 20], "middleKnuckle": [0, 0, 28]}
-        bent = {"wrist": [0, 0, 20], "middleKnuckle": [0, -8, 20.0]}  # the Lens world is y up
-        self.assertAlmostEqual(hand_pitch(level), 0.0)
-        self.assertAlmostEqual(hand_pitch(bent), -90.0)
+        def ring(x: float = 0.0) -> dict:
+            message = packet(pinch=False, x=x)
+            hand = message["right"]
+            hand["middleTip"], hand["ringTip"], hand["pinkyTip"] = [x + 5, 0, 20], [x + 1, 0, 20], [x + 3, 0, 20]
+            return message
+
         motion = B601HandMotion(scale=1.0)
-        motion.update(packet(pinch=False), 0)
-        motion.update(packet(pinch=True), 0)
-        start = motion.pitch
-        tilted = packet(pinch=True)
-        tilted["right"]["middleKnuckle"] = [0, -8, 20]
-        tilted["right"]["wrist"] = [0, 0, 20]
-        for _ in range(30):
-            motion.update(tilted, 0)
-        self.assertNotEqual(start, motion.pitch)
-        self.assertAlmostEqual(motion.pitch, -90.0, delta=1.0)
+        motion.update(packet(pinch=False), 0, now=0.0)
+        self.assertIsNone(motion.update(ring(), 0, now=0.1))
+        motion.update(ring(), 0, now=0.3)
+        self.assertEqual(motion.gesture, "tilt")
+        delta, rotation = motion.update(ring(x=-3.0), 0, now=0.4)  # 3 cm to the wearer's right
+        np.testing.assert_allclose(delta, np.zeros(3))
+        np.testing.assert_allclose(rotation, np.eye(3))
+        self.assertAlmostEqual(motion.tilt, 3 * TILT_DEG_PER_CM)
+        near = packet(pinch=False)
+        near["right"]["ringTip"], near["right"]["pinkyTip"] = [1, 0, 20], [1.5, 0, 20]
+        near["right"]["middleTip"] = [5, 0, 20]
+        motion = B601HandMotion(scale=1.0)
+        motion.update(packet(pinch=False), 0, now=0.0)
+        motion.update(near, 0, now=0.1)
+        motion.update(near, 0, now=0.4)
+        self.assertEqual(motion.gesture, "free")  # ring and pinky both on the thumb: neither is meant
+
+    def test_an_orientation_the_arm_cannot_give_does_not_move_its_position(self) -> None:
+        from trashdrop.b601_motor import dls_step
+
+        # Joint 0 moves the tool along x and turns it; joint 1 only turns it: the turn can come from
+        # joint 1 alone, so no position may be given up for it.
+        jacobian = np.zeros((6, 6))
+        jacobian[0, 0], jacobian[3, 0], jacobian[3, 1] = 1.0, 1.0, 1.0
+        jacobian[1, 2], jacobian[2, 3], jacobian[4, 4], jacobian[5, 5] = 1.0, 1.0, 1.0, 1.0
+        error = np.array([0.0, 0.0, 0.0, 0.3, 0.0, 0.0])  # only a turn about x
+        moved, _ = dls_step(np.zeros(6), error, jacobian, np.full(6, -3.0), np.full(6, 3.0), 0.05)
+        self.assertAlmostEqual(moved[0], 0.0, places=6)  # the joint that moves the tool stays put
+        self.assertGreater(moved[1], 0.0)
 
     def test_letting_go_of_thumb_and_pinky_stops_the_jaw_where_it_is(self) -> None:
         class Motion:

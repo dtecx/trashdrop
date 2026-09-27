@@ -237,9 +237,8 @@ class B601GlassesBridge:
                         delta, turn = displacement
                         start, heading, pitch = self.anchor_pose
                         heading += math.degrees(math.atan2(turn[1, 0], turn[0, 0]))  # thumb-middle
-                        if self.motion.gesture == "drag" and self.motion.pitch is not None:
-                            # The jaw points as far down as the hand does: level to straight down.
-                            pitch = min(max(self.motion.pitch, -90.0), 0.0)
+                        if self.motion.gesture == "tilt":  # thumb-ring: level to straight down
+                            pitch = min(max(pitch - self.motion.tilt, -90.0), 0.0)
                         self.driver.target_tool(start + delta, jaw_frame(heading, pitch))
                 # Thumb-pinky sets how far the jaw is open; every tick, so a hold keeps it there.
                 self.driver.set_grip_fraction(self.motion.jaw)

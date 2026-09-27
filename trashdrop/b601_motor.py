@@ -26,7 +26,7 @@ B601_PCBUSB = Path(os.environ.get("TRASHDROP_B601_PCBUSB", "/private/tmp/trashdr
 # The one motion limit for now (the user, 2026-09-27 14:40): no travel, turn or floor envelope. The
 # old demo envelope (5 cm, 15 degrees, not below the start) refused 77% of the drag ticks of the
 # 14:18 session, and a refused target left the arm standing until the next one got through.
-JOINT_SPEED = math.radians(20.0)  # 15 until 2026-09-27 ~15:50
+JOINT_SPEED = math.radians(20.0)  # 15 until 2026-09-27 ~15:00
 # The gripper motor turns about 340 degrees shut to open (b601_park.toml): at 15 degrees/s one
 # opening took 23 s. 90 degrees/s of the motor opens it in about 4 s.
 GRIP_SPEED = math.radians(90.0)
@@ -40,7 +40,7 @@ FOLLOW_TICKS = 3  # ...and only when it lasts: one late reply is not a joint tha
 # Each tick takes one damped least-squares step of the six arm joints towards the tool target.
 IK_GAIN = 6.0  # 1/s: the step heads for the target at this rate, then JOINT_SPEED caps it
 IK_DAMPING = 0.02  # m: keeps the step small and steady near a singular pose
-ROTATION_WEIGHT = 0.1  # m per rad: a radian of tool orientation counts like 10 cm of position
+TURN_DAMPING = 0.1  # rad: the same for the orientation, sought only with what position leaves free
 LEAD_M = 0.05  # a tick aims at most this far ahead of the tool...
 LEAD_RAD = math.radians(20.0)  # ...or turns towards at most this much of its orientation
 LIMIT_MARGIN = math.radians(2.0)  # kept inside the URDF joint limits, the mechanical stops
@@ -120,25 +120,42 @@ def dls_step(q: np.ndarray, error: np.ndarray, jacobian: np.ndarray, lower: np.n
     """One damped least-squares step of the six arm joints towards a tool error; and the joints held at a limit.
 
     ``error``: the tool's position (m) and orientation (rotation vector, rad) short of the target,
-    in the base frame, as ``jacobian`` (6 x 6, LOCAL_WORLD_ALIGNED). The step heads for the target
-    at IK_GAIN; when any joint would pass ``speed``, the whole step shrinks together, so the tool
-    keeps its direction (clipping joint by joint bends its path). A target out of reach leaves the
-    arm as near as it gets, and it slides along a joint limit rather than stopping dead.
+    in the base frame, as ``jacobian`` (6 x 6, LOCAL_WORLD_ALIGNED). Position first, orientation
+    only with the motion that leaves the position alone (the exact null space of the position
+    Jacobian). Weighed together, an orientation the arm could not give traded position for it:
+    at 15:29 a level jaw asked of the folded arm made it lean back and rise instead of going
+    forward. The step heads for the target at IK_GAIN; when any joint would pass ``speed``, the
+    whole step shrinks together, so the tool keeps its direction. A joint that would pass its
+    limit is taken out and the step solved again without it, so the others still do what they
+    can: the arm slides along a limit rather than stopping dead, or drifting off the path.
     """
 
-    weights = np.array([1.0, 1.0, 1.0, ROTATION_WEIGHT, ROTATION_WEIGHT, ROTATION_WEIGHT])
-    weighted = weights[:, None] * jacobian
-    step = weighted.T @ np.linalg.solve(weighted @ weighted.T + IK_DAMPING ** 2 * np.eye(6), weights * error)
-    velocity = IK_GAIN * step
-    fastest = float(np.max(np.abs(velocity))) / speed
-    if fastest > 1.0:
-        velocity /= fastest
-    wanted = q + velocity * max(dt, 0.0)
-    # A joint that starts past its margin (the park pose sits at a factory stop) may come inward only.
-    low = np.minimum(lower + LIMIT_MARGIN, q)
-    high = np.maximum(upper - LIMIT_MARGIN, q)
+    count = len(q)
+    low = np.minimum(lower + LIMIT_MARGIN, q)  # a joint past its margin (the park pose sits at a
+    high = np.maximum(upper - LIMIT_MARGIN, q)  # factory stop) may come inward only
+    frozen = np.zeros(count, dtype=bool)
+    for _ in range(count):
+        steered = jacobian.copy()
+        steered[:, frozen] = 0.0
+        along, turning = steered[:3], steered[3:]
+        first = along.T @ np.linalg.solve(along @ along.T + IK_DAMPING ** 2 * np.eye(3), error[:3])
+        free = np.eye(count) - np.linalg.pinv(along, rcond=1e-3) @ along
+        free[frozen, :] = 0.0
+        free[:, frozen] = 0.0
+        turn_free = turning @ free
+        second = free @ turn_free.T @ np.linalg.solve(turn_free @ turn_free.T + TURN_DAMPING ** 2 * np.eye(3),
+                                                      error[3:] - turning @ first)
+        velocity = IK_GAIN * (first + second)
+        fastest = float(np.max(np.abs(velocity))) / speed
+        if fastest > 1.0:
+            velocity /= fastest
+        wanted = q + velocity * max(dt, 0.0)
+        crossing = ((wanted < low) & (velocity < 0)) | ((wanted > high) & (velocity > 0))
+        if not (crossing & ~frozen).any():
+            break
+        frozen |= crossing
     moved = np.clip(wanted, low, high)
-    return moved, [joint for joint in range(len(q)) if moved[joint] != wanted[joint]]
+    return moved, [joint for joint in range(count) if frozen[joint] or moved[joint] != wanted[joint]]
 
 
 class B601Motor:
@@ -285,7 +302,12 @@ class B601Motor:
             return
         self.desired[:6] = moved
         hot = int(np.argmax(self.temperature))
-        if self.temperature[hot] >= HOT_C:
+        faulty = int(np.argmax(self.status != 0))
+        if self.status[faulty] != 0:
+            # The vendor's SDK waits for a status of 0 before it trusts a motor (RebotArm.set_zero).
+            # J2 reported 18 at 15:29, after giving way at 15:20, and lagged its set point by 0.4 s.
+            self.state = f"J{faulty + 1} reports status {self.status[faulty]} (0 is healthy): power-cycle the arm"
+        elif self.temperature[hot] >= HOT_C:
             self.state = f"J{hot + 1} is hot ({self.temperature[hot]:.0f} °C): rest it, park soon"
         elif pinned:
             self.state = "at a joint limit: " + ", ".join(f"J{joint + 1}" for joint in pinned)

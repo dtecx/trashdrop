@@ -403,7 +403,7 @@ speed clip joint by joint bent its path. Now, as the SO-101 pinch mode does:
 Replayed on the 14:18 hand recording with the real URDF: the arm moves in 96%
 of the dragging ticks (at a joint limit in 1.5%), almost always at the 15
 degree/s cap, the tool 1.8 cm behind its target at the median, 6.7 cm at p90.
-**Then (~15:20):**
+**Then (~14:45):**
 - `uv run trashdrop web --b601 --open` failed on LIVE with "No module named
   'motorbridge'". The project environment (Python 3.13) has neither motorbridge
   nor pinocchio; the SDK's (3.11) has both. `web --b601` without `--dry-run`
@@ -425,7 +425,7 @@ degree/s cap, the tool 1.8 cm behind its target at the median, 6.7 cm at p90.
   `DYLD_LIBRARY_PATH=/private/tmp/trashdrop-pcbusb/PCBUSB PYTHONPATH=.
   /private/tmp/trashdrop-rebot-sdk/.venv/bin/python -m trashdrop.b601_motor --read`
   with the jaw shut, and again with it opened by hand. It enables no motor.
-  Measured ~15:30: 1.707 shut, 343.514 open. That is one motor turn for the
+  Measured ~14:50: 1.707 shut, 343.514 open. That is one motor turn for the
   whole travel, a pinion on a rack; the old 5 degrees was 1.5% of it. The
   values are signed (the park pose read -0.004), so 343.5 is not a wrapped
   -16.5. In the file: closed 1.707, open 340 (3.5 degrees short of the stop).
@@ -441,7 +441,7 @@ degree/s cap, the tool 1.8 cm behind its target at the median, 6.7 cm at p90.
     in the jaw blocks the gripper by design. Parking leaves the gripper as it
     is.
 
-**The arm fell (2026-09-27 14:55), fixed ~15:55.** One position read,
+**The arm fell (2026-09-27 14:55), fixed ~15:00.** One position read,
 `robstride_get_param_f32_host_id` waiting up to 500 ms, failed. The bridge's
 fault handler then closed the driver, which disables all seven motors, and the
 arm dropped under its own weight. That handler came with the first B601
@@ -459,7 +459,7 @@ and made the timeout likelier. Now:
   reads every joint;
 - `JOINT_SPEED` is 20 degrees/s (the user).
 
-**~16:15:**
+**~15:15:**
 - The jaw points straight down. Before, a drag held whatever orientation
   the tool had at the pinch, and the park pose points it 40 degrees below the
   horizontal, so the jaw could never be put square to the table.
@@ -482,7 +482,7 @@ and made the timeout likelier. Now:
   (`SpectaclesUI.showVideo`), never disabled; `WebcamView` decodes all the
   time again. The glasses print "SpectaclesUI: glasses UI on/off", and the web
   log says when the UI is entered or left, for next time.
-- A new park pose, read ~16:25 with the motors disabled (b601_park.toml): the
+- A new park pose, read ~15:17 with the motors disabled (b601_park.toml): the
   arm folded, J2 and J3 on their lower stops, the jaw level and forward at 22
   cm, close to the URDF zero. From there the first drag turns the jaw down
   (90 degrees at the wrist, a few seconds at the cap) and reaches the table
@@ -492,7 +492,7 @@ and made the timeout likelier. Now:
   system programs (SIP), so a `perl`/`env` wrapper loses it and MacCAN fails
   to load ("load PCBUSB failed"). Start the SDK's python directly.
 
-**The arm fell again (15:20), fixed ~16:50; the jaw's tilt now follows the hand.**
+**The arm fell again (15:20), fixed ~15:28.**
 - The cause was different from 14:55. The control log shows J2 steady (set point
   151.5, reading 152.5 degrees), then 14 degrees further down in under half a
   second, and never pulled back although its set point stayed where it was.
@@ -512,11 +512,31 @@ and made the timeout likelier. Now:
   torque. Motor temperatures and status codes are now in the control log; at
   70 C or more the state names the hot motor.
 - The jaw no longer always points down, which made it hard to send forward.
-  While the pinch drags, the jaw points as far down as the hand does: the line
-  from the wrist to the middle knuckle, which a pinch leaves alone; level hand,
-  level jaw; hand bent down at the wrist, jaw straight down (the user's photos).
-  `jaw_frame(heading, pitch)` keeps the fingers level; thumb-middle still turns
-  the heading.
+  (15:28 to 15:40: its pitch followed the hand's own tilt while dragging.
+  A pinching hand points slightly up, so that asked for a level jaw the folded
+  arm could not give. With position and orientation weighed together, the arm
+  leant back and rose instead of going forward, "it just tipped back". J2 also
+  lagged 0.4 s and reported status 18.)
+
+**~15:40: a tilt gesture, position first, motor status.**
+- Thumb-ring touch, held 0.15 s, then a sideways move tilts the jaw: right
+  points it down, left up, 5 degrees a centimetre, from level to straight down,
+  as thumb-middle turns it and thumb-pinky sets it. A drag keeps the tilt. Each
+  touch counts only if that finger is clearly nearest the thumb (0.8 cm ahead
+  of the next), since ring and pinky tips lie close together.
+- `dls_step` solves position first and seeks orientation only in the exact
+  null space of the position Jacobian. A joint that would pass its limit is
+  taken out and the step solved again, rather than clipped, which had knocked
+  the tool off its path: the first try drove it 27 cm down instead of 10. On the
+  URDF, from the park pose: 15 cm forward, 10 down, tilted, 5 forward, 5 down
+  and back again each end on the goal, never more than 1 cm off the path.
+  Straight down is not always reachable (at 45 cm out and 12 cm up the jaw
+  stops at -55); it gives way, the position does not.
+- A motor's status code: the vendor's SDK trusts a motor only at 0
+  (`RebotArm.set_zero`). After J2 gave way at 15:20 it reported 18 while the
+  others reported 0, and it lagged its set point by 0.4 s. A non-zero status now
+  replaces the state with "J2 reports status 18 (0 is healthy): power-cycle the
+  arm".
 
 With the SO-101 arms removed, stop any earlier bridge (the Lens hand socket
 can have only one owner), then run the camera-only unified page in the

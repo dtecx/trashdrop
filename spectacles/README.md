@@ -5,9 +5,9 @@
 The B601 bridge uses the same Lens, palm menu and overhead video Frame as
 the two-SO-101 demo. Its one extra **B601** button enables the central arm;
 **MANUAL** and **AUTO** remain visible but report that the removed SO-101 arms
-are offline. Index/thumb pinch moves the tool in XYZ from the palm's centre,
-and the jaw points as far down as the hand does (bend the wrist down: the jaw
-points down; hold the hand level: the jaw is level);
+are offline. Index/thumb pinch moves the tool in XYZ from the palm's centre;
+thumb/ring touch held briefly, then a sideways move, tilts the jaw (right points
+it down, left up, 5 degrees a centimetre);
 thumb/middle touch held briefly, then a sideways move, turns it about the
 vertical (right: clockwise from above, 5 degrees a centimetre) without moving
 its position. Thumb/pinky touch held briefly, then a sideways move, sets the
