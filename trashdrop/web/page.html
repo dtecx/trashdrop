@@ -89,18 +89,17 @@
   .calibration { display: grid; grid-template-columns: 16px 1fr auto; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 9px; }
   .calibration small { display: block; color: var(--muted); }
   .calibration button { padding: 5px 8px; font-size: 11px; }
-  .spectator-panel { display: none; }
-  .spectator-stage { position: relative; min-height: calc(100vh - 98px); display: grid; place-items: center; overflow: hidden; border-radius: 16px; background: #020305; border: 1px solid #34255d; }
-  .spectator-stage img { width: 100%; height: 100%; max-height: calc(100vh - 100px); object-fit: contain; }
-  .spectator-stage img:not([src]) { display: none; }
-  .spectator-wait { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 18px; }
-  .spectator-hud { position: absolute; left: 18px; right: 18px; top: 18px; display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; pointer-events: none; }
-  .spectator-hud span { padding: 8px 12px; border-radius: 999px; background: rgba(8, 11, 16, .78); border: 1px solid #403167; backdrop-filter: blur(6px); }
-  .spectator-hud button { pointer-events: auto; background: #5c181c; border-color: #a6373d; font-weight: 800; }
+  .presentation-hud { display: none; position: absolute; left: 18px; right: 18px; top: 18px; justify-content: space-between; align-items: flex-start; gap: 12px; pointer-events: none; z-index: 3; }
+  .presentation-hud span { padding: 8px 12px; border-radius: 999px; background: rgba(8, 11, 16, .78); border: 1px solid #403167; backdrop-filter: blur(6px); }
+  .presentation-hud button { pointer-events: auto; background: #5c181c; border-color: #a6373d; font-weight: 800; }
   body.presentation header { display: none; }
-  body.presentation main { display: block; padding: 12px; }
-  body.presentation #cell-view, body.presentation aside { display: none; }
-  body.presentation .spectator-panel { display: block; }
+  body.presentation main { display: block; padding: 0; }
+  body.presentation aside { display: none; }
+  body.presentation #cell-view .card { padding: 0; border: 0; border-radius: 0; background: #020305; }
+  body.presentation #cell-view .stage { width: 100vw; height: 100vh; aspect-ratio: auto; border-radius: 0; }
+  body.presentation #cell-view .toggles, body.presentation #cell-view .hint,
+  body.presentation #cell-view .caption { display: none; }
+  body.presentation .presentation-hud { display: flex; }
   svg text { font-family: system-ui, -apple-system, sans-serif; font-weight: 700; paint-order: stroke; stroke: rgba(0,0,0,.75); stroke-width: 6px; }
 </style>
 </head>
@@ -117,6 +116,8 @@
         <img id="stream" alt="">
         <svg id="overlay" viewBox="0 0 1920 1080" preserveAspectRatio="none"></svg>
         <div class="caption"><span id="caption">—</span></div>
+        <div class="presentation-hud"><span id="presentation-caption">Spectacles UI · overhead camera</span>
+          <button id="presentation-stop">STOP</button></div>
       </div>
       <div class="toggles" id="toggles"></div>
       <div class="hint" id="hint" hidden>
@@ -127,14 +128,6 @@
           <li>Put one item in the zone: <b>Look</b> shows the plan, <b>Pick</b> sorts it, <b>Auto</b> keeps sorting.</li>
         </ol>
       </div>
-    </div>
-  </section>
-  <section class="spectator-panel" id="spectator-panel">
-    <div class="spectator-stage">
-      <div class="spectator-wait" id="spectator-wait">waiting for the optical view from Spectacles…</div>
-      <img id="spectator-view" alt="Live optical view from Spectacles">
-      <div class="spectator-hud"><span id="spectator-caption">Spectacles UI · tap WEB UI in the glasses to return</span>
-        <button id="spectator-stop">STOP</button></div>
     </div>
   </section>
   <aside>
@@ -209,7 +202,7 @@ const LAYERS = [
 let show = {};
 try { show = JSON.parse(localStorage.getItem('layers') || '{}'); } catch (e) { show = {}; }
 for (const [key] of LAYERS) if (!(key in show)) show[key] = true;
-let state = null, drawn = null, editing = null, online = true, spectatorSeq = -1;
+let state = null, drawn = null, editing = null, online = true;
 
 function toast(text, info) {
   const t = $('toast'); t.textContent = text; t.classList.toggle('info', !!info); t.classList.add('show');
@@ -391,13 +384,7 @@ function renderManual(s) {
   }).join('');
   $('snapshots').innerHTML = (p.snapshots || []).slice(0, 6).map((shot) =>
     `<a href="${esc(shot.composite)}" target="_blank" title="camera + Lens render"><img src="${esc(shot.composite)}" alt="Spectacles snapshot"></a>`).join('');
-  $('spectator-caption').textContent = `${p.status || 'Spectacles UI'} · tap WEB UI in the glasses to return`;
-  if (p.presentation && p.view_sequence !== spectatorSeq) {
-    const next = new Image();
-    next.onload = () => { $('spectator-view').src = next.src; $('spectator-wait').hidden = true; spectatorSeq = p.view_sequence; };
-    next.onerror = () => { $('spectator-wait').hidden = false; };
-    next.src = `/spectacles/view.jpg?seq=${p.view_sequence}&at=${Date.now()}`;
-  }
+  $('presentation-caption').textContent = `${p.status || 'Spectacles UI'} · overhead camera · tap WEB UI in the glasses to return`;
 }
 
 function renderCalibrations(items) {
@@ -446,7 +433,7 @@ async function poll() {
 for (const id of ['look', 'pick', 'empty', 'neutral']) $(id).addEventListener('click', () => post(`/api/action/${$(id).dataset.action}`));
 $('auto').addEventListener('click', () => (state && state.auto ? post('/api/stop') : post('/api/action/auto')));
 $('stop').addEventListener('click', () => post('/api/stop'));
-$('spectator-stop').addEventListener('click', () => post('/api/stop'));
+$('presentation-stop').addEventListener('click', () => post('/api/stop'));
 $('relax').addEventListener('click', () => {
   if (confirm('Torque off: both arms go limp and fall. Hold them first. Relax?')) post('/api/action/relax');
 });

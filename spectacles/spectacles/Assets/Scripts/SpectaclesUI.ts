@@ -65,11 +65,11 @@ export class SpectaclesUI {
     }
     this.precision = typeof report.scale === "number" && report.scale <= 0.5;
     this.stopped = report.stopped === true;
-    this.precisionLabel.text = this.precision ? "PRECISE  1/2" : "PRECISION";
+    this.setText(this.precisionLabel, this.precision ? "PRECISE  1/2" : "PRECISION");
     const jaws = [this.cards.left.guide, this.cards.right.guide]
       .filter((guide) => guide !== null && typeof guide.jaw === "number") as ArmGuide[];
     this.jawOpen = jaws.length > 0 && jaws.every((guide) => (guide.jaw as number) >= OPEN_PERCENT);
-    this.gripLabel.text = this.jawOpen ? "CLOSE GRIPS" : "OPEN GRIPS";
+    this.setText(this.gripLabel, this.jawOpen ? "CLOSE GRIPS" : "OPEN GRIPS");
   }
 
   public updateHands(message: any) {
@@ -81,7 +81,6 @@ export class SpectaclesUI {
         continue;
       }
       marker.getSceneObject().enabled = true;
-      marker.text = side === "left" ? "L" : "R";
       marker.getTransform().setWorldPosition(new vec3(hand.wrist[0], hand.wrist[1] + 4, hand.wrist[2]));
       marker.getTransform().setWorldRotation(this.camera.getTransform().getWorldRotation());
       marker.textFill.color = this.colour(this.cards[side].guide);
@@ -115,7 +114,7 @@ export class SpectaclesUI {
     this.gripLabel = grip.label;
     const precision = this.createButton(menu, "PRECISION", 0, 2.1, () => {
       this.precision = !this.precision;
-      this.precisionLabel.text = this.precision ? "PRECISE  1/2" : "PRECISION";
+      this.setText(this.precisionLabel, this.precision ? "PRECISE  1/2" : "PRECISION");
       this.send({ command: "precision", enabled: this.precision });
     });
     this.precisionLabel = precision.label;
@@ -144,12 +143,17 @@ export class SpectaclesUI {
     button.onTriggerUp.add(action);
     const labelObject = global.scene.createSceneObject(labelText + " Label");
     labelObject.setParent(object);
+    // Put labels in front of the UIKit mesh. Coplanar text flickers on device.
+    labelObject.getTransform().setLocalPosition(new vec3(0, 0, 0.55));
     const label = this.createText(labelObject, 6.6, 3, 18);
     label.text = labelText;
     return { object: object, button: button, label: label };
   }
 
   private setPresentation(visible: boolean) {
+    if (visible === this.presentationVisible) {
+      return;
+    }
     this.presentationVisible = visible;
     for (const side of ["left", "right"] as const) {
       this.cards[side].object.enabled = visible;
@@ -180,6 +184,12 @@ export class SpectaclesUI {
     return text;
   }
 
+  private setText(text: Text, value: string) {
+    if (text.text !== value) {
+      text.text = value;
+    }
+  }
+
   private place(object: SceneObject, screen: vec2, distance: number) {
     const head = this.camera.getTransform();
     object.getTransform().setWorldPosition(this.view.screenSpaceToWorldSpace(screen, distance));
@@ -190,8 +200,9 @@ export class SpectaclesUI {
     const card = this.cards[side];
     const colour = this.colour(guide);
     const title = side === "left" ? "LEFT ARM" : "RIGHT ARM";
+    let body: string;
     if (guide === null) {
-      card.text.text = title + "\nOFFLINE\nGRIP  --\nHEIGHT  --------\nTURN  --";
+      body = title + "\nOFFLINE\nGRIP  --\nHEIGHT  --------\nTURN  --";
     } else {
       const state = this.stateName(guide);
       const jaw = typeof guide.jaw === "number" && guide.jaw >= OPEN_PERCENT ? "OPEN" : "CLOSED";
@@ -202,10 +213,11 @@ export class SpectaclesUI {
       const turn = typeof guide.turn === "number" ? guide.turn : (typeof guide.roll === "number" ? guide.roll : 0);
       const reason = guide.state && guide.state.indexOf(": at ") >= 0 ?
         "\n" + guide.state.split(": at ")[1].toUpperCase() : "";
-      card.text.text = title + "\n" + state + reason + "\nGRIP  " + jaw +
+      body = title + "\n" + state + reason + "\nGRIP  " + jaw +
         "\nHEIGHT  " + bar + "  " + Math.round(tip) + " cm\nTURN  " +
         (turn > 0 ? "+" : "") + Math.round(turn) + " deg";
     }
+    this.setText(card.text, body);
     card.text.textFill.color = colour;
     card.text.backgroundSettings.fill.color = new vec4(colour.x * 0.18, colour.y * 0.18, colour.z * 0.18, 0.88);
     card.marker.backgroundSettings.fill.color = new vec4(colour.x * 0.2, colour.y * 0.2, colour.z * 0.2, 0.9);

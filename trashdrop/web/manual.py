@@ -236,12 +236,14 @@ class ManualBridge:
         return None
 
     def set_presentation(self, enabled: bool) -> str | None:
-        """Show or hide the optical-view jury mode, controlled from web or the Lens."""
+        """Show or hide the glasses-controlled jury mode from web or the Lens."""
 
         if enabled and not self.hands.connected:
             return "the glasses are not connected"
         self.hands.presentation = bool(enabled)
-        self.spectator.set_enabled(bool(enabled))
+        # Raw optical streaming is parked while the on-device UI is tuned.
+        # Keep the encoder idle; the jury page uses the stable overhead camera.
+        self.spectator.set_enabled(False)
         self.cell.version += 1
         self.cell.log("Spectacles presentation " + ("started" if enabled else "returned to the web controls"))
         return None
@@ -276,6 +278,7 @@ class ManualBridge:
             "arms": report.get("arms", {}),
             "stopped": report.get("stopped", False),
             "presentation": bool(self.hands.presentation),
+            "optical_stream": False,
             "view_sequence": view_sequence,
             "urls": self.urls,
             "snapshots": snaps,

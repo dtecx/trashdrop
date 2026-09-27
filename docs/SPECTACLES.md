@@ -35,7 +35,7 @@ to send the Lens to the glasses (see "Lens Studio facts").
 | Piece | What it is |
 |---|---|
 | `trashdrop/spectacles.py` | The bridge: WebSocket servers (hands on 8765, video on 8766), `adb reverse` for both, calibration, `Follower` (joystick), `PinchFollower` (pinch), IK steps, limits, clearance between arms, JSON report to the glasses, session recording, video pacing |
-| `trashdrop/web/manual.py` | The unified page's owner of both Spectacles sockets, overhead stream, optical-view stream and exclusive manual session. It reuses the cell's already-open camera and arm objects, so no bus is opened twice |
+| `trashdrop/web/manual.py` | The unified page's owner of both Spectacles sockets, overhead stream and exclusive manual session. It reuses the cell's already-open camera and arm objects, so no bus is opened twice |
 | `spectacles/spectacles/` | Lens Studio **5.15.4** project (committed). Scripts in `Assets/Scripts/` |
 | `.../Assets/Scripts/HandStream.ts` | Sends both hands ~30/s and handles requested optical snapshots / spectator frames by encoding the colour camera and Lens render target. `previewToo` is off, so the LS preview does not connect |
 | `.../Assets/Scripts/SpectaclesUI.ts` | World-locked per-arm cards, hand labels and UIKit menu: grips, precision, home, stop and return to Web UI |
@@ -255,11 +255,12 @@ findings above were made; no replay tool is in the repo yet (worth adding).
    pending.** `trashdrop web` owns the existing Cell and the Spectacles
    bridge together. It has auto sort/pick, manual start/stop/mode, arm state,
    snapshots and the complete calibration checklist. **Enter Spectacles UI**
-   hides every ordinary web control and shows only the live optical view
-   (colour camera + Lens render); **WEB UI** in the glasses stops manual mode
-   and restores the page. The overhead Frame now contains the whole cropped
-   width instead of cropping its left edge. Next: push Preview Lens, test this
-   round trip and tune it from real snapshots.
+   hides every ordinary web control and shows only the stable overhead camera;
+   **WEB UI** in the glasses stops manual mode and restores the page. The raw
+   optical spectator stream works, but is deliberately parked while the Lens
+   UI is tuned. The overhead Frame now contains the whole cropped width instead
+   of cropping its left edge. Next: push Preview Lens, test this round trip and
+   tune it from real snapshots.
 4. **Recalibrate the left arm** (the team took it apart and may have put a
    horn or the gripper back at another angle). Evidence, read with
    `uv run trashdrop arm status` on 2026-09-27 03:30: `rig.toml`'s left

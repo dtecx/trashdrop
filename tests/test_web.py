@@ -160,14 +160,11 @@ class SpectaclesServerTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             return response.status, json.loads(response.read())
 
-    def test_presentation_starts_manual_mode_and_serves_the_optical_view(self) -> None:
+    def test_presentation_starts_manual_mode(self) -> None:
         status, reply = self.post("/api/spectacles/presentation", {"enabled": True, "mode": "pinch", "scale": 0.5})
         self.assertEqual((status, reply["ok"]), (200, True))
         self.assertTrue(self.spectacles.active)
         self.assertTrue(self.spectacles.presentation)
-        with urllib.request.urlopen(self.base + "/spectacles/view.jpg", timeout=5) as response:
-            self.assertEqual(response.headers["Content-Type"], "image/jpeg")
-            self.assertTrue(response.read(3).startswith(b"\xff\xd8"))
         self.post("/api/spectacles/presentation", {"enabled": False})
         self.assertFalse(self.spectacles.active)
         self.assertFalse(self.spectacles.presentation)
