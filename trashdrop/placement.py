@@ -42,6 +42,13 @@ class Placement:
         rotation = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
         return rotation @ np.asarray(sheet_xy, dtype=float) + np.array([self.x, self.y])
 
+    def to_sheet(self, arm_xy) -> np.ndarray:
+        """The other way round from to_arm: a point in the arm's frame, on the sheet."""
+
+        angle = np.radians(self.yaw)
+        rotation = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+        return rotation.T @ (np.asarray(arm_xy, dtype=float) - np.array([self.x, self.y]))
+
     def direction_to_arm(self, sheet_degrees: float) -> float:
         """A direction on the sheet, as an angle in the arm's frame."""
 

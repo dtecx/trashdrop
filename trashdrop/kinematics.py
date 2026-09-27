@@ -81,6 +81,8 @@ class Kinematics:
         self._across_local = rotation.T @ across
         shoulder = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "shoulder")
         self.pan_axis = self.data.xpos[shoulder][:2].copy()  # where the base turns, in xy
+        self._joints_along = [mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
+                              for name in ("base", "upper_arm", "lower_arm", "wrist")]  # foot, lift, elbow, wrist
         self.wrist_roll_offset = float(wrist_roll_offset)
 
     def own_limits(self) -> dict[str, tuple[float, float]]:
@@ -107,6 +109,13 @@ class Kinematics:
 
         self._forward(degrees)
         return self.data.site_xpos[self._site].copy()
+
+    def links(self, degrees: dict[str, float]) -> np.ndarray:
+        """The arm's centre line, metres in its frame: its foot, shoulder lift, elbow, wrist, TCP -- to keep two
+        arms apart, the other's base included."""
+
+        self._forward(degrees)
+        return np.array([self.data.xpos[body] for body in self._joints_along] + [self.data.site_xpos[self._site]])
 
     def fingertip(self, degrees: dict[str, float]) -> np.ndarray:
         """Tip of the fixed finger, metres: what touches the table first."""

@@ -1,19 +1,68 @@
 # Spectacles drive the arms
 
-Each hand moves the arm on its side; thumb and index apart open its jaw,
-together close it. The glasses run a Lens (the Lens Studio project in
-`spectacles/spectacles/`) that sends the hands to the Mac over a WebSocket;
-the Mac (`trashdrop/spectacles.py`) has the arms follow them. How a hand maps
-to its arm is in that module's docstring.
+Each hand drives the arm on its side. The glasses run a Lens (the Lens
+Studio project in `spectacles/spectacles/`) that sends the hands to the Mac
+over a WebSocket; the Mac (`trashdrop/spectacles.py`) drives the arms. The
+details are in that module's docstring. Two ways to drive them:
 
-To control the wrist, hold a hand in view, then **raise or lower its fingers**
-to tilt that arm's jaw (`wrist_flex`). **Rotate the palm around the direction
-the fingers point** to turn the jaw (`wrist_roll`), as if turning a screwdriver.
-The two motions work together, independently for the left and right hands.
-The pose when each hand appears is its zero: you can start comfortably without
-the jaw jumping. Move the hand out of view and bring it back to reset that
-reference. Pinch only changes the jaw opening; the palm knuckles drive wrist
-orientation even while pinched. Wrist joint limits and `--speed` still apply.
+**`--mode pinch`** (the default), as VR teleoperation does it with a grip
+button:
+
+1. **Grab and drag.** Thumb and index together grab the jaw: while you hold
+   the pinch and move your hand, the jaw follows it -- as far as it goes
+   (`--scale 0.5`: half as far). Let go: the arm stays where it is. Pinch
+   again anywhere and go on from there.
+2. **Grab and twist.** Pinch and, without moving your hand, twist it like a
+   screwdriver: the jaw turns the same way -- clockwise as you see the back
+   of your hand is clockwise from above, as the overhead camera shows it.
+   The first 12 degrees do nothing; the glasses say how far it has turned
+   ("turned 30° cw"). Let go, turn your hand back, pinch and twist again to
+   turn further. A pinch either drags or twists, whichever your hand does
+   first (moves 1.5 cm or turns 12 degrees), never both, so dragging does
+   not turn the jaw and twisting does not move it.
+3. **Open and close.** Touch thumb and pinky: a closed jaw opens, an open
+   one closes. Once per touch; never while pinching.
+4. No calibration: forward is where you look when you pinch.
+
+**`--mode joystick`**:
+
+1. **Calibrate.** Both hands up in the air (not on the table), roughly level
+   (within 15 cm) and still (within 5 cm) for 5 s: the glasses count down.
+   Where the hands rest is their neutral, and "right" is the way from the
+   left hand to the right one -- so it does not matter where you looked.
+2. **Steer.** Within 3 cm of its neutral, on each axis, a hand moves
+   nothing. Past that the jaw goes the same way: the hand a little lower,
+   the jaw goes down; lower and to the right, down and to the right. The
+   farther past, the faster, 6 cm/s at most. Back to neutral, the arm stops.
+   The glasses say which way they read each hand: "moving right, down".
+3. **Turn the jaw with a fist.** Close the hand, turn the fist, open it:
+   the wrist roll turned as far as the fist did and stays there. While the
+   fist is closed nothing else moves; close it again to turn further.
+   Closing the hand does not close the jaw: a pinch reaches the jaw 0.4 s
+   late, and what thumb and index did on the way into a fist is dropped.
+4. **Grip with a pinch.** After a fist, or a hand out of sight, the jaw
+   waits until thumb and index agree with how open it is ("jaw waits for a
+   pinch"), so opening the hand does not drop what the jaw holds.
+
+The camera looks straight down, so it cannot show how high a jaw is: under
+the status the glasses show each fixed finger's height above the table
+("left tip 4 cm"), and the text turns red while an arm is down at the table.
+
+Every session's hand data goes to `out/spectacles/session-*.jsonl`
+(`--no-record`: not): what the tracking really saw, to tune against.
+
+The arms keep 10 cm between them -- from foot to jaw, both being placed on
+the sheet -- so either can reach into the middle, or past it, while the
+other is elsewhere. When an arm stops although its hand says go, the glasses
+say why: "moving left: at the other arm", "moving down: at the table",
+"... at full reach", "... at a joint limit". Driving one arm alone (`--arm`),
+it keeps to its own side, 14 cm past its base's line at most: the other arm
+is not being watched.
+
+A hand out of sight holds its arm. Back within half a second it carries on;
+later, its arm waits until the hand is back at its neutral, and the glasses
+say which way ("back to the middle: up 6 cm"). Both hands out of sight for
+3 s: calibrate again -- also the way to recalibrate on purpose.
 
 ## The Mac
 
@@ -34,14 +83,16 @@ allow it. The glasses and the Mac must be on the same network, and one that
 keeps its devices apart (many venue networks do) stops them seeing each
 other.
 
-Options: `--scale 1.5` (arm cm per hand cm), `--speed 120` (deg/s, the most
-any joint turns), `--facing them` (standing in front of the arms, facing
-them), `--arm left` (one arm only).
+Options: `--hold 5` (seconds to calibrate), `--dead-zone 3` (cm on each
+axis), `--gain 1.5` (cm/s per cm past the dead zone), `--top-speed 6` (cm/s,
+the fastest the jaw moves), `--speed 120` (deg/s, the most any joint turns),
+`--facing them` (standing in front of the arms, facing them), `--arm left`
+(one arm only: calibrating then wants that hand alone).
 
-Start with `--dry-run --video --camera auto` to see both wrist angles in the
-Mac's log while turning your hands. This does not connect to the servo buses.
-For a first arm trial, `--speed 60` makes every joint slower. Keep clear of the
-arms when they move to READY and while tracking hands.
+Start with `--dry-run --video` to see in the Mac's log where each jaw would
+go, its roll, and each hand's curl (about 2 open, below 1.1 a fist, above
+1.35 open again) while you try it. This does not connect to the servo buses.
+Keep clear of the arms when they move to READY and while tracking hands.
 
 ### Overhead camera in the glasses
 
@@ -57,7 +108,8 @@ URL can be passed with `--camera` when needed.
 The bridge forwards port 8766 over the Spectacles USB cable alongside the
 hand-control port 8765. `WebcamView` connects to `ws://127.0.0.1:8766`; for
 Wi-Fi, set its Url to the video address printed by the Mac. It displays the
-newest JPEG frame at up to 10 fps in `Webcam Window`, a Camera Object child
+newest JPEG frame at up to 30 fps (`--video-fps`; `--video-width` 640 and
+`--video-quality` 60 set its size) in `Webcam Window`, a Camera Object child
 centred below `Arm Status`. The scene's window is 45 x 34 cm at 60 cm from the
 viewer. Its `Preview Too` input is off by default, as on `HandStream`.
 
@@ -68,8 +120,10 @@ remaining picture. The JPEG is then resized to 640 pixels wide. If the overhead
 camera moves, recalibrate the tape corners before trusting this framing or the
 sorter.
 
-`WebcamView` prints displayed fps and an estimated capture-to-display delay in
-the Lens Studio device log. The estimate synchronizes the Mac and Spectacles
+Every 10 s the bridge prints the camera's own frame rate, the rate it sends
+and the size of a frame: in dim light the webcam slows itself down, and more
+light is the fix. `WebcamView` prints displayed fps and an estimated
+capture-to-display delay in the Lens Studio device log. The estimate synchronizes the Mac and Spectacles
 clocks with WebSocket pings; it can vary with USB and render scheduling. No
 frames queue on the Mac or in the Lens decoder: a slow viewer skips old frames.
 

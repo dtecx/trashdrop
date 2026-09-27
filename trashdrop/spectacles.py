@@ -1,4 +1,4 @@
-"""Snap Spectacles drive the arms: each hand moves the arm on its side, a pinch closes its jaw.
+"""Snap Spectacles drive the arms: each hand drives the arm on its side, by pinches or like a joystick.
 
 A Lens on the glasses (spectacles/spectacles, a Lens Studio 5.15 project; its
 script is Assets/Scripts/HandStream.ts) streams both hands' fingertips,
@@ -15,25 +15,57 @@ plugged in, the port on the glasses is forwarded to the Mac's (adb reverse,
 as the Spectacles answer adb), and the Lens connects to ws://127.0.0.1:8765
 -- no network needed, and none in the way.
 
-How a hand drives its arm:
+How a hand drives its arm, --mode pinch (the default; PinchFollower), the
+way VR teleoperation does it with a grip button:
 
-* Relative, like a mouse. When a hand comes into view, it and its arm are
-  anchored where they are; from then on the arm's fingertips move as the
-  point between thumb and index tip moves (--scale times as far). A hand
-  that drops out of view holds its arm, and is anchored afresh when it comes
-  back, so nothing jumps.
-* Forward is where the wearer looked, level, when the hand was anchored;
-  the hands are always in front of the face, which settles which way round
-  the camera's axis is. The wearer stands behind the arms, facing their
-  way; with --facing them, in front of them facing back, each hand drives
-  the arm on its side as the wearer sees it, and a hand moved towards the
-  arms moves its jaw towards their bases.
-* Thumb and index tip apart open the jaw; together they close it.
-* Tilt the fingers up or down to tilt the jaw (wrist flex); turn the palm
-  about the finger direction to turn the jaw (wrist roll). Both are relative
-  to the hand orientation when it first appears, so the arm does not jump.
-* A target stays where its arm can reach, above the table and on its own
-  side, clear of the other arm.
+* Thumb and index together grab the jaw: while pinched it goes where it was
+  plus --scale times as far as the pinch point goes, and the wrist roll
+  turns as the hand does. Let go and the arm stays; pinch again anywhere to
+  go on. Thumb and pinky together open a closed jaw or close an open one.
+  No calibration; forward is where the wearer looked when pinching, level.
+  The pinch point is steadied by a 1-euro filter.
+
+--mode joystick (Follower):
+
+* First, calibration: both hands up in the air, level with each other, held
+  still for --hold seconds (5; the glasses count down). Where they rest is
+  each hand's neutral, and right is the way from the left hand to the right
+  one -- wherever the wearer happened to look (with one arm, --arm, it is
+  where the wearer looked, level).
+* Then each hand is a joystick. Within --dead-zone (3 cm, on each axis) of
+  its neutral a hand moves nothing; past it, the arm's jaw moves the same
+  way -- the hand a little lower, the jaw goes down; lower and to the right,
+  down and to the right -- at --gain cm/s for every cm past the dead zone,
+  --top-speed at most. Back to neutral, the arm stops where it is.
+* A fist turns the jaw: close the hand, turn the fist, open it -- the wrist
+  roll turned as far as the fist did, and stays there. While the fist is
+  closed nothing else moves; turn it again to go on turning.
+* Thumb and index tip apart open the jaw; together they close it -- JAW_DELAY_S
+  late, so that thumb and index meeting on the way into a fist grip nothing.
+  After a fist or a hand out of sight, the jaw waits until thumb and index
+  agree with how open it is, so opening the hand does not drop what it holds.
+* The glasses show what each arm makes of its hand: holding, moving (and
+  which way: forward, back, right, left, up, down), turning the jaw.
+* Every message from the glasses is kept in out/spectacles/ (--no-record:
+  not), one JSON line each, to replay what the hands really did.
+* A hand out of sight holds its arm. Back within a moment, it carries on;
+  after longer, its arm waits until the hand is back at its neutral (the
+  glasses say which way). Both hands out of sight for RECALIBRATE_S:
+  calibrate again.
+* The wearer stands behind the arms, facing their way; with --facing them,
+  in front of them facing back, each hand drives the arm on its side as the
+  wearer sees it, and a hand moved towards the arms moves its jaw towards
+  their bases.
+* A target stays where its arm can reach, above the table, and never more
+  than LEAD_CM ahead of the jaw, so a hand brought back stops it at once.
+  The jaw keeps pointing down.
+* The two arms keep CLEARANCE_CM between their centre lines (foot to jaw,
+  on the sheet both are placed on), so either may reach into the middle, or
+  past it, while the other is elsewhere; a step that would bring them nearer
+  is not taken. Unplaced, or with one arm driven alone, each keeps to its
+  own side (SIDE_CM). When an arm cannot go where its hand says, the glasses
+  say why: "moving left: at the other arm", "... at the table", "... at full
+  reach", "... at a joint limit".
 
 Each tick (50 Hz) every arm takes one damped least-squares step towards its
 target on the model -- far quicker than solving afresh, and a target out of
@@ -45,6 +77,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import collections
 import hashlib
 import json
 import math
@@ -58,30 +91,63 @@ import numpy as np
 
 PORT = 8765
 VIDEO_PORT = 8766
-VIDEO_FPS = 10
+VIDEO_FPS = 30  # at most; the webcam's own rate, and the glasses show as many as they decode
 VIDEO_CAPTURE_WIDTH = 800
 VIDEO_CAPTURE_HEIGHT = 600
 VIDEO_WIDTH = 640
 VIDEO_QUALITY = 60
+VIDEO_REPORT_S = 10.0  # how often the bridge says what the video does
 RATE_HZ = 50
 SPEED = 120.0  # deg/s a joint turns at most while following
 GRIPPER_SPEED = 150.0  # percent a second
-SCALE = 1.0  # arm cm per hand cm
 STALE_S = 0.3  # a hand not heard of for this long holds its arm
 SMOOTHING = 0.5  # the share of each new hand position; the rest is the last: steadies the tracking's jitter
 ORIENTATION_SMOOTHING = 0.4  # knuckles jitter while pinching; filter angles without averaging across the 180-degree seam
 OPEN = 60.0  # percent open with thumb and index well apart
 PINCH_CM = (2.0, 9.0)  # thumb tip to index tip: shut at the first or closer, open at the second or wider
+HOLD_S = 5.0  # calibration: the hands held level and still this long
+HOLD_CM = 5.0  # still: every wrist within this of where the hold began (3 kept restarting the count)
+LEVEL_CM = 15.0  # level: the two wrists at most this far apart in height (8 took half a minute to meet)
+SPAN_CM = 10.0  # hands at least this far apart at calibration say which way right is; closer, the gaze does
+DEAD_ZONE_CM = 3.0  # on each axis: a hand this close to its neutral moves nothing
+GAIN = 1.5  # cm/s the jaw moves for every cm the hand is past the dead zone
+TOP_SPEED = 6.0  # cm/s the jaw moves at most: gentle, for trying it out
+LEAD_CM = 2.0  # a target runs at most this far ahead of the jaw: bring the hand back and it stops
+GRACE_S = 0.5  # a hand back within this carries on; later, its arm waits for it at the neutral
+RECALIBRATE_S = 3.0  # every hand out of sight this long: calibrate again
+FIST = (1.1, 1.35)  # curl (see curl()): a fist closes below the first, opens above the second
+# --mode pinch. Thumb and index tips: pinched below the first, let go above the second (a recorded session:
+# pinches under 2.5 cm, open hands 10-15). Thumb and pinky tips: under the first the jaw toggles, over the
+# second it may toggle again (never under 6 cm in that session, fists included).
+GRAB_CM = (2.5, 4.0)
+TOGGLE_CM = (3.5, 5.5)
+# Each pinch does one thing, whichever the hand does first: turning past TWIST_DEG makes it a twist (the
+# jaw turns, and stays put), moving the pinch past DRAG_CM makes it a drag (the jaw moves, and does not
+# turn). Replayed on a recorded session, 40 of 41 drags and 13 of 19 twists came out so -- the wearer not
+# yet knowing the rule; with DRAG_CM 2, one drag fewer.
+TWIST_DEG = 12.0
+DRAG_CM = 1.5
+SCALE = 1.0  # --mode pinch: jaw cm per hand cm
+# 1-euro filter (Casiez, Roussel and Vogel, CHI 2012) on the pinch point: cutoff Hz at rest, and how much
+# faster it gets per cm/s -- steady when the hand is still, little lag when it moves.
+EURO = (1.5, 0.05)
+CATCH_PCT = 10.0  # a held jaw follows the pinch again once the two are this close
+# A pinch reaches the jaw this late. Closing the hand into a fist brings thumb and index
+# together before the fist is told; what they did in the meantime is dropped, not gripped.
+JAW_DELAY_S = 0.4
 READY_CM = (22.0, 0.0, 10.0)  # where each arm waits, in its own frame: ahead of its base, over the table
 REACH_CM = (12.0, 38.0)  # from the base's turning axis
 HEIGHT_CM = (3.0, 35.0)  # the TCP above the table
-SIDE_CM = 14.0  # how far past its base's line towards the other arm each may go (the bases stand ~38 cm apart)
+# Placed on the sheet, the two arms' centre lines (foot, shoulder, elbow, wrist, jaw) are kept this far apart,
+# so either may reach into the middle while the other is not there. Unplaced, or driving one arm alone,
+# each keeps to its own side instead: no more than SIDE_CM past its base's line towards the other.
+CLEARANCE_CM = 10.0
+SIDE_CM = 14.0  # the bases stand ~38 cm apart: the middle 10 cm is then neither arm's
 POINTING_WEIGHT = 0.01  # metres a radian: the fingers pointing down gives way to where the hand is
 DAMPING = 0.02
 READY_ROOM_DEG = 10.0  # the ready pose keeps every joint this far from its limits, room to follow
 ARM_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
-STEERED = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex")  # positional fallback for an older Lens without knuckles
-POSITION_JOINTS = STEERED[:3]  # once the hand commands the wrist, these three compensate to hold the TCP
+STEERED = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex")  # place the jaw, fingers down; the fist sets the roll
 # Which hand drives which arm: standing behind the arms, or in front facing them.
 HAND_FOR = {"same": {"left": "left", "right": "right"}, "them": {"left": "right", "right": "left"}}
 UP = np.array([0.0, 1.0, 0.0])  # the glasses' world: y up, x right, z back, centimetres
@@ -127,18 +193,32 @@ def frame(payload: bytes, opcode: int = 1) -> bytes:
 
 
 class Hands:
-    """The newest message from the glasses, and what to tell them back; shared between threads."""
+    """The newest message from the glasses, and what to tell them back; shared between threads.
 
-    def __init__(self, clock=time.monotonic) -> None:
+    With ``record`` (a text file), every message goes into it too, one JSON line
+    each with the bridge's time as "at": what the hands really did, to replay.
+    """
+
+    def __init__(self, clock=time.monotonic, record=None) -> None:
         self._lock = threading.Lock()
         self._message, self._at = None, -math.inf
         self.clock = clock
-        self.status = "waiting for the arms"
+        self.record = record
+        self.status = "waiting for the arms"  # what the arms do, in words
+        self.report: str | None = None  # what the glasses are sent: JSON with the status, boxes and stops (report())
         self.connected = False
 
     def put(self, message: dict) -> None:
         with self._lock:
             self._message, self._at = message, self.clock()
+            if self.record is not None and isinstance(message, dict):
+                self.record.write(json.dumps({"at": round(self._at, 3), **message}, separators=(",", ":")) + "\n")
+
+    def stop_recording(self) -> None:
+        with self._lock:
+            record, self.record = self.record, None
+        if record is not None:
+            record.close()
 
     def latest(self) -> tuple[dict | None, float]:
         """(the newest message, how many seconds old)."""
@@ -192,8 +272,9 @@ def make_server(hands: Hands, host: str = "0.0.0.0", port: int = PORT) -> socket
                         hands.put(json.loads(text))
                     except ValueError:
                         continue
-                    if hands.status != told:
-                        told = hands.status
+                    answer = hands.report or hands.status
+                    if answer != told:
+                        told = answer
                         self.wfile.write(frame(told.encode()))
             except (OSError, struct.error):
                 pass  # the glasses went away
@@ -222,9 +303,11 @@ def crop_video(frame, tape_pixels: dict[str, tuple[float, float]],
 class VideoFrames:
     """Read continuously; publish only the newest encoded frame to every viewer."""
 
-    def __init__(self, capture=None, *, tape_pixels=None, reference_size=(0, 0),
+    def __init__(self, capture=None, *, fps: float = VIDEO_FPS, width: int = VIDEO_WIDTH,
+                 quality: int = VIDEO_QUALITY, tape_pixels=None, reference_size=(0, 0),
                  clock=time.monotonic, wall_clock=time.time) -> None:
         self.capture = capture
+        self.fps, self.width, self.quality = fps, width, quality
         self.tape_pixels = tape_pixels or {}
         self.reference_size = reference_size
         self.clock, self.wall_clock = clock, wall_clock
@@ -233,6 +316,18 @@ class VideoFrames:
         self.packet: bytes | None = None
         self.running = True
         self.thread: threading.Thread | None = None
+        self.counted_since, self.read_count, self.sent_count, self.sent_bytes = clock(), 0, 0, 0
+
+    def report(self) -> str:
+        """What the video did since the last report: the camera's rate, the rate sent, the size of a frame."""
+
+        with self.condition:
+            now = self.clock()
+            seconds = max(now - self.counted_since, 1e-9)
+            text = (f"video: camera {self.read_count / seconds:.1f} fps, sent {self.sent_count / seconds:.1f} fps, "
+                    f"{self.sent_bytes / max(self.sent_count, 1) / 1024:.0f} KB a frame")
+            self.counted_since, self.read_count, self.sent_count, self.sent_bytes = now, 0, 0, 0
+        return text
 
     def start(self) -> None:
         if self.capture is None:
@@ -249,20 +344,25 @@ class VideoFrames:
             if not ok or picture is None:
                 time.sleep(0.05)
                 continue
+            self.read_count += 1
             captured_ms = round(self.wall_clock() * 1000)
             now = self.clock()
-            if now < next_encode:
-                continue  # Keep draining the camera so its buffer cannot grow stale.
+            # Keep draining the camera so its buffer cannot grow stale. A quarter frame's slack:
+            # a camera at just --video-fps must not lose every other frame to its jitter.
+            if now < next_encode - 0.25 / self.fps:
+                continue
             picture = crop_video(picture, self.tape_pixels, self.reference_size)
-            jpeg = encode(picture, width=VIDEO_WIDTH, quality=VIDEO_QUALITY)
+            jpeg = encode(picture, width=self.width, quality=self.quality)
             self.publish(jpeg, captured_ms)
-            next_encode = max(next_encode + 1 / VIDEO_FPS, now)
+            next_encode = max(next_encode + 1 / self.fps, now)
 
     def publish(self, jpeg: bytes, captured_ms: int) -> None:
         with self.condition:
             self.sequence += 1
             self.packet = json.dumps({"seq": self.sequence, "capturedMs": captured_ms,
                                       "jpeg": base64.b64encode(jpeg).decode("ascii")}, separators=(",", ":")).encode()
+            self.sent_count += 1
+            self.sent_bytes += len(jpeg)
             self.condition.notify_all()
 
     def after(self, sequence: int) -> tuple[int, bytes] | None:
@@ -400,6 +500,25 @@ def facing_frame(look, head, point) -> np.ndarray:
     return np.array([forward, np.cross(forward, UP), UP])  # right-handed, y up: forward x up is right
 
 
+def body_frame(left, right, look, head) -> np.ndarray:
+    """The wearer's forward, right and up from the hands at rest: right runs from the left hand to the right.
+
+    Where the wearer happened to look while calibrating -- at the arms, at the
+    video -- does not turn it, as it would a frame taken from the gaze. Hands
+    closer together than SPAN_CM cannot tell; the gaze (facing_frame) does.
+    """
+
+    left, right = np.asarray(left, dtype=float), np.asarray(right, dtype=float)
+    gaze = facing_frame(look, head, (left + right) / 2)
+    across = (right - left) * [1.0, 0.0, 1.0]
+    if np.linalg.norm(across) < SPAN_CM:
+        return gaze
+    across /= np.linalg.norm(across)
+    if across @ gaze[1] < 0:  # hands crossed over: the gaze still knows which way is right
+        across = -across
+    return np.array([np.cross(UP, across), across, UP])
+
+
 def gripper_for(gap_cm: float) -> float:
     """Percent open for the gap between thumb and index tip."""
 
@@ -446,123 +565,535 @@ def hand_angles(hand: dict, wearer: np.ndarray) -> tuple[float, float] | None:
         return None
 
 
-class Follower:
-    """One arm following one hand, on the model: joint targets for the arm, tick by tick."""
+def curl(hand: dict) -> float | None:
+    """How far the fingers fold: middle, ring and pinky tip to the wrist, over the palm's length.
 
-    def __init__(self, name: str, kinematics, placement, pose: dict[str, float], *, scale: float = SCALE,
-                 speed: float = SPEED, facing: str = "same", limits: dict[str, tuple[float, float]] | None = None):
+    About 2 with the fingers straight, about 1 or less in a fist; thumb and
+    index -- the pinch -- are left out of it.
+    """
+
+    try:
+        wrist = np.asarray(hand["wrist"], dtype=float)
+        palm = float(np.linalg.norm(np.asarray(hand["middleKnuckle"], dtype=float) - wrist))
+        tips = [np.asarray(hand[name], dtype=float) for name in ("middleTip", "ringTip", "pinkyTip")]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if wrist.shape != (3,) or palm < 1.0 or any(tip.shape != (3,) for tip in tips):
+        return None
+    return float(np.mean([np.linalg.norm(tip - wrist) for tip in tips])) / palm
+
+
+def past_dead_zone(offset: np.ndarray, dead_zone: float) -> np.ndarray:
+    """How far past ``dead_zone`` each axis is, signed; nothing inside it."""
+
+    return np.sign(offset) * np.maximum(np.abs(offset) - dead_zone, 0.0)
+
+
+def way_back(seen: np.ndarray) -> str:
+    """Which way a hand ``seen`` (forward, right, up of its neutral) should go to reach it."""
+
+    axis = int(np.argmax(np.abs(seen)))
+    words = (("closer", "farther"), ("left", "right"), ("down", "up"))  # for a positive offset, a negative one
+    return f"{words[axis][0 if seen[axis] > 0 else 1]} {abs(float(seen[axis])):.0f} cm"
+
+
+def heading_words(seen: np.ndarray, dead_zone: float) -> list[str]:
+    """Which ways a hand ``seen`` (forward, right, up of its neutral) is past the dead zone, in the wearer's words."""
+
+    words = (("forward", "back"), ("right", "left"), ("up", "down"))
+    return [pair[0 if value > 0 else 1] for value, pair in zip(past_dead_zone(seen, dead_zone), words) if value]
+
+
+def heading(seen: np.ndarray, dead_zone: float) -> str:
+    return ", ".join(heading_words(seen, dead_zone))
+
+
+def segment_gap(p0, p1, q0, q1) -> float:
+    """How close the segments p0-p1 and q0-q1 come (Ericson, Real-Time Collision Detection, 5.1.9)."""
+
+    p0, p1, q0, q1 = (np.asarray(point, dtype=float) for point in (p0, p1, q0, q1))
+    d1, d2, r = p1 - p0, q1 - q0, p0 - q0
+    a, e, f = float(d1 @ d1), float(d2 @ d2), float(d2 @ r)
+    if a < 1e-12 and e < 1e-12:
+        return float(np.linalg.norm(r))
+    if a < 1e-12:
+        s, t = 0.0, min(max(f / e, 0.0), 1.0)
+    else:
+        c = float(d1 @ r)
+        if e < 1e-12:
+            s, t = min(max(-c / a, 0.0), 1.0), 0.0
+        else:
+            b = float(d1 @ d2)
+            denominator = a * e - b * b
+            s = min(max((b * f - c * e) / denominator, 0.0), 1.0) if denominator > 1e-12 else 0.0
+            t = (b * s + f) / e
+            if t < 0.0:
+                s, t = min(max(-c / a, 0.0), 1.0), 0.0
+            elif t > 1.0:
+                s, t = min(max((b - c) / a, 0.0), 1.0), 1.0
+    return float(np.linalg.norm(p0 + d1 * s - (q0 + d2 * t)))
+
+
+def lines_apart(one: np.ndarray, other: np.ndarray) -> float:
+    """How close two polylines come: two arms' centre lines, say."""
+
+    return min(segment_gap(one[i], one[i + 1], other[j], other[j + 1])
+               for i in range(len(one) - 1) for j in range(len(other) - 1))
+
+
+class OneEuro:
+    """The 1-euro filter for a point (Casiez, Roussel and Vogel, CHI 2012): a low-pass whose cutoff rises with speed."""
+
+    def __init__(self, min_cutoff: float = EURO[0], beta: float = EURO[1], d_cutoff: float = 1.0) -> None:
+        self.min_cutoff, self.beta, self.d_cutoff = min_cutoff, beta, d_cutoff
+        self.x: np.ndarray | None = None
+        self.dx: np.ndarray | None = None
+
+    @staticmethod
+    def _alpha(cutoff: float, dt: float) -> float:
+        return 1.0 / (1.0 + 1.0 / (2 * math.pi * cutoff * dt))
+
+    def __call__(self, x, dt: float) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        if self.x is None or dt <= 0:
+            self.x, self.dx = x.copy(), np.zeros_like(x)
+            return self.x.copy()
+        a = self._alpha(self.d_cutoff, dt)
+        self.dx = a * (x - self.x) / dt + (1 - a) * self.dx
+        a = self._alpha(self.min_cutoff + self.beta * float(np.linalg.norm(self.dx)), dt)
+        self.x = a * x + (1 - a) * self.x
+        return self.x.copy()
+
+    def reset(self) -> None:
+        self.x = self.dx = None
+
+
+class Calibration:
+    """Where each hand rests: held up, level and still, for ``hold_s``."""
+
+    def __init__(self, sides, hold_s: float = HOLD_S) -> None:
+        self.sides, self.hold_s = tuple(sides), hold_s
+        self.reset()
+
+    def reset(self, why: str | None = None) -> None:
+        self.start: dict[str, np.ndarray] | None = None
+        self.total: dict[str, np.ndarray] = {}
+        self.count, self.held = 0, 0.0
+        hands = "both hands" if len(self.sides) > 1 else f"the {self.sides[0]} hand"
+        self.status = why or f"calibrate: {hands} up in the air, level, still"
+
+    def update(self, wrists: dict[str, object], dt: float) -> dict[str, np.ndarray] | None:
+        """Each hand's neutral once the hold is done; None until then (``status`` says why)."""
+
+        if any(wrists.get(side) is None for side in self.sides):
+            self.reset()
+            return None
+        points = {side: np.asarray(wrists[side], dtype=float) for side in self.sides}
+        if len(self.sides) > 1:
+            first, second = self.sides[:2]
+            gap = float(points[first][1] - points[second][1])  # y is up
+            if abs(gap) > LEVEL_CM:
+                self.reset(f"calibrate: {first if gap > 0 else second} hand {abs(gap):.0f} cm higher, level them")
+                return None
+        if self.start is None or any(np.linalg.norm(points[side] - self.start[side]) > HOLD_CM
+                                     for side in self.sides):
+            self.start, self.total, self.count, self.held = points, {side: np.zeros(3) for side in self.sides}, 0, 0.0
+        for side in self.sides:
+            self.total[side] += points[side]
+        self.count += 1
+        self.held += dt
+        if self.held < self.hold_s:
+            self.status = f"calibrate: hold still {math.ceil(self.hold_s - self.held)}"
+            return None
+        return {side: self.total[side] / self.count for side in self.sides}
+
+
+class Follower:
+    """One arm steered by one hand like a joystick, on the model: joint targets for the arm, tick by tick."""
+
+    calibrates = True  # its hand needs a neutral first (Calibration, engage)
+
+    def __init__(self, name: str, kinematics, placement, pose: dict[str, float], *, speed: float = SPEED,
+                 facing: str = "same", limits: dict[str, tuple[float, float]] | None = None,
+                 dead_zone: float = DEAD_ZONE_CM, gain: float = GAIN, top_speed: float = TOP_SPEED):
         self.name, self.kinematics, self.placement = name, kinematics, placement
         self.q = dict(pose)  # joint -> degrees (gripper: percent open): what the arm is sent
-        self.scale, self.speed, self.facing, self.limits = scale, speed, facing, limits or {}
+        self.speed, self.facing, self.limits = speed, facing, limits or {}
+        self.dead_zone, self.gain, self.top_speed = dead_zone, gain, top_speed
         self.toward_other = -1.0 if name == "left" else 1.0  # the other arm is to the left arm's right (-y)
-        self.anchor: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None  # hand point, wearer's frame, TCP
-        self.orientation_anchor: tuple[float, float, float, float] | None = None  # hand roll/pitch, joint roll/flex
-        self.orientation: tuple[float, float] | None = None  # filtered hand roll/pitch
-        self.point: np.ndarray | None = None
-        self.target: np.ndarray | None = None
-        self.state = "no hand"
+        self.neutral: tuple[np.ndarray, np.ndarray] | None = None  # where the hand rests, the wearer's frame
+        self.point: np.ndarray | None = None  # the wrist, steadied
+        self.target: np.ndarray | None = None  # where the jaw is headed, cm in the arm's frame
+        self.roll = self.q["wrist_roll"]  # where the fist left the wrist roll
+        self.hand_roll: float | None = None  # the hand's roll about its fingers, steadied
+        self.grip: tuple[float, float] | None = None  # hand roll and wrist roll when the fist closed
+        self.fist = False
+        self.jaw_held = False  # waiting for thumb and index to agree with how open the jaw is
+        self.pinches: collections.deque[tuple[float, float]] = collections.deque()  # (when, percent) on the way
+        self.jaw_want: float | None = None  # the pinch that has reached the jaw
+        self.clock_s = 0.0  # this follower's own time, in ticks' dt
+        self.centred = True  # False: back after a while out of sight, waiting for the hand at its neutral
+        self.lost_s = 0.0
+        self.curl: float | None = None
+        self.pinned: list[str] = []  # joints the last step found at a limit, pushed further
+        self.blocked: list[str] = []  # the ways the hand pushes that its arm cannot go (heading_words)
+        self.mode = "calibrating"  # calibrating, holding, moving, turning, lost, centring: for the glasses' colours
+        self.state = "calibrating"
 
     def tcp_cm(self) -> np.ndarray:
         return self.kinematics.tcp({joint: self.q[joint] for joint in ARM_JOINTS}) * 100
 
-    def update(self, hand: dict | None, head: dict | None, dt: float) -> dict[str, float]:
-        """Where to send the arm now, given the hand (None or untracked: hold where it is)."""
+    def tip_height(self) -> float:
+        """How far the tip of the fixed finger is above the table, cm: what the camera from above cannot show."""
 
-        if not hand or not hand.get("tracked") or not head:
-            self.anchor = self.point = self.target = None
-            self.orientation_anchor = self.orientation = None
-            self.state = "no hand"
+        tip = self.kinematics.fingertip({joint: self.q[joint] for joint in ARM_JOINTS}) * 100
+        return float(tip[2] - (self.placement.table_height(tip[0], tip[1]) if self.placement is not None else 0.0))
+
+    def guide(self) -> dict | None:
+        """What the glasses draw for this arm's hand, None before calibrating.
+
+        The box is the dead zone round the hand's neutral, in the glasses' own
+        world (cm), its axes the wearer's forward, right and up; ``blocked`` are
+        the faces the hand pushes on in vain; ``tip`` the finger's height above
+        the table.
+        """
+
+        if self.neutral is None:
+            return None
+        start, wearer = self.neutral
+        return {"centre": [round(float(value), 1) for value in start], "axes": np.round(wearer, 3).tolist(),
+                "half": self.dead_zone, "mode": self.mode, "blocked": list(self.blocked),
+                "tip": round(self.tip_height())}
+
+    def engage(self, neutral, wearer) -> None:
+        """Calibrated: the hand rests at ``neutral``, and ``wearer`` is forward, right and up."""
+
+        self.neutral = (np.asarray(neutral, dtype=float), np.asarray(wearer, dtype=float))
+        self.point, self.target = None, self.tcp_cm()
+        self.hand_roll, self.grip, self.fist = None, None, False
+        self.pinches.clear()
+        self.jaw_want = None
+        self.centred, self.lost_s, self.state, self.mode = True, 0.0, "holding", "holding"
+
+    def release(self) -> None:
+        """Back to calibrating: the arm holds."""
+
+        self.neutral = self.point = self.target = None
+        self.hand_roll, self.grip, self.fist = None, None, False
+        self.pinches.clear()
+        self.state = self.mode = "calibrating"
+
+    def centre_line(self, q: dict[str, float] | None = None) -> np.ndarray | None:
+        """This arm's centre line (see Kinematics.links) on the sheet, cm; z is its own. None unplaced."""
+
+        if self.placement is None:
+            return None
+        pose = self.q if q is None else q
+        points = self.kinematics.links({joint: pose[joint] for joint in ARM_JOINTS}) * 100
+        return np.array([[*self.placement.to_sheet(point[:2]), point[2]] for point in points])
+
+    def update(self, hand: dict | None, dt: float, others: list[np.ndarray] | None = None,
+               head: dict | None = None) -> dict[str, float]:
+        """Where to send the arm now, given the hand (None or untracked: hold where it is).
+
+        ``others``: the other arms' centre lines on the sheet (centre_line), kept
+        CLEARANCE_CM away; without them the arm keeps to its own side. ``head``:
+        the glasses' pose (unused here: the calibration fixed the wearer's frame).
+        """
+
+        if self.neutral is None:
             return self.q
-        thumb, index = np.asarray(hand["thumb"], dtype=float), np.asarray(hand["index"], dtype=float)
-        seen = (thumb + index) / 2
-        self.point = seen if self.point is None else SMOOTHING * seen + (1 - SMOOTHING) * self.point
-        if self.anchor is None:
-            self.anchor = (self.point.copy(), facing_frame(head["look"], head["p"], self.point), self.tcp_cm())
-        start, wearer, tcp = self.anchor
-        forward, right, up = wearer @ (self.point - start)
-        moved = [forward, -right, up] if self.facing == "same" else [-forward, right, up]
-        self.target = self.within_reach(tcp + self.scale * np.array(moved))
+        self.clock_s += dt
+        if not hand or not hand.get("tracked"):
+            self.lost_s += dt
+            self.point, self.hand_roll, self.grip, self.fist = None, None, None, False
+            self.pinches.clear()
+            self.state, self.mode, self.blocked = "no hand", "lost", []
+            return self.q
+        if self.lost_s > GRACE_S:
+            self.centred, self.jaw_held, self.jaw_want = False, True, None
+        self.lost_s = 0.0
+        wrist = np.asarray(hand["wrist"], dtype=float)
+        self.point = wrist if self.point is None else SMOOTHING * wrist + (1 - SMOOTHING) * self.point
+        start, wearer = self.neutral
+        seen = wearer @ (self.point - start)  # forward, right, up of the neutral
+        forward, right, up = seen
+        offset = np.array([forward, -right, up] if self.facing == "same" else [-forward, right, up])
+        if not self.centred:
+            if np.any(np.abs(offset) > self.dead_zone):
+                self.state, self.mode, self.blocked = f"back to the middle: {way_back(seen)}", "centring", []
+                return self.q
+            self.centred, self.target = True, self.tcp_cm()
+        self.curl = curl(hand)
+        if self.curl is not None and self.curl < FIST[0] and not self.fist:
+            self.fist, self.grip, self.jaw_held, self.jaw_want = True, None, True, None
+            self.pinches.clear()  # thumb and index met on the way into the fist: that was no pinch
+        elif self.curl is not None and self.curl > FIST[1] and self.fist:
+            self.fist, self.grip = False, None
         measured = hand_angles(hand, wearer)
-        wrist_targets = None
         if measured is not None:
-            if self.orientation_anchor is None:
-                self.orientation_anchor = (measured[0], measured[1], self.q["wrist_roll"], self.q["wrist_flex"])
-                self.orientation = measured
-            else:
-                self.orientation = tuple(previous + ORIENTATION_SMOOTHING * angle_delta(current, previous)
-                                         for previous, current in zip(self.orientation, measured))
-            roll_start, pitch_start, joint_roll, joint_flex = self.orientation_anchor
-            wrist_targets = {"wrist_roll": joint_roll + angle_delta(self.orientation[0], roll_start),
-                             "wrist_flex": joint_flex - angle_delta(self.orientation[1], pitch_start)}
-        elif self.orientation_anchor is not None:
-            wrist_targets = {joint: self.q[joint] for joint in ("wrist_flex", "wrist_roll")}
-        self.q = self.step_to(self.target, dt, wrist_targets)
-        most = GRIPPER_SPEED * dt
-        want = gripper_for(float(np.linalg.norm(thumb - index)))
-        self.q["gripper"] += min(max(want - self.q["gripper"], -most), most)
-        self.state = "following"
+            self.hand_roll = measured[0] if self.hand_roll is None else \
+                self.hand_roll + ORIENTATION_SMOOTHING * angle_delta(measured[0], self.hand_roll)
+        velocity = np.zeros(3)
+        if self.fist:
+            if self.grip is None and self.hand_roll is not None:
+                self.grip = (self.hand_roll, self.roll)
+            if self.grip is not None and self.hand_roll is not None:
+                low, high = self.limits.get("wrist_roll", (-math.inf, math.inf))
+                self.roll = min(max(self.grip[1] + angle_delta(self.hand_roll, self.grip[0]), low), high)
+            self.state, self.mode = "turning the jaw", "turning"
+        else:
+            velocity = self.gain * past_dead_zone(offset, self.dead_zone)
+            fastest = float(np.linalg.norm(velocity))
+            if fastest > self.top_speed:
+                velocity *= self.top_speed / fastest
+            self.state = f"moving {heading(seen, self.dead_zone)}" if fastest > 0 else "holding"
+            self.mode = "moving" if fastest > 0 else "holding"
+        tcp = self.tcp_cm()
+        own_side = not (others and self.placement is not None)
+        target, stopped = self.within_reach(self.target + velocity * dt, own_side=own_side)
+        lead = float(np.linalg.norm(target - tcp))
+        if lead > LEAD_CM:
+            target, _ = self.within_reach(tcp + (target - tcp) * (LEAD_CM / lead), own_side=own_side)
+        stopped = self.advance(target, dt, others, stopped, float(np.linalg.norm(velocity)) * dt)
+        self.blocked = []
+        if self.state.startswith("moving") and stopped:
+            self.state += f": at {stopped}"
+            self.blocked = {"the table": ["down"], "the top": ["up"]}.get(stopped, heading_words(seen, self.dead_zone))
+        if not self.fist:
+            self.pinches.append((self.clock_s, gripper_for(float(np.linalg.norm(
+                np.asarray(hand["thumb"], dtype=float) - np.asarray(hand["index"], dtype=float))))))
+            while self.pinches and self.clock_s - self.pinches[0][0] >= JAW_DELAY_S - 1e-9:
+                self.jaw_want = self.pinches.popleft()[1]
+            if self.jaw_want is not None:
+                if self.jaw_held and abs(self.jaw_want - self.q["gripper"]) <= CATCH_PCT:
+                    self.jaw_held = False
+                if not self.jaw_held:
+                    most = GRIPPER_SPEED * dt
+                    self.q["gripper"] += min(max(self.jaw_want - self.q["gripper"], -most), most)
+        if self.jaw_held:
+            self.state += ", jaw waits for a pinch" if not self.fist else ""
         return self.q
 
-    def within_reach(self, target: np.ndarray) -> np.ndarray:
-        """The nearest point the arm may go: its reach from the base, its own side, above the table."""
+    def advance(self, target: np.ndarray, dt: float, others: list[np.ndarray] | None, stopped: str | None,
+                expected_cm: float) -> str | None:
+        """One step towards ``target`` (within reach already) -- none that brings the arms nearer than
+        CLEARANCE_CM -- and what stopped the arm, if anything: ``stopped`` so far, the other arm, or a
+        joint at its limit where the jaw should have moved ``expected_cm`` (a noticeable step) and barely did."""
 
+        tcp = self.tcp_cm()
+        self.target = target
+        step = self.step_to(self.target, dt, roll=self.roll)
+        if others and self.placement is not None:
+            gap = min(lines_apart(self.centre_line(step), other) for other in others)
+            if gap < CLEARANCE_CM and gap < min(lines_apart(self.centre_line(), other) for other in others):
+                step, self.target, stopped = dict(self.q), tcp, "the other arm"  # no nearer: hold
+        moved = float(np.linalg.norm(self.kinematics.tcp({joint: step[joint] for joint in ARM_JOINTS}) * 100 - tcp))
+        if not stopped and self.pinned and expected_cm > 0.02 and moved < 0.2 * expected_cm:
+            stopped = "a joint limit"
+        self.q = step
+        return stopped
+
+    def within_reach(self, target: np.ndarray, own_side: bool = True) -> tuple[np.ndarray, str | None]:
+        """The nearest point the arm may go -- its reach from the base, above the table, and with
+        ``own_side`` its own side -- and what stopped the target there, if anything did."""
+
+        stopped = None
         axis = self.kinematics.pan_axis * 100
         radial = target[:2] - axis
         distance = float(np.linalg.norm(radial))
         if distance > 1e-6:
-            radial = radial / distance * min(max(distance, REACH_CM[0]), REACH_CM[1])
+            kept = min(max(distance, REACH_CM[0]), REACH_CM[1])
+            if kept != distance:
+                stopped = "full reach" if distance > REACH_CM[1] else "the base"
+            radial = radial / distance * kept
         x, y = axis + radial
-        y = max(y, -SIDE_CM) if self.toward_other < 0 else min(y, SIDE_CM)
+        if own_side:
+            side = max(y, -SIDE_CM) if self.toward_other < 0 else min(y, SIDE_CM)
+            if side != y:
+                stopped = "the other arm's side"
+            y = side
         table = self.placement.table_height(x, y) if self.placement is not None else 0.0
         z = min(max(float(target[2]), table + HEIGHT_CM[0]), table + HEIGHT_CM[1])
-        return np.array([x, y, z])
+        if z != float(target[2]):
+            stopped = "the table" if float(target[2]) < z else "the top"
+        return np.array([x, y, z]), stopped
 
-    def step_to(self, target_cm: np.ndarray, dt: float,
-                wrist_targets: dict[str, float] | None = None) -> dict[str, float]:
-        """One damped least-squares step of the steered joints towards ``target_cm``, their speed capped."""
+    def step_to(self, target_cm: np.ndarray, dt: float, roll: float | None = None) -> dict[str, float]:
+        """One damped least-squares step of the steered joints towards ``target_cm``, fingers down, speed capped.
+
+        ``roll`` is where the wrist roll goes, at the same speed; it turns the
+        jaw about its own axis, which pointing down does not see.
+        """
 
         arm = {joint: self.q[joint] for joint in ARM_JOINTS}
         most = self.speed * dt
-        if wrist_targets is not None:
-            for joint in ("wrist_flex", "wrist_roll"):
-                wanted = wrist_targets[joint]
-                if joint in self.limits:
-                    wanted = min(max(wanted, self.limits[joint][0]), self.limits[joint][1])
-                arm[joint] += min(max(wanted - arm[joint], -most), most)
+        if roll is not None:
+            if "wrist_roll" in self.limits:
+                roll = min(max(roll, self.limits["wrist_roll"][0]), self.limits["wrist_roll"][1])
+            arm["wrist_roll"] += min(max(roll - arm["wrist_roll"], -most), most)
         goal = np.asarray(target_cm, dtype=float) / 100
         down = np.array([0.0, 0.0, -1.0])
-        steered = STEERED if wrist_targets is None else POSITION_JOINTS
 
         def residual(pose: dict[str, float]) -> np.ndarray:
-            if wrist_targets is not None:
-                return self.kinematics.tcp(pose) - goal
             fingers, _ = self.kinematics.pointing(pose)
             return np.concatenate([self.kinematics.tcp(pose) - goal, POINTING_WEIGHT * (fingers - down)])
 
         now = residual(arm)
-        jacobian = np.zeros((len(now), len(steered)))
-        for column, joint in enumerate(steered):
+        jacobian = np.zeros((len(now), len(STEERED)))
+        for column, joint in enumerate(STEERED):
             nudged = dict(arm, **{joint: arm[joint] + 0.5})
             jacobian[:, column] = (residual(nudged) - now) / math.radians(0.5)
         # A joint at a limit that the step would push past it sits the step out, and the
         # others make up for it: clipped afterwards, it would leave them overshooting.
-        free = np.ones(len(steered), dtype=bool)
-        for _ in range(len(steered)):
+        free = np.ones(len(STEERED), dtype=bool)
+        self.pinned = []
+        for _ in range(len(STEERED)):
             used = jacobian * free
-            step = -np.linalg.solve(used.T @ used + DAMPING ** 2 * np.eye(len(steered)), used.T @ now) * free
-            pinned = [column for column, joint in enumerate(steered) if free[column] and joint in self.limits
+            step = -np.linalg.solve(used.T @ used + DAMPING ** 2 * np.eye(len(STEERED)), used.T @ now) * free
+            pinned = [column for column, joint in enumerate(STEERED) if free[column] and joint in self.limits
                       and ((arm[joint] <= self.limits[joint][0] and step[column] < 0)
                            or (arm[joint] >= self.limits[joint][1] and step[column] > 0))]
             if not pinned:
                 break
             free[pinned] = False
-        q = dict(self.q, wrist_flex=arm["wrist_flex"], wrist_roll=arm["wrist_roll"])
-        for column, joint in enumerate(steered):
+            self.pinned += [STEERED[column] for column in pinned]
+        q = dict(self.q, wrist_roll=arm["wrist_roll"])
+        for column, joint in enumerate(STEERED):
             value = arm[joint] + min(max(math.degrees(step[column]), -most), most)
             if joint in self.limits:
                 value = min(max(value, self.limits[joint][0]), self.limits[joint][1])
             q[joint] = value
         return q
+
+
+def roll_sense(kinematics, pose: dict[str, float]) -> float:
+    """+1 if raising wrist_roll turns the jaw about where it points by the right-hand rule, -1 the other way.
+
+    Pointing down, a right-hand turn is clockwise seen from above -- as the
+    overhead camera shows it (on the venue's arms raising wrist_roll turns
+    the jaw anticlockwise: -1).
+    """
+
+    arm = {joint: pose[joint] for joint in ARM_JOINTS}
+    pointing, across = kinematics.pointing(arm)
+    _, turned = kinematics.pointing(dict(arm, wrist_roll=arm["wrist_roll"] + 5.0))
+    return 1.0 if float(np.cross(across, turned) @ pointing) > 0 else -1.0
+
+
+class PinchFollower(Follower):
+    """One arm dragged by one hand's pinch, on the model: thumb and index together grab its jaw.
+
+    A pinch does one thing, whichever the hand does first (TWIST_DEG, DRAG_CM):
+
+    * Moved, it drags: the jaw goes where it was when the pinch closed, plus
+      --scale times as far as the pinch has gone since -- forward, right and
+      up being where the wearer then looked, level.
+    * Twisted in place, like a screwdriver, it turns the jaw the same way
+      about where it points, the first TWIST_DEG aside: clockwise as the
+      wearer sees the back of the hand is clockwise from above, as the
+      overhead camera shows the jaw. The jaw stays where it is meanwhile.
+
+    Let go, and the arm stays; pinch again anywhere to go on (a clutch, as VR
+    teleoperation does it) -- to drag further, or turn further. Thumb and
+    pinky together open a closed jaw, or close an open one.
+    """
+
+    calibrates = False
+
+    def __init__(self, name: str, kinematics, placement, pose: dict[str, float], *, scale: float = SCALE,
+                 **options) -> None:
+        super().__init__(name, kinematics, placement, pose, **options)
+        self.scale = scale
+        self.smooth = OneEuro()
+        self.pinched = False
+        self.drag: tuple | None = None  # pinch point, wearer's frame, jaw, hand roll, wrist roll: when it closed
+        self.jaw = self.q["gripper"]  # where the jaw is going, open or closed
+        self.toggle_armed = True  # thumb and pinky parted since the last toggle
+        self.sense = roll_sense(kinematics, self.q)
+        self.start_roll = self.q["wrist_roll"]
+        self.gesture: str | None = None  # what this pinch does: "dragging" or "turning", once it is clear
+        self.target = self.tcp_cm()
+        self.state = self.mode = "free"
+
+    def let_go(self) -> None:
+        if self.drag is not None:
+            self.drag, self.target = None, self.tcp_cm()  # stop where it is, not where it was headed
+        self.gesture = None
+
+    def update(self, hand: dict | None, dt: float, others: list[np.ndarray] | None = None,
+               head: dict | None = None) -> dict[str, float]:
+        """Where to send the arm now, given the hand and the glasses' pose (see Follower.update)."""
+
+        self.blocked, stopped = [], None
+        if not hand or not hand.get("tracked"):
+            self.let_go()
+            self.pinched = False
+            self.smooth.reset()
+            self.state, self.mode = "no hand", "lost"
+        else:
+            thumb, index = (np.asarray(hand[key], dtype=float) for key in ("thumb", "index"))
+            gap = float(np.linalg.norm(thumb - index))
+            told = hand.get("pinch")  # the glasses' own pinch detection, when the Lens sends it
+            self.pinched = told if isinstance(told, bool) else gap < GRAB_CM[1 if self.pinched else 0]
+            point = self.smooth((thumb + index) / 2, dt)
+            pinky = hand.get("pinkyTip")
+            if pinky is not None and not self.pinched:
+                reach = float(np.linalg.norm(thumb - np.asarray(pinky, dtype=float)))
+                if self.toggle_armed and reach < TOGGLE_CM[0]:
+                    self.jaw, self.toggle_armed = (0.0 if self.jaw > OPEN / 2 else OPEN), False
+                elif reach > TOGGLE_CM[1]:
+                    self.toggle_armed = True
+            if self.pinched and self.drag is None and head:
+                wearer = facing_frame(head["look"], head["p"], point)
+                measured = hand_angles(hand, wearer)
+                self.drag = (point, wearer, self.tcp_cm(), None if measured is None else measured[0], self.roll)
+            if self.pinched and self.drag is not None:
+                start, wearer, jaw_at, hand_roll_at, roll_at = self.drag
+                seen = wearer @ (point - start)
+                measured = hand_angles(hand, wearer)
+                turn = angle_delta(measured[0], hand_roll_at) if measured is not None and hand_roll_at is not None \
+                    else 0.0
+                if self.gesture is None:  # the pinch's first clear motion says what it does
+                    if abs(turn) > TWIST_DEG:
+                        self.gesture = "turning"
+                    elif float(np.linalg.norm(seen)) > DRAG_CM:
+                        self.gesture = "dragging"
+                wanted = jaw_at
+                if self.gesture == "turning":
+                    low, high = self.limits.get("wrist_roll", (-math.inf, math.inf))
+                    past = math.copysign(max(abs(turn) - TWIST_DEG, 0.0), turn)
+                    self.roll = min(max(roll_at + self.sense * past, low), high)
+                elif self.gesture == "dragging":
+                    forward, right, up = seen
+                    moved = np.array([forward, -right, up] if self.facing == "same" else [-forward, right, up])
+                    wanted = jaw_at + self.scale * moved
+                target, stopped = self.within_reach(wanted, own_side=not (others and self.placement is not None))
+                tcp = self.tcp_cm()
+                stopped = self.advance(target, dt, others, stopped, min(float(np.linalg.norm(target - tcp)), 0.2))
+                self.state = self.gesture or "pinched"
+                self.mode = {"turning": "turning", "dragging": "moving"}.get(self.gesture, "holding")
+                if stopped and self.gesture == "dragging":
+                    self.state += f": at {stopped}"
+                    push = wanted - tcp  # the arm's frame; back into the wearer's words
+                    seen = np.array([push[0], -push[1], push[2]] if self.facing == "same" else [-push[0], push[1], push[2]])
+                    self.blocked = {"the table": ["down"], "the top": ["up"]}.get(stopped, heading_words(seen, 1.0))
+            else:
+                self.let_go()
+                self.state, self.mode = "free", "holding"
+        most = GRIPPER_SPEED * dt
+        self.q["gripper"] += min(max(self.jaw - self.q["gripper"], -most), most)
+        clockwise = self.sense * (self.q["wrist_roll"] - self.start_roll)  # seen from above
+        if abs(clockwise) >= 5.0:
+            self.state += f", turned {abs(clockwise):.0f}° {'cw' if clockwise > 0 else 'ccw'}"
+        if self.jaw < OPEN / 2:
+            self.state += ", jaw closed"
+        return self.q
+
+    def guide(self) -> dict:
+        """What the glasses show for this arm's hand: how it fares, where it cannot go, the finger's height."""
+
+        return {"mode": self.mode, "blocked": list(self.blocked), "tip": round(self.tip_height())}
 
 
 def ready_pose(kinematics, placement, neutral: dict[str, float],
@@ -589,35 +1120,69 @@ def ready_pose(kinematics, placement, neutral: dict[str, float],
 
 
 def follow(followers: dict[str, Follower], hands: Hands, arms: dict | None = None, *, facing: str = "same",
-           log=print, clock=time.monotonic, sleep=time.sleep) -> None:
-    """Forever, RATE_HZ times a second: every arm a step towards its hand. KeyboardInterrupt ends it."""
+           hold_s: float = HOLD_S, log=print, clock=time.monotonic, sleep=time.sleep) -> None:
+    """Forever, RATE_HZ times a second: calibrate if the followers need it, then every arm a step as its hand
+    steers. Ctrl+C ends it."""
 
     from .servo import MOTORS
 
-    period, last, said, reported = 1.0 / RATE_HZ, clock(), None, -math.inf
+    sides = {name: HAND_FOR[facing][name] for name in followers}  # arm -> the hand that drives it
+    calibration = Calibration(sorted(set(sides.values())), hold_s)
+    period, last, said, reported, unseen = 1.0 / RATE_HZ, clock(), None, -math.inf, 0.0
     while True:
         now = clock()
         dt, last = min(max(now - last, 0.0), 0.1), now
         message, age = hands.latest()
         fresh = message if message is not None and age <= STALE_S else {}
+        hand_of = {name: fresh.get(side) for name, side in sides.items()}
+        seen = {name: bool(hand and hand.get("tracked") and hand.get("wrist")) for name, hand in hand_of.items()}
+        engaged = all(not follower.calibrates or follower.neutral is not None for follower in followers.values())
+        if engaged and any(follower.calibrates for follower in followers.values()):
+            unseen = 0.0 if any(seen.values()) else unseen + dt
+            if unseen >= RECALIBRATE_S:
+                for follower in followers.values():
+                    follower.release()
+                calibration.reset()
+                engaged = False
+        if not engaged:
+            neutral = calibration.update({sides[name]: hand_of[name]["wrist"] if seen[name] else None
+                                          for name in followers}, dt)
+            head = fresh.get("head")
+            if neutral is not None and head:
+                if "left" in neutral and "right" in neutral:
+                    wearer = body_frame(neutral["left"], neutral["right"], head["look"], head["p"])
+                else:  # one hand says nothing of which way right is: the gaze does
+                    wearer = facing_frame(head["look"], head["p"], np.mean(list(neutral.values()), axis=0))
+                for name, follower in followers.items():
+                    follower.engage(neutral[sides[name]], wearer)
+                engaged, unseen = True, 0.0
+        lines = {name: follower.centre_line() for name, follower in followers.items()}
         for name, follower in followers.items():
-            q = follower.update(fresh.get(HAND_FOR[facing][name]), fresh.get("head"), dt)
+            others = [line for other, line in lines.items() if other != name and line is not None]
+            q = follower.update(hand_of[name], dt, others=others or None, head=fresh.get("head"))
+            lines[name] = follower.centre_line()
             if arms:
                 arm = arms[name]
                 arm.bus.write_goals({MOTORS[joint]: arm.to_ticks(joint, value) for joint, value in q.items()})
-        status = ", ".join(f"{name} arm: {follower.state}" for name, follower in followers.items())
+        if engaged:
+            status = " | ".join(f"{name}: {follower.state}" for name, follower in followers.items())
+        else:
+            status = calibration.status
         if not arms:
             status += " (dry run)"
         hands.status = status
+        guides = {sides[name]: follower.guide() for name, follower in followers.items()}
+        hands.report = json.dumps({"status": status, "hands": {side: guide for side, guide in guides.items() if guide}},
+                                  separators=(",", ":"))
         if status != said:
             said = status
             log(status + ("" if hands.connected else "; the glasses are not connected"))
-        if not arms and now - reported >= 0.5 and any(f.target is not None for f in followers.values()):
-            reported = now  # a dry run says where the arms would go
+        if not arms and engaged and any(seen.values()) and now - reported >= 0.5:
+            reported = now  # a dry run says where the arms would go, and how folded each hand is
             log("  " + ", ".join(f"{name}: jaw at {f.tcp_cm()[0]:.0f} {f.tcp_cm()[1]:.0f} {f.tcp_cm()[2]:.0f} cm, "
-                                 f"flex {f.q['wrist_flex']:.0f}°, roll {f.q['wrist_roll']:.0f}°, "
-                                 f"{f.q['gripper']:.0f}% open" for name, f in followers.items()
-                                 if f.target is not None))
+                                 f"roll {f.q['wrist_roll']:.0f}°, {f.q['gripper']:.0f}% open"
+                                 + (f", curl {f.curl:.2f}" if f.curl is not None else "")
+                                 for name, f in followers.items() if seen[name]))
         sleep(max(0.0, period - (clock() - now)))
 
 
@@ -641,14 +1206,38 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--video", action="store_true", help="stream the overhead webcam to the glasses")
     parser.add_argument("--video-port", type=int, default=VIDEO_PORT)
     parser.add_argument("--camera", default="auto", help="video source; auto identifies the USB webcam")
-    parser.add_argument("--scale", type=float, default=SCALE, help=f"arm cm per hand cm (default {SCALE:g})")
+    parser.add_argument("--video-fps", type=float, default=VIDEO_FPS,
+                        help=f"frames a second sent at most (default {VIDEO_FPS})")
+    parser.add_argument("--video-width", type=int, default=VIDEO_WIDTH, help=f"pixels (default {VIDEO_WIDTH})")
+    parser.add_argument("--video-quality", type=int, default=VIDEO_QUALITY,
+                        help=f"JPEG quality (default {VIDEO_QUALITY})")
+    parser.add_argument("--mode", choices=("pinch", "joystick"), default="pinch",
+                        help="pinch: thumb and index grab the jaw and drag it, thumb and pinky open or close it; "
+                             "joystick: calibrate, then a hand past its neutral drives its jaw (default pinch)")
+    parser.add_argument("--scale", type=float, default=SCALE,
+                        help=f"--mode pinch: jaw cm per hand cm (default {SCALE:g})")
+    parser.add_argument("--hold", type=float, default=HOLD_S,
+                        help=f"seconds the hands are held level and still to calibrate (default {HOLD_S:g})")
+    parser.add_argument("--dead-zone", type=float, default=DEAD_ZONE_CM,
+                        help=f"cm a hand may stray from its neutral, on each axis, moving nothing (default {DEAD_ZONE_CM:g})")
+    parser.add_argument("--gain", type=float, default=GAIN,
+                        help=f"cm/s the jaw moves per cm the hand is past the dead zone (default {GAIN:g})")
+    parser.add_argument("--top-speed", type=float, default=TOP_SPEED,
+                        help=f"cm/s the jaw moves at most (default {TOP_SPEED:g})")
     parser.add_argument("--speed", type=float, default=SPEED, help=f"deg/s a joint turns at most (default {SPEED:g})")
     parser.add_argument("--facing", choices=("same", "them"), default="same",
                         help="same: standing behind the arms, facing their way; them: in front, facing them")
     parser.add_argument("--arm", choices=("left", "right"), default=None, help="only this arm follows")
+    parser.add_argument("--no-record", action="store_true",
+                        help="do not keep what the glasses send (kept by default in out/spectacles/, to replay)")
     args = parser.parse_args(argv)
-    if not (0 < args.scale <= 3 and 0 < args.speed <= 200):
-        print("--scale above 0 and at most 3, --speed above 0 and at most 200")
+    if not (0 < args.speed <= 200 and 0 < args.gain <= 10 and 0 < args.top_speed <= 30
+            and 0 <= args.dead_zone <= 10 and 0.5 <= args.hold <= 30 and 0 < args.scale <= 3):
+        print("--speed above 0 and at most 200, --gain above 0 and at most 10, --top-speed above 0 and at most 30, "
+              "--dead-zone 0 to 10, --hold 0.5 to 30, --scale above 0 and at most 3")
+        return 1
+    if not (1 <= args.video_fps <= 60 and 160 <= args.video_width <= 1920 and 20 <= args.video_quality <= 95):
+        print("--video-fps 1 to 60, --video-width 160 to 1920, --video-quality 20 to 95")
         return 1
     if args.video and args.video_port == args.port:
         print("hand and video WebSockets need different ports")
@@ -663,7 +1252,16 @@ def main(argv: list[str] | None = None) -> int:
     names = [args.arm] if args.arm else ["left", "right"]
     kinematics = {name: Kinematics(rig.arms[name].wrist_roll_offset) for name in names}
     placements = {name: Placement(*rig.arms[name].sheet) if rig.arms[name].sheet else None for name in names}
-    hands = Hands()
+    record = None
+    if not args.no_record:
+        from pathlib import Path
+
+        folder = Path(__file__).resolve().parent.parent / "out" / "spectacles"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"session-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+        record = path.open("w", buffering=1)  # a line at a time: a crash loses nothing
+        print(f"keeping what the glasses send in {path}")
+    hands = Hands(record=record)
     video = video_server = None
     if args.video:
         from .__main__ import _require_same_camera, _resolve_camera, _webcam
@@ -679,10 +1277,19 @@ def main(argv: list[str] | None = None) -> int:
             _require_same_camera(capture, source, webcam, refuse=True)
             zone = load_zone(DEFAULT_CALIBRATION)
             reference_size = (zone.frame_width, zone.frame_height) if zone else (0, 0)
-            video = VideoFrames(capture, tape_pixels=rig.tape_pixels, reference_size=reference_size)
+            video = VideoFrames(capture, fps=args.video_fps, width=args.video_width, quality=args.video_quality,
+                                tape_pixels=rig.tape_pixels, reference_size=reference_size)
             video_server = make_video_server(video, "0.0.0.0", args.video_port)
             video.start()
             threading.Thread(target=video_server.serve_forever, daemon=True).start()
+
+            def report_video() -> None:
+                while video.running:
+                    time.sleep(VIDEO_REPORT_S)
+                    if video.running:
+                        print(video.report())
+
+            threading.Thread(target=report_video, name="spectacles-video-report", daemon=True).start()
         except (OSError, RuntimeError, ValueError) as error:
             if video_server is not None:
                 video_server.server_close()
@@ -711,7 +1318,8 @@ def main(argv: list[str] | None = None) -> int:
     if video_server is not None:
         video_tunnel = usb_tunnel(args.video_port)
         video_url = video_tunnel or " or ".join(f"ws://{ip}:{args.video_port}" for ip in addresses())
-        print(f"video: {video_url} (up to {VIDEO_WIDTH}px, {VIDEO_FPS} fps, JPEG quality {VIDEO_QUALITY})")
+        print(f"video: {video_url} (up to {args.video_width}px, {args.video_fps:g} fps, "
+              f"JPEG quality {args.video_quality}; what it does every {VIDEO_REPORT_S:g} s)")
     arms, speeds = {}, {}
     try:
         if args.dry_run:
@@ -731,16 +1339,25 @@ def main(argv: list[str] | None = None) -> int:
         ready = {name: ready_pose(kinematics[name], placements[name], poses[name]["neutral"], limits[name])
                  for name in names}
         if arms:
-            input(f"{' and '.join(names)} go to their ready pose, fingers down over the table: keep clear. "
-                  "Then each follows its hand; Ctrl+C holds them. Enter...")
+            then = ("then pinch thumb and index to grab a jaw and drag it; thumb and pinky open or close it"
+                    if args.mode == "pinch" else
+                    f"then hold your hands up, level and still, for {args.hold:g} s; after that each steers its arm")
+            input(f"{' and '.join(names)} go to their ready pose, fingers down over the table: keep clear; "
+                  f"{then}. Ctrl+C holds them. Enter...")
             for arm in arms.values():
                 if not arm.torque_is_on():
                     arm.torque_on()
             move_together([(arms[name], ready[name]) for name in names])
             ready = {name: arm.pose() for name, arm in arms.items()}
-        followers = {name: Follower(name, kinematics[name], placements[name], ready[name], scale=args.scale,
-                                    speed=args.speed, facing=args.facing, limits=limits[name]) for name in names}
-        follow(followers, hands, arms or None, facing=args.facing)
+        if args.mode == "pinch":
+            followers = {name: PinchFollower(name, kinematics[name], placements[name], ready[name], scale=args.scale,
+                                             speed=args.speed, facing=args.facing, limits=limits[name])
+                         for name in names}
+        else:
+            followers = {name: Follower(name, kinematics[name], placements[name], ready[name], speed=args.speed,
+                                        facing=args.facing, limits=limits[name], dead_zone=args.dead_zone,
+                                        gain=args.gain, top_speed=args.top_speed) for name in names}
+        follow(followers, hands, arms or None, facing=args.facing, hold_s=args.hold)
     except KeyboardInterrupt:
         for arm in arms.values():
             arm.hold()
@@ -752,6 +1369,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         server.shutdown()
         server.server_close()
+        hands.stop_recording()
         if video_server is not None:
             video_server.shutdown()
             video_server.server_close()

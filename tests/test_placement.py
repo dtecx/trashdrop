@@ -40,6 +40,12 @@ class PlacementTests(unittest.TestCase):
         self.assertAlmostEqual(Placement(0, 0, 90.0).direction_to_arm(0.0), 90.0)
         self.assertAlmostEqual(Placement(0, 0, 170.0).direction_to_arm(30.0), -160.0)
 
+    def test_to_sheet_undoes_to_arm(self) -> None:
+        placement = Placement(11.34, -22.40, -95.14)
+        for point in ([0.0, 0.0], [22.0, 0.0], [-7.5, 31.0]):
+            np.testing.assert_allclose(placement.to_sheet(placement.to_arm(point)), point, atol=1e-9)
+        np.testing.assert_allclose(placement.to_sheet([11.34, -22.40]), [0.0, 0.0], atol=1e-9)
+
 
 if __name__ == "__main__":
     unittest.main()

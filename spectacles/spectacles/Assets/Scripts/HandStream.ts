@@ -4,8 +4,9 @@
  *
  * Some 30 times a second it sends, as JSON over a WebSocket, the wearer's head
  * (position, and the camera's forward axis) and for each hand whether it is
- * tracked and where its wrist, three knuckles, thumb tip and index tip are --
- * world space, centimetres. Knuckles give a stable hand frame while pinching.
+ * tracked and where its wrist, three knuckles and five fingertips are --
+ * world space, centimetres. Knuckles give a stable hand frame while pinching;
+ * the middle, ring and pinky tips tell a fist.
  * The Mac answers with what the arms are doing, shown in the optional Status text.
  *
  * A plain ws:// address needs Project Settings > Allow Experimental API: such
@@ -89,7 +90,7 @@ export class HandStream extends BaseScriptComponent {
     };
     socket.onmessage = (event: WebSocketMessageEvent) => {
       if (socket === this.socket && typeof event.data === "string") {
-        this.say(event.data);
+        this.show(event.data);
       }
     };
     socket.onclose = () => {
@@ -155,6 +156,45 @@ export class HandStream extends BaseScriptComponent {
     }
   }
 
+  /**
+   * What the Mac answers: JSON with the status and, per hand, its box, what
+   * it pushes on in vain and the finger's height above the table (see
+   * trashdrop/spectacles.py, Follower.guide) -- or, from an older bridge,
+   * plain words. The camera looks straight down on the table, so how high
+   * the jaw is shows only here; at the table, the text turns red.
+   */
+  private show(data: string) {
+    let report: any = null;
+    try {
+      report = JSON.parse(data);
+    } catch (error) {
+      report = null;
+    }
+    if (report === null || typeof report !== "object" || typeof report.status !== "string") {
+      this.say(data);
+      return;
+    }
+    const hands = report.hands || {};
+    const tips: string[] = [];
+    let atTable = false;
+    for (const side of ["left", "right"]) {
+      const guide = hands[side];
+      if (!guide) {
+        continue;
+      }
+      if (typeof guide.tip === "number") {
+        tips.push(side + " tip " + guide.tip + " cm");
+      }
+      if (Array.isArray(guide.blocked) && guide.blocked.indexOf("down") >= 0) {
+        atTable = true;
+      }
+    }
+    this.say(report.status + (tips.length > 0 ? "\n" + tips.join(" | ") : ""));
+    if (this.status) {
+      this.status.textFill.color = atTable ? new vec4(1, 0.25, 0.2, 1) : new vec4(1, 1, 1, 1);
+    }
+  }
+
   private say(text: string) {
     print("HandStream: " + text);
     if (this.status) {
@@ -180,5 +220,11 @@ function hand(side: Side) {
     pinkyKnuckle: point(tracked.pinkyKnuckle.position),
     thumb: point(tracked.thumbTip.position),
     index: point(tracked.indexTip.position),
+    // Folded back towards the wrist, these three make a fist: the Mac turns the jaw with it.
+    middleTip: point(tracked.middleTip.position),
+    ringTip: point(tracked.ringTip.position),
+    pinkyTip: point(tracked.pinkyTip.position),
+    // The glasses' own pinch detection: steadier than thumb-to-index distance alone.
+    pinch: tracked.isPinching(),
   };
 }
