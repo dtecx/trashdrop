@@ -73,7 +73,7 @@ class B601LiveTests(unittest.TestCase):
     def test_sleep_pose_is_not_rewritten_as_a_motor_zero(self) -> None:
         pose = sleep_pose(Path(__file__).resolve().parents[1] / "b601_park.toml")
         self.assertEqual(pose.shape, (7,))
-        self.assertAlmostEqual(math.degrees(pose[3]), -51.374, places=3)
+        self.assertAlmostEqual(math.degrees(pose[3]), -0.159, places=3)
 
     def test_live_button_is_locked_until_bridge_explicitly_allows_it(self) -> None:
         bridge = B601GlassesBridge(live_allowed=False, sdk_root=Path("/unused"))

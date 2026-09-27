@@ -425,6 +425,8 @@ def read_angles(channel: str = "can0@1000000") -> np.ndarray:
             motor.close()
         try:
             controller.close_bus()
+        except Exception:
+            pass  # with no motor added it refuses, and would hide why none was
         finally:
             controller.close()
 

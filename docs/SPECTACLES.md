@@ -482,6 +482,15 @@ and made the timeout likelier. Now:
   (`SpectaclesUI.showVideo`), never disabled; `WebcamView` decodes all the
   time again. The glasses print "SpectaclesUI: glasses UI on/off", and the web
   log says when the UI is entered or left, for next time.
+- A new park pose, read ~16:25 with the motors disabled (b601_park.toml): the
+  arm folded, J2 and J3 on their lower stops, the jaw level and forward at 22
+  cm, close to the URDF zero. From there the first drag turns the jaw down
+  (90 degrees at the wrist, a few seconds at the cap) and reaches the table
+  vertically (checked on the URDF). The gripper read -10.46 there, 12 degrees
+  past the "shut" 1.707 measured earlier; closed in the file is still 1.707.
+- Reading angles from this shell: macOS strips `DYLD_LIBRARY_PATH` from
+  system programs (SIP), so a `perl`/`env` wrapper loses it and MacCAN fails
+  to load ("load PCBUSB failed"). Start the SDK's python directly.
 
 With the SO-101 arms removed, stop any earlier bridge (the Lens hand socket
 can have only one owner), then run the camera-only unified page in the
