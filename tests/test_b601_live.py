@@ -30,19 +30,20 @@ def packet(*, pinch: bool, x: float = 0.0, y: float = 0.0,
 
 
 class B601LiveTests(unittest.TestCase):
-    def test_clutch_requires_release_and_loss_requires_another_release(self) -> None:
+    def test_a_pinch_grabs_at_once_and_a_brief_loss_keeps_the_target(self) -> None:
+        # Loosened for the demo: no release to arm, none between gestures; re-anchoring where the
+        # hand is keeps anything from jumping.
         motion = B601HandMotion(scale=0.5)
-        self.assertIsNone(motion.update(packet(pinch=True), 0))
-        self.assertIsNone(motion.update(packet(pinch=False), 0))
-        first = motion.update(packet(pinch=True), 0)
+        first = motion.update(packet(pinch=True), 0, now=0.0)
         np.testing.assert_allclose(first[0], [0, 0, 0])
-        moved = motion.update(packet(pinch=True, x=2), 0)
+        moved = motion.update(packet(pinch=True, x=2), 0, now=0.1)
         np.testing.assert_allclose(np.linalg.norm(moved[0]), 0.01)
         np.testing.assert_allclose(moved[1], np.eye(3))
-        self.assertIsNone(motion.update(packet(pinch=True, x=3), 0.5))
-        self.assertIsNone(motion.update(packet(pinch=True, x=4), 0))
-        self.assertIsNone(motion.update(packet(pinch=False), 0))
-        self.assertIsNotNone(motion.update(packet(pinch=True), 0))
+        held = motion.update(packet(pinch=True, x=3), 0.5, now=0.2)  # a stale packet: the hand lost
+        np.testing.assert_allclose(held[0], moved[0])  # for a moment: the last target, held
+        self.assertIsNone(motion.update(None, 0, now=0.8))  # for long: over
+        again = motion.update(packet(pinch=True, x=4), 0, now=0.9)
+        np.testing.assert_allclose(again[0], [0, 0, 0])  # grabs anew where the hand is
 
     def test_lifting_is_palm_translation_without_orientation_noise(self) -> None:
         motion = B601HandMotion(scale=1.0)
@@ -362,7 +363,7 @@ class B601ControlTests(unittest.TestCase):
         np.testing.assert_allclose(rotation, np.eye(3))
         self.assertAlmostEqual(motion.tilt, 3 * TILT_DEG_PER_CM)
         near = packet(pinch=False)
-        near["right"]["ringTip"], near["right"]["pinkyTip"] = [1, 0, 20], [1.5, 0, 20]
+        near["right"]["ringTip"], near["right"]["pinkyTip"] = [1, 0, 20], [1.2, 0, 20]
         near["right"]["middleTip"] = [5, 0, 20]
         motion = B601HandMotion(scale=1.0)
         motion.update(packet(pinch=False), 0, now=0.0)

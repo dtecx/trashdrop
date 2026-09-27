@@ -538,6 +538,19 @@ and made the timeout likelier. Now:
   replaces the state with "J2 reports status 18 (0 is healthy): power-cycle the
   arm".
 
+**~15:50: gestures loosened for the demo** ("it detects the gestures badly").
+- A pinch grabs at once. The release to "arm" at the start, and after every
+  lost hand, is gone, and so is the release between gestures: each gesture
+  anchors anew where the hand is, so nothing jumps.
+- Once dragging, the pinch lasts while thumb and index stay within 4 cm, so a
+  flicker of the glasses' own pinch no longer drops it.
+- Touches: within 3.2 cm to start and 4.5 to last (were 2.5 and 3.5), 0.4 cm
+  nearer than the next fingertip (0.8), the index 3 cm apart (4), held 0.08 s
+  (0.15).
+- A hand lost for up to 0.5 s keeps its gesture, and the arm its last target.
+Replayed on the day's four B601 hand recordings: "no gesture" fell from 64,
+80, 67 and 42% of the ticks to 49, 72, 51 and 26%.
+
 With the SO-101 arms removed, stop any earlier bridge (the Lens hand socket
 can have only one owner), then run the camera-only unified page in the
 operator's camera-enabled terminal:

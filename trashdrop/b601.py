@@ -17,6 +17,13 @@ JAW_PER_CM = 0.1  # thumb-pinky touch: the jaw's opening changes this share of i
 TILT_DEG_PER_CM = 5.0  # thumb-ring touch: the jaw tilts this much a sideways centimetre (right: down)
 # Which finger on the thumb (the index well apart) makes which sideways gesture.
 SIDEWAYS = {"middle": "turn", "ring": "tilt", "pinky": "grip"}
+# Gesture thresholds, loosened for the demo ("it detects the gestures badly"; 2026-09-27 ~15:50):
+PINCH_CM = (2.5, 4.0)  # thumb-index: a pinch starts within the first (or when the glasses say so), lasts within the second
+TOUCH_CM = (3.2, 4.5)  # a fingertip on the thumb: starts within the first, lasts within the second (were 2.5, 3.5)
+TOUCH_MARGIN_CM = 0.4  # ...and nearer the thumb than the next fingertip by this (was 0.8)
+INDEX_APART_CM = 3.0  # the index this far from the thumb, for a touch not to be a pinch (was 4)
+DWELL_S = 0.08  # a touch held this long starts its gesture (was 0.15)
+LOST_GRACE_S = 0.5  # a hand lost this briefly keeps its gesture, and the arm its last target
 
 
 def jaw_frame(heading: float, pitch: float) -> np.ndarray:
@@ -166,7 +173,8 @@ class B601HandMotion:
 
     def __init__(self, scale: float = 1.0) -> None:
         self.scale = scale
-        self.ready = False
+        self._seen = -math.inf  # when the driving hand was last seen
+        self._last: tuple[np.ndarray, np.ndarray] | None = None  # the last displacement given
         self.anchor: tuple[np.ndarray, np.ndarray] | None = None  # palm point, wearer-to-base mapping
         self.gesture = "free"
         self.anchor_generation = 0
@@ -204,8 +212,9 @@ class B601HandMotion:
         except (KeyError, TypeError, ValueError):
             ring_gap = math.inf
         detected = hand.get("pinch")
-        pinched = detected if isinstance(detected, bool) else index_gap < 2.5
-        return {"point": (points["wrist"] + points["middleKnuckle"]) / 2, "pinched": pinched,
+        return {"point": (points["wrist"] + points["middleKnuckle"]) / 2,
+                "glasses_pinch": detected if isinstance(detected, bool) else None,
+                "pinched": bool(detected) if isinstance(detected, bool) else index_gap < PINCH_CM[0],
                 "index_gap": index_gap, "middle_gap": middle_gap,
                 "ring_gap": ring_gap if math.isfinite(ring_gap) else math.inf,
                 "pinky_gap": pinky_gap if math.isfinite(pinky_gap) else math.inf}
@@ -215,10 +224,10 @@ class B601HandMotion:
         """The finger (middle, ring or pinky) on the thumb, clearly nearer it than the next; the index
         well apart and no pinch. Ring and pinky tips lie close together: nearest is not enough."""
 
-        if read["pinched"] or read["index_gap"] <= 4.0:
+        if read["pinched"] or read["index_gap"] <= INDEX_APART_CM:
             return None
         (nearest, finger), (second, _) = sorted((read[f"{name}_gap"], name) for name in SIDEWAYS)[:2]
-        return finger if nearest < 2.5 and second - nearest > 0.8 else None
+        return finger if nearest < TOUCH_CM[0] and second - nearest > TOUCH_MARGIN_CM else None
 
     def update(self, packet: dict | None, age: float, *, now: float | None = None
                ) -> tuple[np.ndarray, np.ndarray] | None:
@@ -240,39 +249,40 @@ class B601HandMotion:
         except (KeyError, TypeError, ValueError):
             read = None
         if read is None:
+            if self.anchor is not None and now - self._seen <= LOST_GRACE_S:
+                self.state = "hand lost for a moment: holding its target"
+                return self._last
             self.anchor = None
-            self.ready = False
             self.gesture = "free"
             self._touch = None
             self.state = "hand lost: holding"
             return None
+        self._seen = now
 
-        point, pinched = read["point"], read["pinched"]
+        point = read["point"]
+        # Once dragging, the pinch lasts while thumb and index stay near: a flicker of the glasses'
+        # own pinch no longer drops it.
+        pinched = read["pinched"] or (self.gesture == "drag" and read["index_gap"] < PINCH_CM[1])
         finger = self._touching(read)
         if finger is None or self._touch is None or self._touch[0] != finger:
             self._touch = (finger, now) if finger is not None else None
-        held = self._touch is not None and now - self._touch[1] >= 0.15
+        held = self._touch is not None and now - self._touch[1] >= DWELL_S
         own = {gesture: name for name, gesture in SIDEWAYS.items()}.get(self.gesture)
-        going_on = (own is not None and not pinched and read["index_gap"] > 3.5 and read[f"{own}_gap"] < 3.5)
+        going_on = (own is not None and not pinched and read["index_gap"] > INDEX_APART_CM - 0.5
+                    and read[f"{own}_gap"] < TOUCH_CM[1])
         gesture = ("drag" if pinched else self.gesture if going_on else
                    SIDEWAYS[self._touch[0]] if held else "free")
         if gesture == "free":
             self.anchor = None
             self.gesture = "free"
-            self.ready = True
             self.state = ({"middle": "hold thumb-middle to turn", "ring": "hold thumb-ring to tilt",
                            "pinky": "hold thumb-pinky to set the jaw"}[finger] if finger is not None
                           else "free: index pinch to move")
             return None
-        if not self.ready:
-            self.state = "release pinch to arm"
-            return None
-        if gesture != self.gesture and self.anchor is not None:
+        if gesture != self.gesture:
+            # Straight from one gesture to the next, anchored anew where the hand is: nothing jumps.
+            # It used to want a release first, and a release after every lost hand ("ready").
             self.anchor = None
-            self.ready = False
-            self.gesture = "free"
-            self.state = "release between gestures"
-            return None
         if self.anchor is None:
             wearer = facing_frame(look, eye, point)
             # The robot's +X points forward, -Y to the wearer's right, +Z up.
@@ -285,21 +295,26 @@ class B601HandMotion:
             self.state = {"drag": "drag: move palm up/forward/sideways", "turn": "turn: move the hand sideways",
                           "tilt": "tilt: move the hand sideways, right points the jaw down",
                           "grip": "jaw: move the hand sideways, right closes"}[gesture]
-            return np.zeros(3), np.eye(3)
+            self._last = np.zeros(3), np.eye(3)
+            return self._last
         start, mapping = self.anchor
         moved = mapping @ (point - start)  # cm: forward, left, up
         if gesture == "drag":
             self.state = "drag: move palm up/forward/sideways"
-            return moved * (self.scale / 100), np.eye(3)
+            self._last = moved * (self.scale / 100), np.eye(3)
+            return self._last
         if gesture == "tilt":  # the arm holds its place while the jaw tilts
             self.tilt = -TILT_DEG_PER_CM * moved[1]  # moved[1] is to the left
             self.state = f"tilt: {abs(self.tilt):.0f}° {'down' if self.tilt >= 0 else 'up'}; right points down"
-            return np.zeros(3), np.eye(3)
+            self._last = np.zeros(3), np.eye(3)
+            return self._last
         if gesture == "grip":  # the arm holds while the jaw is set
             self.jaw = min(max(self._jaw_start + JAW_PER_CM * moved[1], 0.0), 1.0)
             self.state = f"jaw: {self.jaw * 100:.0f}% open; right closes, left opens"
-            return np.zeros(3), np.eye(3)
+            self._last = np.zeros(3), np.eye(3)
+            return self._last
         angle = math.radians(TURN_DEG_PER_CM) * moved[1]  # left: anticlockwise from above
         cos, sin = math.cos(angle), math.sin(angle)
         self.state = f"turn: {abs(math.degrees(angle)):.0f}° {'cw' if angle < 0 else 'ccw'}; position held"
-        return np.zeros(3), np.array([[cos, -sin, 0.0], [sin, cos, 0.0], [0.0, 0.0, 1.0]])
+        self._last = np.zeros(3), np.array([[cos, -sin, 0.0], [sin, cos, 0.0], [0.0, 0.0, 1.0]])
+        return self._last
