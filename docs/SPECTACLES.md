@@ -197,10 +197,13 @@ findings above were made; no replay tool is in the repo yet (worth adding).
   `OnStartEvent`, and keep camera failure non-fatal so controls still connect.
 - The Render Target already uses `Device Camera Texture` as its background, so
   it contains the real optical image plus the Lens UI. The 2 fps spectator
-  stream encodes that one composite at low JPEG quality. Encoding it and the
-  separate `CameraModule` texture for every spectator frame made the real Lens
-  exit to Lens Explorer on the first request, even when the two encoders were
-  serial. Explicit snapshots still encode both separately at high quality.
+  stream encodes that one composite at low JPEG quality. Follow Snap's live
+  streaming example: its resolution scale is 0.3 (not the display-size 1.0),
+  wait five seconds for the GPU to fill it, and begin readback only from
+  `CameraTextureProvider.onNewFrame`. At scale 1.0, readback killed the Lens
+  inside `Base64.encodeTextureAsync`, before either callback. Explicit
+  snapshots still encode the render target and camera separately at high
+  quality.
 - `adb` works (`adb reverse` for the sockets) but the glasses' shell is
   closed: `adb exec-out screencap` answers `error: closed`.
 - The Spectacles UI Kit (`Packages/SpectaclesUIKit.lspkg`: Frame, Capsule/

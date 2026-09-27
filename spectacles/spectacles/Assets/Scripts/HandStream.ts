@@ -66,7 +66,8 @@ export class HandStream extends BaseScriptComponent {
   private lastSent = 0;
   private retryAt = 0;
   private cameraTexture: Texture | null = null;
-  private cameraEncoding = false;
+  private textureEncoding = false;
+  private captureReadyAt = 0;
   private snap: { id: number; kind: "snap" | "spectator"; view?: string; camera?: string } | null = null;
   private lastSnap: { id: number; view: string; camera: string } | null = null;
   private ui: SpectaclesUI;
@@ -101,7 +102,10 @@ export class HandStream extends BaseScriptComponent {
       request.imageSmallerDimension = 720;
       this.cameraTexture = cameraModule.requestCamera(request);
       const provider = this.cameraTexture.control as CameraTextureProvider;
-      provider.onNewFrame.add(() => this.encodeCameraFrame());
+      // Snap's composite-streaming pattern starts texture readback only from a
+      // real camera frame and lets the GPU fill its render target first.
+      this.captureReadyAt = getTime() + 5;
+      provider.onNewFrame.add(() => this.onCameraFrame());
     } catch (error) {
       // A missing optical camera must not take the hand link or control UI
       // down with it; snapshots stay unavailable while teleoperation works.
@@ -261,47 +265,74 @@ export class HandStream extends BaseScriptComponent {
       return;
     }
     this.snap = { id: id, kind: kind };
-    this.cameraEncoding = false;
+    this.textureEncoding = false;
     if (kind === "spectator") {
       // The Render Target already has Device Camera Texture as its background,
       // so it is the complete optical view. Encoding CameraModule as well made
       // the real Lens exit to Lens Explorer on the first spectator request.
-      print("HandStream: encoding spectator composite " + id);
-      Base64.encodeTextureAsync(this.view, (jpeg: string) => {
-        if (this.snap !== null && this.snap.id === id) {
-          this.snap = null;
-          this.sendSpectator(id, jpeg);
-        }
-      }, () => this.failSnapshot(id, "cannot encode the spectator view"),
-      CompressionQuality.LowQuality, EncodingType.Jpg);
+      print("HandStream: queued spectator composite " + id);
       return;
     }
+    this.textureEncoding = true;
     Base64.encodeTextureAsync(this.view, (jpeg: string) => {
+      this.textureEncoding = false;
       if (this.snap !== null && this.snap.id === id) {
         this.snap.view = jpeg;
       }
-    }, () => this.failSnapshot(id, "cannot encode the rendered view"),
+    }, () => {
+      this.textureEncoding = false;
+      this.failSnapshot(id, "cannot encode the rendered view");
+    },
     CompressionQuality.HighQuality, EncodingType.Jpg);
     // The colour camera is deliberately encoded only after the render target
     // finishes. Starting both jobs together -- and another camera job on every
     // 30 fps frame until the first callback -- can make SnapOS kill the Lens.
   }
 
-  private encodeCameraFrame() {
-    if (this.snap === null || this.snap.kind !== "snap" || this.snap.view === undefined || this.snap.camera !== undefined ||
-        this.cameraEncoding || this.cameraTexture === null) {
+  private onCameraFrame() {
+    if (this.snap !== null && this.snap.kind === "spectator") {
+      this.encodeSpectatorFrame();
+    } else {
+      this.encodeCameraFrame();
+    }
+  }
+
+  private encodeSpectatorFrame() {
+    if (this.snap === null || this.snap.kind !== "spectator" || this.textureEncoding ||
+        getTime() < this.captureReadyAt || !this.view || this.view.getWidth() <= 0) {
       return;
     }
     const id = this.snap.id;
-    this.cameraEncoding = true;
+    this.textureEncoding = true;
+    print("HandStream: encoding spectator composite " + id + " at " +
+      this.view.getWidth() + "x" + this.view.getHeight());
+    Base64.encodeTextureAsync(this.view, (jpeg: string) => {
+      this.textureEncoding = false;
+      if (this.snap !== null && this.snap.id === id) {
+        this.snap = null;
+        this.sendSpectator(id, jpeg);
+      }
+    }, () => {
+      this.textureEncoding = false;
+      this.failSnapshot(id, "cannot encode the spectator view");
+    }, CompressionQuality.LowQuality, EncodingType.Jpg);
+  }
+
+  private encodeCameraFrame() {
+    if (this.snap === null || this.snap.kind !== "snap" || this.snap.view === undefined || this.snap.camera !== undefined ||
+        this.textureEncoding || this.cameraTexture === null) {
+      return;
+    }
+    const id = this.snap.id;
+    this.textureEncoding = true;
     Base64.encodeTextureAsync(this.cameraTexture, (jpeg: string) => {
-      this.cameraEncoding = false;
+      this.textureEncoding = false;
       if (this.snap !== null && this.snap.id === id) {
         this.snap.camera = jpeg;
         this.finishSnapshot();
       }
     }, () => {
-      this.cameraEncoding = false;
+      this.textureEncoding = false;
       this.failSnapshot(id, "cannot encode the colour camera");
     }, CompressionQuality.HighQuality, EncodingType.Jpg);
   }
@@ -312,7 +343,7 @@ export class HandStream extends BaseScriptComponent {
     }
     const ready = { id: this.snap.id, kind: this.snap.kind, view: this.snap.view, camera: this.snap.camera };
     this.snap = null;
-    this.cameraEncoding = false;
+    this.textureEncoding = false;
     if (ready.kind === "snap") {
       this.lastSnap = ready;
     }
@@ -351,7 +382,7 @@ export class HandStream extends BaseScriptComponent {
     if (this.snap !== null && this.snap.id === id) {
       this.snap = null;
     }
-    this.cameraEncoding = false;
+    this.textureEncoding = false;
     this.say("snapshot " + id + ": " + reason);
   }
 
