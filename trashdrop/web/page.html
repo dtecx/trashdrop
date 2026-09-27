@@ -21,7 +21,7 @@
   .chip b { color: var(--text); font-weight: 600; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
   .dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
-  main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; padding: 16px 20px 24px; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 16px; padding: 16px 20px 24px; }
   @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
   .card h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
@@ -74,6 +74,33 @@
   .toast.show { opacity: 1; }
   button.relax { grid-column: 1 / -1; background: transparent; border-style: dashed; color: var(--muted); padding: 8px; }
   button.relax:hover:not(:disabled) { color: var(--text); border-color: #8a6a1a; background: #221c10; }
+  button.spectacles { background: linear-gradient(135deg, #5531a9, #245eb8); border-color: #8268d8; font-weight: 700; }
+  button.spectacles:hover:not(:disabled) { background: linear-gradient(135deg, #6840c6, #2c70d3); }
+  .manual-status { color: var(--muted); margin: -3px 0 10px; }
+  .manual-status b { color: var(--text); }
+  .arm-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .arm-card { padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: #0d131b; color: var(--muted); min-height: 76px; }
+  .arm-card b { color: var(--text); display: block; text-transform: uppercase; font-size: 12px; }
+  .arm-card em { color: var(--ok); font-style: normal; }
+  .snapshots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; }
+  .snapshots a { display: block; aspect-ratio: 4 / 3; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: #070a0e; }
+  .snapshots img { width: 100%; height: 100%; object-fit: cover; }
+  .calibration-list { display: grid; gap: 7px; }
+  .calibration { display: grid; grid-template-columns: 16px 1fr auto; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 9px; }
+  .calibration small { display: block; color: var(--muted); }
+  .calibration button { padding: 5px 8px; font-size: 11px; }
+  .spectator-panel { display: none; }
+  .spectator-stage { position: relative; min-height: calc(100vh - 98px); display: grid; place-items: center; overflow: hidden; border-radius: 16px; background: #020305; border: 1px solid #34255d; }
+  .spectator-stage img { width: 100%; height: 100%; max-height: calc(100vh - 100px); object-fit: contain; }
+  .spectator-stage img:not([src]) { display: none; }
+  .spectator-wait { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 18px; }
+  .spectator-hud { position: absolute; left: 18px; right: 18px; top: 18px; display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; pointer-events: none; }
+  .spectator-hud span { padding: 8px 12px; border-radius: 999px; background: rgba(8, 11, 16, .78); border: 1px solid #403167; backdrop-filter: blur(6px); }
+  .spectator-hud button { pointer-events: auto; background: #5c181c; border-color: #a6373d; font-weight: 800; }
+  body.presentation header { display: none; }
+  body.presentation main { display: block; padding: 12px; }
+  body.presentation #cell-view, body.presentation aside { display: none; }
+  body.presentation .spectator-panel { display: block; }
   svg text { font-family: system-ui, -apple-system, sans-serif; font-weight: 700; paint-order: stroke; stroke: rgba(0,0,0,.75); stroke-width: 6px; }
 </style>
 </head>
@@ -83,7 +110,7 @@
   <div class="chips" id="chips"></div>
 </header>
 <main>
-  <section>
+  <section id="cell-view">
     <div class="card">
       <div class="stage" id="stage">
         <div class="nosignal" id="nosignal">waiting for the camera…</div>
@@ -102,7 +129,30 @@
       </div>
     </div>
   </section>
+  <section class="spectator-panel" id="spectator-panel">
+    <div class="spectator-stage">
+      <div class="spectator-wait" id="spectator-wait">waiting for the optical view from Spectacles…</div>
+      <img id="spectator-view" alt="Live optical view from Spectacles">
+      <div class="spectator-hud"><span id="spectator-caption">Spectacles UI · tap WEB UI in the glasses to return</span>
+        <button id="spectator-stop">STOP</button></div>
+    </div>
+  </section>
   <aside>
+    <div class="card">
+      <h2>Spectacles manual mode</h2>
+      <div class="manual-status" id="manual-status">bridge starting…</div>
+      <div class="row"><label for="manual-mode">Hand control</label><select id="manual-mode"><option value="pinch">pinch and drag</option><option value="joystick">joystick</option></select></div>
+      <div class="row"><label for="manual-scale">Precision</label><select id="manual-scale"><option value="1">normal · 1×</option><option value="0.5">precise · ½×</option></select></div>
+      <div class="row"><label for="manual-facing">Wearer stands</label><select id="manual-facing"><option value="same">behind the arms</option><option value="them">facing the arms</option></select></div>
+      <div class="buttons">
+        <button id="manual-start">Start manual</button><button id="manual-stop">Hold and stop</button>
+        <button id="presentation" class="spectacles" style="grid-column:1/-1">Enter Spectacles UI</button>
+        <button id="manual-grip">Open / close grips</button><button id="manual-home">Hands home</button>
+        <button id="snapshot" style="grid-column:1/-1">Take optical snapshot</button>
+      </div>
+      <div class="arm-cards" id="manual-arms"></div>
+      <div class="snapshots" id="snapshots"></div>
+    </div>
     <div class="card">
       <h2>Control</h2>
       <div class="buttons">
@@ -137,6 +187,11 @@
       <div id="arms"></div>
     </div>
     <div class="card">
+      <h2>Setup and calibration</h2>
+      <div class="manual-status">One checklist for camera identity, image settings, tape, rig and both arm placements. Stop motion before running a copied command.</div>
+      <div class="calibration-list" id="calibrations"></div>
+    </div>
+    <div class="card">
       <h2>Log</h2>
       <div class="log" id="log"></div>
     </div>
@@ -154,7 +209,7 @@ const LAYERS = [
 let show = {};
 try { show = JSON.parse(localStorage.getItem('layers') || '{}'); } catch (e) { show = {}; }
 for (const [key] of LAYERS) if (!(key in show)) show[key] = true;
-let state = null, drawn = null, editing = null, online = true;
+let state = null, drawn = null, editing = null, online = true, spectatorSeq = -1;
 
 function toast(text, info) {
   const t = $('toast'); t.textContent = text; t.classList.toggle('info', !!info); t.classList.add('show');
@@ -312,6 +367,49 @@ function renderLog(lines) {
   if (log.textContent !== text) { log.textContent = text; if (atBottom) log.scrollTop = log.scrollHeight; }
 }
 
+function renderManual(s) {
+  const p = s.spectacles || {};
+  document.body.classList.toggle('presentation', !!p.presentation);
+  const link = p.connected ? '<b>glasses connected</b>' : 'waiting for the glasses';
+  const running = p.starting ? ' · moving to ready' : p.active ? ` · ${esc(p.status || 'manual active')}` : '';
+  $('manual-status').innerHTML = p.available === false ? `<b style="color:var(--danger)">${esc(p.network_error || 'bridge unavailable')}</b>` : `${link}${running}`;
+  $('manual-start').disabled = !p.available || !!p.active || !!s.busy;
+  $('manual-stop').disabled = !p.active;
+  $('presentation').disabled = !p.connected || (!!s.busy && !p.active);
+  $('manual-grip').disabled = !p.active;
+  $('manual-home').disabled = !p.active;
+  $('snapshot').disabled = !p.connected;
+  $('dry').disabled = !!p.active;
+  const arms = p.arms || {};
+  $('manual-arms').innerHTML = ['left', 'right'].map((name) => {
+    const arm = arms[name];
+    if (!arm) return `<div class="arm-card"><b>${name} arm</b>offline</div>`;
+    const blocked = arm.blocked && arm.blocked.length;
+    const color = blocked ? 'var(--danger)' : arm.mode === 'moving' ? 'var(--item)' : arm.mode === 'turning' ? '#b889ff' : 'var(--ok)';
+    const jaw = Number(arm.jaw) >= 30 ? 'open' : 'closed';
+    return `<div class="arm-card"><b>${name} arm</b><em style="color:${color}">${esc(arm.state || arm.mode || 'free')}</em><br>grip ${jaw} · tip ${esc(arm.tip ?? '—')} cm · turn ${esc(arm.turn ?? arm.roll ?? '—')}°</div>`;
+  }).join('');
+  $('snapshots').innerHTML = (p.snapshots || []).slice(0, 6).map((shot) =>
+    `<a href="${esc(shot.composite)}" target="_blank" title="camera + Lens render"><img src="${esc(shot.composite)}" alt="Spectacles snapshot"></a>`).join('');
+  $('spectator-caption').textContent = `${p.status || 'Spectacles UI'} · tap WEB UI in the glasses to return`;
+  if (p.presentation && p.view_sequence !== spectatorSeq) {
+    const next = new Image();
+    next.onload = () => { $('spectator-view').src = next.src; $('spectator-wait').hidden = true; spectatorSeq = p.view_sequence; };
+    next.onerror = () => { $('spectator-wait').hidden = false; };
+    next.src = `/spectacles/view.jpg?seq=${p.view_sequence}&at=${Date.now()}`;
+  }
+}
+
+function renderCalibrations(items) {
+  $('calibrations').innerHTML = (items || []).map((item) => `<div class="calibration">
+    <span class="dot ${item.ready ? 'ok' : 'warn'}"></span><span><b>${esc(item.label)}</b><small>${esc(item.detail)}</small></span>
+    <button data-command="${esc(item.command)}">Copy command</button></div>`).join('');
+  for (const button of $('calibrations').querySelectorAll('button')) button.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(button.dataset.command); toast('calibration command copied', true); }
+    catch (e) { window.prompt('Copy this command', button.dataset.command); }
+  });
+}
+
 function render() {
   const s = state;
   renderChips(s || {});
@@ -327,6 +425,8 @@ function render() {
   if (drawn !== key) { drawOverlay(s); drawn = key; }
   renderLook(s.last);
   renderSettings(s);
+  renderManual(s);
+  renderCalibrations(s.calibrations);
   renderLog(s.log);
 }
 
@@ -346,10 +446,27 @@ async function poll() {
 for (const id of ['look', 'pick', 'empty', 'neutral']) $(id).addEventListener('click', () => post(`/api/action/${$(id).dataset.action}`));
 $('auto').addEventListener('click', () => (state && state.auto ? post('/api/stop') : post('/api/action/auto')));
 $('stop').addEventListener('click', () => post('/api/stop'));
+$('spectator-stop').addEventListener('click', () => post('/api/stop'));
 $('relax').addEventListener('click', () => {
   if (confirm('Torque off: both arms go limp and fall. Hold them first. Relax?')) post('/api/action/relax');
 });
 $('dry').addEventListener('click', () => post('/api/options', { dry_run: !(state && state.options.dry_run) }));
+
+function manualOptions() {
+  return { mode: $('manual-mode').value, scale: Number($('manual-scale').value), facing: $('manual-facing').value };
+}
+async function startManual(presentation) {
+  if (!state) return;
+  if (!state.options.dry_run && !confirm('The real arms will move to their ready pose, then follow your hands. Is the shared volume clear?')) return;
+  const path = presentation ? '/api/spectacles/presentation' : '/api/spectacles/start';
+  await post(path, { ...manualOptions(), ...(presentation ? { enabled: true } : {}) });
+}
+$('manual-start').addEventListener('click', () => startManual(false));
+$('manual-stop').addEventListener('click', () => post('/api/spectacles/stop'));
+$('presentation').addEventListener('click', () => startManual(true));
+$('manual-grip').addEventListener('click', () => post('/api/spectacles/command', { command: 'jaw' }));
+$('manual-home').addEventListener('click', () => post('/api/spectacles/command', { command: 'home' }));
+$('snapshot').addEventListener('click', () => post('/api/spectacles/snapshot'));
 $('sort').addEventListener('change', () => post('/api/options', { any_arm: !$('sort').checked }));
 for (const [id, key] of [['material_over', 'material'], ['only_arm', 'only_arm']]) {
   $(id).addEventListener('focus', () => { editing = id; });

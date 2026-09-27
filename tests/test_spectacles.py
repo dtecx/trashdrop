@@ -50,6 +50,7 @@ from trashdrop.spectacles import (
     Hands,
     JAW_DELAY_S,
     Snapshots,
+    SpectatorFrames,
     VideoFrames,
     accept_key,
     angle_delta,
@@ -244,6 +245,34 @@ class SnapshotTests(unittest.TestCase):
             {"command": "precision", "enabled": True},
             {"command": "jaw", "open": False},
         ])
+        self.assertEqual(hands.take_commands(), [])
+
+    def test_spectator_frames_are_requested_one_at_a_time_and_not_recorded_as_hands(self) -> None:
+        now = [10.0]
+        spectator = SpectatorFrames(fps=2, clock=lambda: now[0], log=lambda _: None)
+        spectator.set_enabled(True)
+        hands = Hands(clock=lambda: now[0], spectator=spectator)
+        hands.put({"left": {"tracked": True}})
+        request = json.loads(hands.answer())["spectator"]
+        self.assertEqual(request, spectator.requested())
+        view = self.jpeg((0, 0, 20))
+        camera = self.jpeg((30, 40, 50))
+        hands.receive({"spectator": request, "view": base64.b64encode(view).decode(),
+                       "camera": base64.b64encode(camera).decode()})
+        self.assertEqual(hands.latest()[0], {"left": {"tracked": True}})
+        jpeg, sequence = spectator.latest()
+        self.assertTrue(jpeg.startswith(b"\xff\xd8"))
+        self.assertEqual(sequence, 1)
+        self.assertIsNone(spectator.requested(), "rate limited")
+        now[0] += 0.5
+        self.assertNotEqual(spectator.requested(), request)
+
+    def test_demo_navigation_command_is_handled_outside_the_follower_queue(self) -> None:
+        hands = Hands()
+        received = []
+        hands.command_handler = lambda message: received.append(message) or True
+        hands.receive({"command": "presentation", "enabled": False})
+        self.assertEqual(received, [{"command": "presentation", "enabled": False}])
         self.assertEqual(hands.take_commands(), [])
 
 

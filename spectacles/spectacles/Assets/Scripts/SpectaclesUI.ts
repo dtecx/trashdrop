@@ -15,6 +15,7 @@ type ArmGuide = {
 };
 
 type Card = {
+  object: SceneObject;
   text: Text;
   marker: Text;
   guide: ArmGuide | null;
@@ -31,6 +32,10 @@ export class SpectaclesUI {
   private precisionLabel: Text;
   private gripLabel: Text;
   private stopped = false;
+  private menu: SceneObject;
+  private exitButton: SceneObject;
+  private video: SceneObject | null = null;
+  private presentationVisible = true;
 
   constructor(private camera: SceneObject, private send: (command: Command) => void) {
     this.view = camera.getComponent("Component.Camera") as Camera;
@@ -38,16 +43,20 @@ export class SpectaclesUI {
       left: this.createCard("left", new vec2(0.27, 0.18)),
       right: this.createCard("right", new vec2(0.73, 0.18)),
     };
-    this.createMenu();
+    this.menu = this.createMenu();
     this.renderCard("left", null);
     this.renderCard("right", null);
   }
 
   public placeVideo(frame: SceneObject) {
+    this.video = frame;
     this.place(frame, new vec2(0.5, 0.55), 62);
   }
 
   public updateReport(report: any) {
+    if (typeof report.presentation === "boolean") {
+      this.setPresentation(report.presentation);
+    }
     const arms = report && typeof report === "object" ? report.arms || report.hands || {} : {};
     for (const side of ["left", "right"] as const) {
       const guide = arms[side] && typeof arms[side] === "object" ? arms[side] as ArmGuide : null;
@@ -67,7 +76,7 @@ export class SpectaclesUI {
     for (const side of ["left", "right"] as const) {
       const hand = message && message[side];
       const marker = this.cards[side].marker;
-      if (!hand || !hand.tracked || !Array.isArray(hand.wrist)) {
+      if (!this.presentationVisible || !hand || !hand.tracked || !Array.isArray(hand.wrist)) {
         marker.getSceneObject().enabled = false;
         continue;
       }
@@ -94,35 +103,41 @@ export class SpectaclesUI {
     marker.backgroundSettings.cornerRadius = 0.5;
     marker.backgroundSettings.margins = Rect.create(0.6, 0.6, 0.6, 0.6);
     markerObject.enabled = false;
-    return { text: text, marker: marker, guide: null };
+    return { object: object, text: text, marker: marker, guide: null };
   }
 
-  private createMenu() {
+  private createMenu(): SceneObject {
     const menu = global.scene.createSceneObject("Arm Control Menu");
-    this.place(menu, new vec2(0.5, 0.86), 62);
-    const grip = this.createButton(menu, "OPEN GRIPS", -11.4, () => {
+    this.place(menu, new vec2(0.5, 0.82), 62);
+    const grip = this.createButton(menu, "OPEN GRIPS", -7.6, 2.1, () => {
       this.send({ command: "jaw", open: !this.jawOpen });
     });
     this.gripLabel = grip.label;
-    const precision = this.createButton(menu, "PRECISION", -3.8, () => {
+    const precision = this.createButton(menu, "PRECISION", 0, 2.1, () => {
       this.precision = !this.precision;
       this.precisionLabel.text = this.precision ? "PRECISE  1/2" : "PRECISION";
       this.send({ command: "precision", enabled: this.precision });
     });
     this.precisionLabel = precision.label;
-    this.createButton(menu, "HOME", 3.8, () => this.send({ command: "home" }));
-    const stop = this.createButton(menu, "STOP", 11.4, () => {
+    this.createButton(menu, "HOME", 7.6, 2.1, () => this.send({ command: "home" }));
+    const stop = this.createButton(menu, "STOP", -3.8, -2.1, () => {
       if (!this.stopped) {
         this.send({ command: "stop" });
       }
     });
     stop.label.textFill.color = new vec4(1, 0.3, 0.25, 1);
+    const exit = this.createButton(menu, "WEB UI", 3.8, -2.1, () => {
+      this.send({ command: "presentation", enabled: false });
+    });
+    this.exitButton = exit.object;
+    this.exitButton.enabled = false;
+    return menu;
   }
 
-  private createButton(parent: SceneObject, labelText: string, x: number, action: () => void) {
+  private createButton(parent: SceneObject, labelText: string, x: number, y: number, action: () => void) {
     const object = global.scene.createSceneObject(labelText);
     object.setParent(parent);
-    object.getTransform().setLocalPosition(new vec3(x, 0, 0));
+    object.getTransform().setLocalPosition(new vec3(x, y, 0));
     const button = object.createComponent(CapsuleButton.getTypeName()) as CapsuleButton;
     button.size = new vec3(7, 3.6, 1);
     button.playAudio = false;
@@ -131,7 +146,22 @@ export class SpectaclesUI {
     labelObject.setParent(object);
     const label = this.createText(labelObject, 6.6, 3, 18);
     label.text = labelText;
-    return { button: button, label: label };
+    return { object: object, button: button, label: label };
+  }
+
+  private setPresentation(visible: boolean) {
+    this.presentationVisible = visible;
+    for (const side of ["left", "right"] as const) {
+      this.cards[side].object.enabled = visible;
+      if (!visible) {
+        this.cards[side].marker.getSceneObject().enabled = false;
+      }
+    }
+    this.menu.enabled = visible;
+    this.exitButton.enabled = visible;
+    if (this.video !== null) {
+      this.video.enabled = visible;
+    }
   }
 
   private createText(object: SceneObject, width: number, height: number, size: number): Text {

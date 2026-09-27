@@ -32,6 +32,7 @@
     rate: false
     status: false
     url: false
+    videoFrame: false
     view: false
   ScriptTypesHidden:
     {}
@@ -48,6 +49,7 @@
       rate: !<float> 30.000000
       status: !<reference.Text> 00000000-0000-0000-0000-000000000000
       view: !<reference.Texture> 00000000-0000-0000-0000-000000000000
+      videoFrame: !<reference.SceneObject> 00000000-0000-0000-0000-000000000000
       previewToo: false
   ScriptTypes:
     -
@@ -59,4 +61,5 @@
     - '// @input float rate = 30 {"hint":"Messages a second"}'
     - '// @input Component.Text status {"hint":"Optional: a Text to show what the arms are doing"}'
     - '// @input Asset.Texture view {"hint":"The Render Target drawn by the scene camera; encoded when the Mac requests a snapshot"}'
+    - '// @input SceneObject videoFrame {"hint":"The world-locked UIKit Frame containing the overhead video"}'
     - "// @input bool previewToo {\"hint\":\"Connect from Lens Studio's preview too, to try the link without the glasses. Leave it off otherwise: the preview runs on the Mac, reaches it at the same address, and its hands would mix with the glasses'\"}"

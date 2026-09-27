@@ -17,6 +17,8 @@ will be shown to the jury, so an intuitive interface matters most.
 ## How to run it
 
 ```bash
+uv run trashdrop web --dry-run --open                    # unified jury UI; Spectacles sockets and video included
+uv run trashdrop web --open                              # real cell; confirm the manual-mode move in the page
 uv run python -m trashdrop.spectacles --dry-run --video   # no arms: the link, the video, where the arms would go
 uv run python -m trashdrop.spectacles --video             # the arms (stop `trashdrop web` first: one program a bus)
 uv run python -m trashdrop.spectacles --mode joystick     # the other control scheme
@@ -33,10 +35,12 @@ to send the Lens to the glasses (see "Lens Studio facts").
 | Piece | What it is |
 |---|---|
 | `trashdrop/spectacles.py` | The bridge: WebSocket servers (hands on 8765, video on 8766), `adb reverse` for both, calibration, `Follower` (joystick), `PinchFollower` (pinch), IK steps, limits, clearance between arms, JSON report to the glasses, session recording, video pacing |
+| `trashdrop/web/manual.py` | The unified page's owner of both Spectacles sockets, overhead stream, optical-view stream and exclusive manual session. It reuses the cell's already-open camera and arm objects, so no bus is opened twice |
 | `spectacles/spectacles/` | Lens Studio **5.15.4** project (committed). Scripts in `Assets/Scripts/` |
-| `.../Assets/Scripts/HandStream.ts` | Sends both hands ~30/s: wrist, 3 knuckles, 5 fingertips, SIK `isPinching()` as `pinch`, head pose. Shows the bridge's JSON report in the `Arm Status` text: status line, "left tip N cm", red at the table. `previewToo` input: off, so the LS preview does not connect |
-| `.../Assets/Scripts/WebcamView.ts` | (Codex) video WebSocket 8766 -> `Base64.decodeTextureAsync` -> the `Webcam Window` image, head-locked 45 x 34 cm at 60 cm, below the status |
-| `tests/test_spectacles.py` | ~67 tests: socket, video pacing, wearer frame, calibration, joystick, pinch, fist/jaw, two-arm clearance |
+| `.../Assets/Scripts/HandStream.ts` | Sends both hands ~30/s and handles requested optical snapshots / spectator frames by encoding the colour camera and Lens render target. `previewToo` is off, so the LS preview does not connect |
+| `.../Assets/Scripts/SpectaclesUI.ts` | World-locked per-arm cards, hand labels and UIKit menu: grips, precision, home, stop and return to Web UI |
+| `.../Assets/Scripts/WebcamView.ts` | Video WebSocket 8766 -> `Base64.decodeTextureAsync` -> a movable/resizable UIKit Frame. The cropped image is letterboxed to preserve its complete width |
+| `tests/test_spectacles.py` | Socket, snapshots, spectator stream, video pacing, wearer frame, calibration, joystick, pinch, fist/jaw and two-arm-clearance tests |
 | `trashdrop/kinematics.py` `links()` | The arm's centre line (foot, lift, elbow, wrist, TCP) for keeping the arms apart |
 | `trashdrop/placement.py` `to_sheet()` | Arm frame -> sheet frame (inverse of `to_arm`) |
 | `out/spectacles/session-*.jsonl` | Every session's messages from the glasses, one JSON line each with the bridge's time `at` (gitignored) |
@@ -226,34 +230,24 @@ findings above were made; no replay tool is in the repo yet (worth adding).
 
 ## Next steps (in order)
 
-1. **Snapshots from the glasses, so an agent can see the real UI.** Planned,
-   not built. On a request from the bridge (a `"snap": N` field in the
-   report, raised when a trigger file `out/spectacles/snap` appears), the
-   Lens encodes (a) its own render target -- the `Render Target` asset the
-   scene camera draws into, id `923415f5-4245-4675-ade1-6d69d6d23e71`, as a
-   new `view: Texture` input -- and (b) a colour-camera frame
-   (`require("LensStudio:CameraModule")`, `CameraModule.createCameraRequest()`
-   with `cameraId = Default_Color`, first `onNewFrame` of the texture's
-   `CameraTextureProvider`) with `Base64.encodeTextureAsync(texture, ok, fail,
-   CompressionQuality.HighQuality, EncodingType.Jpg)`, and sends `{"snap": N,
-   "view": ..., "camera": ...}`. The bridge must route messages with `snap`
-   away from `Hands.put`, save both JPEGs to `out/spectacles/snaps/` and a
-   composite (camera + view added: the displays are additive, black is
-   transparent). Camera access is `@wearableOnly`: guard it in the preview.
-2. **A proper UI in the glasses**, from the UI Kit, judged on those
-   snapshots: the video in a Frame the wearer can grab, move, resize and
-   leave in the room (not head-locked over the view); per-arm cards coloured
-   by state (free / dragging / turning / blocked + reason), jaw open/closed,
-   fingertip height as a bar, twist angle; small labels at each hand; a
-   small menu (jaw open/close, precision `--scale`, arms home, stop); no
-   head-locked text.
-3. **One web page for the jury** gathering every function: auto sorting,
-   manual mode through the glasses, pick, calibrations (cameras, camera
-   settings, zone/tape, rig identify, arm placements), status and video.
-   Build on `trashdrop web` (`trashdrop/web/server.py`, `page.html`; it
-   already streams the overhead camera with overlays and runs pick/auto
-   sort/stop/speeds), and run the Spectacles bridge inside that same process
-   (one program a bus), with a mode switch.
+1. **Snapshots from the glasses: built in `afa41ce`.** A trigger at
+   `out/spectacles/snap` requests the Lens render target and colour camera;
+   the bridge validates both JPEGs and writes them plus their additive
+   composite to `out/spectacles/snaps/`. Still needs a real-glasses capture
+   after the next Preview Lens push.
+2. **Proper UIKit interface: built in `bc097ef`.** The video is in a movable,
+   resizable Frame; arm cards, hand labels and the grips / precision / home /
+   stop menu are world-locked. The next real optical snapshots decide final
+   type and angular sizes.
+3. **Unified jury page: implemented locally after `bc097ef`, real-device QA
+   pending.** `trashdrop web` owns the existing Cell and the Spectacles
+   bridge together. It has auto sort/pick, manual start/stop/mode, arm state,
+   snapshots and the complete calibration checklist. **Enter Spectacles UI**
+   hides every ordinary web control and shows only the live optical view
+   (colour camera + Lens render); **WEB UI** in the glasses stops manual mode
+   and restores the page. The overhead Frame now contains the whole cropped
+   width instead of cropping its left edge. Next: push Preview Lens, test this
+   round trip and tune it from real snapshots.
 4. **Recalibrate the left arm** (the team took it apart and may have put a
    horn or the gripper back at another angle). Evidence, read with
    `uv run trashdrop arm status` on 2026-09-27 03:30: `rig.toml`'s left

@@ -1,4 +1,4 @@
-/** Show the overhead webcam on a head-locked Image in Spectacles (2024). */
+/** Show the complete cropped overhead webcam image inside a movable UIKit Frame. */
 
 const CONNECT_TIMEOUT_S = 5;
 const RETRY_S = 2;
@@ -36,12 +36,15 @@ export class WebcamView extends BaseScriptComponent {
   private clockOffsetMs: number | null = null;
   private syncRttMs = Infinity;
   private lastPingAt = 0;
+  private bounds = new vec2(1, 1);
 
   onAwake() {
     if (!this.image || !this.internetModule) {
       print("WebcamView: assign the Image and Internet Module in the Inspector");
       return;
     }
+    const scale = this.image.getSceneObject().getTransform().getLocalScale();
+    this.bounds = new vec2(scale.x, scale.y);
     if (global.deviceInfoSystem.isEditor() && !this.previewToo) {
       print("WebcamView: preview is not connecting (enable Preview Too to test on the Mac)");
       return;
@@ -113,6 +116,7 @@ export class WebcamView extends BaseScriptComponent {
     this.decoding = true;
     Base64.decodeTextureAsync(packet.jpeg, (texture: Texture) => {
       this.image.mainPass.baseTex = texture;
+      this.fit(texture);
       this.shown++;
       if (this.clockOffsetMs !== null) {
         this.totalAgeMs += getTime() * 1000 + this.clockOffsetMs - packet.capturedMs;
@@ -143,6 +147,15 @@ export class WebcamView extends BaseScriptComponent {
       this.say("JPEG decode failed");
       this.decodeLatest();
     });
+  }
+
+  /** Letterbox after the Mac's top crop: never let the Frame cut off either side of the table. */
+  private fit(texture: Texture) {
+    const aspect = texture.getWidth() / Math.max(texture.getHeight(), 1);
+    const box = this.bounds.x / this.bounds.y;
+    const width = aspect >= box ? this.bounds.x : this.bounds.y * aspect;
+    const height = aspect >= box ? this.bounds.x / aspect : this.bounds.y;
+    this.image.getSceneObject().getTransform().setLocalScale(new vec3(width, height, 1));
   }
 
   private drop(why: string | null) {

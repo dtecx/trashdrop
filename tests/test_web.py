@@ -7,10 +7,12 @@ what is pinned down is the HTTP surface the page relies on.
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -50,6 +52,38 @@ class StandInCell:
     def set_speeds(self, arm, max_speed, descent_speed):
         self.options["speeds"] = (arm, max_speed, descent_speed)
         return f"{arm} arm: {max_speed:g} deg/s"
+
+
+class StandInSpectacles:
+    def __init__(self, folder: Path, jpeg: bytes) -> None:
+        self.folder = folder
+        self.active = False
+        self.presentation = False
+        self.commands = []
+        self.spectator = type("Spectator", (), {"latest": lambda _self: (jpeg, 4)})()
+
+    def state(self):
+        return {"available": True, "active": self.active, "connected": True, "presentation": self.presentation,
+                "view_sequence": 4, "snapshots": [], "hands": {}, "arms": {}}
+
+    def start(self, **options):
+        self.active = True
+        return None
+
+    def stop(self):
+        self.active = False
+        return "Spectacles manual mode stopped"
+
+    def command(self, message):
+        self.commands.append(message)
+        return None
+
+    def request_snapshot(self):
+        return None
+
+    def set_presentation(self, enabled):
+        self.presentation = enabled
+        return None
 
 
 class ServerTests(unittest.TestCase):
@@ -102,6 +136,46 @@ class ServerTests(unittest.TestCase):
             head = response.read(200)
         self.assertTrue(head.startswith(b"--frame"))
         self.assertIn(b"image/jpeg", head)
+
+
+class SpectaclesServerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.cell = StandInCell()
+        ok, jpeg = __import__("cv2").imencode(".jpg", self.cell.frame)
+        assert ok
+        self.spectacles = StandInSpectacles(Path(self.temporary.name), jpeg.tobytes())
+        self.server = make_server(self.cell, "127.0.0.1", 0, self.spectacles)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.temporary.cleanup()
+
+    def post(self, path, body=None):
+        request = urllib.request.Request(self.base + path, data=json.dumps(body or {}).encode(), method="POST",
+                                         headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read())
+
+    def test_presentation_starts_manual_mode_and_serves_the_optical_view(self) -> None:
+        status, reply = self.post("/api/spectacles/presentation", {"enabled": True, "mode": "pinch", "scale": 0.5})
+        self.assertEqual((status, reply["ok"]), (200, True))
+        self.assertTrue(self.spectacles.active)
+        self.assertTrue(self.spectacles.presentation)
+        with urllib.request.urlopen(self.base + "/spectacles/view.jpg", timeout=5) as response:
+            self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+            self.assertTrue(response.read(3).startswith(b"\xff\xd8"))
+        self.post("/api/spectacles/presentation", {"enabled": False})
+        self.assertFalse(self.spectacles.active)
+        self.assertFalse(self.spectacles.presentation)
+
+    def test_web_controls_send_commands_to_the_lens_session(self) -> None:
+        self.spectacles.active = True
+        self.post("/api/spectacles/command", {"command": "home"})
+        self.assertEqual(self.spectacles.commands, [{"command": "home"}])
 
 
 if __name__ == "__main__":

@@ -66,7 +66,7 @@ export class HandStream extends BaseScriptComponent {
   private lastSent = 0;
   private retryAt = 0;
   private cameraTexture: Texture | null = null;
-  private snap: { id: number; view?: string; camera?: string } | null = null;
+  private snap: { id: number; kind: "snap" | "spectator"; view?: string; camera?: string } | null = null;
   private lastSnap: { id: number; view: string; camera: string } | null = null;
   private ui: SpectaclesUI;
 
@@ -201,7 +201,10 @@ export class HandStream extends BaseScriptComponent {
       report = null;
     }
     if (report !== null && typeof report === "object" && typeof report.snap === "number") {
-      this.capture(report.snap);
+      this.capture(report.snap, "snap");
+    }
+    if (report !== null && typeof report === "object" && typeof report.spectator === "number") {
+      this.capture(report.spectator, "spectator");
     }
     if (report !== null && typeof report === "object") {
       this.ui.updateReport(report);
@@ -231,19 +234,19 @@ export class HandStream extends BaseScriptComponent {
     }
   }
 
-  private capture(id: number) {
-    if (this.lastSnap !== null && this.lastSnap.id === id) {
-      this.sendSnapshot(this.lastSnap);
+  private capture(id: number, kind: "snap" | "spectator") {
+    if (kind === "snap" && this.lastSnap !== null && this.lastSnap.id === id) {
+      this.sendCapture({ ...this.lastSnap, kind: "snap" });
       return;
     }
-    if (this.snap !== null && this.snap.id === id) {
+    if (this.snap !== null) {
       return;
     }
     if (!this.view || this.cameraTexture === null) {
       this.say("snapshot unavailable: run the Lens on Spectacles and assign its Render Target");
       return;
     }
-    this.snap = { id: id };
+    this.snap = { id: id, kind: kind };
     Base64.encodeTextureAsync(this.view, (jpeg: string) => {
       if (this.snap !== null && this.snap.id === id) {
         this.snap.view = jpeg;
@@ -273,19 +276,25 @@ export class HandStream extends BaseScriptComponent {
     if (this.snap === null || this.snap.view === undefined || this.snap.camera === undefined) {
       return;
     }
-    const ready = { id: this.snap.id, view: this.snap.view, camera: this.snap.camera };
+    const ready = { id: this.snap.id, kind: this.snap.kind, view: this.snap.view, camera: this.snap.camera };
     this.snap = null;
-    this.lastSnap = ready;
-    this.sendSnapshot(ready);
+    if (ready.kind === "snap") {
+      this.lastSnap = ready;
+    }
+    this.sendCapture(ready);
   }
 
-  private sendSnapshot(ready: { id: number; view: string; camera: string }) {
+  private sendCapture(ready: { id: number; kind: "snap" | "spectator"; view: string; camera: string }) {
     if (this.socket === null || !this.open) {
       return;
     }
     try {
-      this.socket.send(JSON.stringify({ snap: ready.id, view: ready.view, camera: ready.camera }));
-      print("HandStream: sent snapshot " + ready.id);
+      const message: any = { view: ready.view, camera: ready.camera };
+      message[ready.kind] = ready.id;
+      this.socket.send(JSON.stringify(message));
+      if (ready.kind === "snap") {
+        print("HandStream: sent snapshot " + ready.id);
+      }
     } catch (error) {
       this.drop("cannot send snapshot: " + error);
     }

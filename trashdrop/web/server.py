@@ -75,7 +75,38 @@ class FrameCache:
             return self._jpeg
 
 
-def make_handler(cell):
+def calibration_state(cell) -> list[dict]:
+    """The setup checklist shown on the jury page, with the exact recovery command."""
+
+    if not hasattr(cell, "rig"):
+        return []
+    root = PAGE.parents[2]
+    rig = cell.rig
+    arms_identified = all(devices.bus for devices in rig.arms.values())
+    arms_placed = all(devices.sheet and len(devices.touches) >= 4 for devices in rig.arms.values())
+    rolls = all(devices.wrist_roll_offset is not None for devices in rig.arms.values())
+    return [
+        {"key": "cameras", "label": "Camera identity", "ready": bool(rig.overhead),
+         "detail": rig.overhead or "no overhead camera", "command": "uv run trashdrop cameras"},
+        {"key": "camera-settings", "label": "Camera settings", "ready": (root / "camera.toml").is_file(),
+         "detail": "focus, exposure and white balance", "command": "uv run trashdrop camera tune --camera auto"},
+        {"key": "camera-zone", "label": "Camera zone", "ready": (root / "camera_zone.json").is_file(),
+         "detail": "capture rectangle and markers", "command": "uv run trashdrop camera zone --camera auto"},
+        {"key": "tape", "label": "Tape and table frame",
+         "ready": len(rig.tape_pixels) >= 4 and (root / "camera_sheet.json").is_file(),
+         "detail": f"{len(rig.tape_pixels)}/4 tape corners", "command": "uv run trashdrop camera tape"},
+        {"key": "rig", "label": "Rig identity", "ready": arms_identified,
+         "detail": " · ".join(f"{name}: {devices.label}" for name, devices in rig.arms.items()),
+         "command": "uv run trashdrop rig identify --quick"},
+        {"key": "placements", "label": "Arm placements", "ready": arms_placed,
+         "detail": "both fingertips touched the four tape corners",
+         "command": "uv run trashdrop rig touch left --tape  # then right"},
+        {"key": "roll", "label": "Wrist-roll zero", "ready": rolls,
+         "detail": "jaw angle aligned to the item", "command": "uv run trashdrop rig roll left  # then right"},
+    ]
+
+
+def make_handler(cell, spectacles=None):
     frames = FrameCache(cell.camera)
 
     class Handler(BaseHTTPRequestHandler):
@@ -92,7 +123,13 @@ def make_handler(cell):
             if path in ("/", "/index.html"):
                 self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
             elif path == "/api/state":
-                self._json(cell.state())
+                state = cell.state()
+                state["calibrations"] = calibration_state(cell)
+                state["spectacles"] = spectacles.state() if spectacles is not None else {
+                    "available": False, "network_error": "not started", "active": False, "connected": False,
+                    "snapshots": [], "hands": {}, "arms": {},
+                }
+                self._json(state)
             elif path == "/frame.jpg":
                 jpeg = frames.jpeg()
                 if jpeg is None:
@@ -101,6 +138,19 @@ def make_handler(cell):
                     self._send(200, jpeg, "image/jpeg")
             elif path == "/stream.mjpg":
                 self._stream()
+            elif path == "/spectacles/view.jpg" and spectacles is not None:
+                jpeg, _ = spectacles.spectator.latest()
+                if jpeg is None:
+                    self._send(503, b"no Spectacles frame yet", "text/plain")
+                else:
+                    self._send(200, jpeg, "image/jpeg")
+            elif path.startswith("/spectacles/snaps/") and spectacles is not None:
+                name = Path(path).name
+                picture = spectacles.folder / "snaps" / name
+                if name != path.rsplit("/", 1)[-1] or picture.suffix.lower() != ".jpg" or not picture.is_file():
+                    self._send(404, b"not found", "text/plain")
+                else:
+                    self._send(200, picture.read_bytes(), "image/jpeg")
             else:
                 self._send(404, b"not found", "text/plain")
 
@@ -110,7 +160,38 @@ def make_handler(cell):
                 length = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(length) or b"{}") if length else {}
                 if path == "/api/stop":
-                    return self._json({"ok": True, "message": cell.stop()})
+                    if spectacles is not None:
+                        spectacles.set_presentation(False)
+                    manual = spectacles.stop() if spectacles is not None and spectacles.active else None
+                    stopped = cell.stop()
+                    return self._json({"ok": True, "message": manual or stopped})
+                if path == "/api/spectacles/start" and spectacles is not None:
+                    error = spectacles.start(mode=body.get("mode", "pinch"), scale=float(body.get("scale", 1.0)),
+                                             facing=body.get("facing", "same"))
+                    return self._json({"ok": error is None, "error": error}, 200 if error is None else 409)
+                if path == "/api/spectacles/stop" and spectacles is not None:
+                    spectacles.set_presentation(False)
+                    return self._json({"ok": True, "message": spectacles.stop()})
+                if path == "/api/spectacles/presentation" and spectacles is not None:
+                    enabled = bool(body.get("enabled"))
+                    if not enabled:
+                        spectacles.set_presentation(False)
+                        message = spectacles.stop() if spectacles.active else "returned to the web controls"
+                        return self._json({"ok": True, "message": message})
+                    error = spectacles.set_presentation(True)
+                    if error is None and not spectacles.active:
+                        error = spectacles.start(mode=body.get("mode", "pinch"),
+                                                  scale=float(body.get("scale", 1.0)),
+                                                  facing=body.get("facing", "same"))
+                    if error is not None:
+                        spectacles.set_presentation(False)
+                    return self._json({"ok": error is None, "error": error}, 200 if error is None else 409)
+                if path == "/api/spectacles/command" and spectacles is not None:
+                    error = spectacles.command(body)
+                    return self._json({"ok": error is None, "error": error}, 200 if error is None else 409)
+                if path == "/api/spectacles/snapshot" and spectacles is not None:
+                    error = spectacles.request_snapshot()
+                    return self._json({"ok": error is None, "error": error}, 200 if error is None else 409)
                 if path.startswith("/api/action/"):
                     error = cell.begin(path.rsplit("/", 1)[1])
                     return self._json({"ok": error is None, "error": error}, 200 if error is None else 409)
@@ -158,7 +239,7 @@ def make_handler(cell):
     return Handler
 
 
-def make_server(cell, host: str = "127.0.0.1", port: int = 8000) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer((host, port), make_handler(cell))
+def make_server(cell, host: str = "127.0.0.1", port: int = 8000, spectacles=None) -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer((host, port), make_handler(cell, spectacles))
     server.daemon_threads = True
     return server

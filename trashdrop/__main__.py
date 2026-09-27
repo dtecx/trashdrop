@@ -906,6 +906,7 @@ def _cmd_web(args: argparse.Namespace) -> int:
 
     from .cell import Cell
     from .station import repository_root
+    from .web.manual import ManualBridge
     from .web.server import make_server
 
     if args.demo:
@@ -913,15 +914,19 @@ def _cmd_web(args: argparse.Namespace) -> int:
         cell = Cell.demo(empty=out / "pick_background.jpg", item=out / "pick_frame.jpg")
     else:
         cell = Cell.open(camera=args.camera, only_arm=args.arm)
+    cell.options.dry_run = args.dry_run
+    spectacles = ManualBridge(cell, repository_root() / "out" / "spectacles")
     try:
-        server = make_server(cell, args.host, args.port)
+        cell.start()
+        spectacles.start_network()
+        server = make_server(cell, args.host, args.port, spectacles)
     except OSError as error:
+        spectacles.close()
         cell.close()
         print(f"cannot listen on {args.host}:{args.port} ({error}); try --port 8001")
         return 1
     url = f"http://{'localhost' if args.host in ('127.0.0.1', '0.0.0.0') else args.host}:{server.server_address[1]}"
     try:
-        cell.start()
         print(f"open the page in a browser: {url}\n  Ctrl+C here stops it; the arms hold where they are.")
         if args.host != "127.0.0.1":
             print("  listening beyond this machine: anyone who can open the page can move the arms")
@@ -931,6 +936,7 @@ def _cmd_web(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("\nstopped")
     finally:
+        spectacles.close()
         cell.stop()
         server.server_close()
         cell.close()
@@ -1695,6 +1701,8 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--camera", default="auto", help="stream index; auto finds the webcam")
     web.add_argument("--arm", default=None, help="use only this arm: left, right (or its label)")
     web.add_argument("--demo", action="store_true", help="no camera or arms: out/'s saved pictures and pretend arms")
+    web.add_argument("--dry-run", action="store_true",
+                     help="start with picking and Spectacles control simulated; toggle it on the page")
     web.add_argument("--open", action="store_true", help="open the page in the default browser")
     web.set_defaults(func=_cmd_web)
 

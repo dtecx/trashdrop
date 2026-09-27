@@ -204,24 +204,32 @@ class Hands:
     each with the bridge's time as "at": what the hands really did, to replay.
     """
 
-    def __init__(self, clock=time.monotonic, record=None, snapshots=None) -> None:
+    def __init__(self, clock=time.monotonic, record=None, snapshots=None, spectator=None) -> None:
         self._lock = threading.Lock()
         self._message, self._at = None, -math.inf
         self._commands: collections.deque[dict] = collections.deque()
         self.clock = clock
         self.record = record
         self.snapshots = snapshots
+        self.spectator = spectator
+        self.command_handler = None
         self.status = "waiting for the arms"  # what the arms do, in words
         self.report: str | None = None  # what the glasses are sent: JSON with the status, boxes and stops (report())
         self.connected = False
+        self.presentation: bool | None = None  # web demo mode; omitted by the standalone bridge
 
     def receive(self, message: dict) -> None:
         """Route a Lens message without letting a multi-megabyte snapshot become hand state."""
 
+        if self.spectator is not None and isinstance(message, dict) and "spectator" in message:
+            self.spectator.receive(message)
+            return
         if self.snapshots is not None and isinstance(message, dict) and "snap" in message:
             self.snapshots.receive(message)
             return
         if isinstance(message, dict) and isinstance(message.get("command"), str):
+            if self.command_handler is not None and self.command_handler(message):
+                return
             with self._lock:
                 self._commands.append(message)
             return
@@ -258,7 +266,8 @@ class Hands:
 
         answer = self.report or self.status
         snap = self.snapshots.requested() if self.snapshots is not None else None
-        if snap is None:
+        spectator = self.spectator.requested() if self.spectator is not None else None
+        if snap is None and spectator is None and self.presentation is None:
             return answer
         try:
             report = json.loads(answer)
@@ -266,7 +275,12 @@ class Hands:
             report = {"status": answer}
         if not isinstance(report, dict):
             report = {"status": answer}
-        report["snap"] = snap
+        if snap is not None:
+            report["snap"] = snap
+        if spectator is not None:
+            report["spectator"] = spectator
+        if self.presentation is not None:
+            report["presentation"] = self.presentation
         return json.dumps(report, separators=(",", ":"))
 
 
@@ -346,6 +360,65 @@ class Snapshots:
             self._pending = None
         self.log(f"Spectacles snapshot {snap}: {view_path}, {camera_path}, {composite_path}")
         return view_path, camera_path, composite_path
+
+
+class SpectatorFrames:
+    """A low-rate optical-view stream for the jury page, requested one frame at a time."""
+
+    def __init__(self, *, fps: float = 2.0, clock=time.monotonic, log=print) -> None:
+        self.fps, self.clock, self.log = fps, clock, log
+        self.enabled = False
+        self._lock = threading.Lock()
+        self._pending: int | None = None
+        self._last_request = -math.inf
+        self._last_id = 0
+        self.sequence = 0
+        self.jpeg: bytes | None = None
+        self.captured_at = 0.0
+
+    def set_enabled(self, enabled: bool) -> None:
+        with self._lock:
+            self.enabled = enabled
+            if not enabled:
+                self._pending = None
+
+    def requested(self) -> int | None:
+        with self._lock:
+            now = self.clock()
+            if not self.enabled:
+                return None
+            if self._pending is None and now - self._last_request >= 1 / self.fps:
+                self._last_id += 1
+                self._pending = self._last_id
+                self._last_request = now
+            return self._pending
+
+    def receive(self, message: dict) -> bool:
+        request = message.get("spectator")
+        with self._lock:
+            if not isinstance(request, int) or request != self._pending:
+                return False
+        try:
+            view = Snapshots._jpeg(message, "view")
+            camera = Snapshots._jpeg(message, "camera")
+            composite = Snapshots._composite(camera, view)
+        except (ValueError, ImportError) as error:
+            self.log(f"cannot decode Spectacles spectator frame {request}: {error}")
+            with self._lock:
+                self._pending = None
+            return False
+        with self._lock:
+            if request != self._pending:
+                return False
+            self.jpeg = composite
+            self.sequence += 1
+            self.captured_at = time.time()
+            self._pending = None
+        return True
+
+    def latest(self) -> tuple[bytes | None, int]:
+        with self._lock:
+            return self.jpeg, self.sequence
 
 
 class _Server(socketserver.ThreadingTCPServer):
@@ -1317,7 +1390,8 @@ def ready_pose(kinematics, placement, neutral: dict[str, float],
 
 
 def follow(followers: dict[str, Follower], hands: Hands, arms: dict | None = None, *, facing: str = "same",
-           hold_s: float = HOLD_S, log=print, clock=time.monotonic, sleep=time.sleep) -> None:
+           hold_s: float = HOLD_S, log=print, clock=time.monotonic, sleep=time.sleep,
+           shutdown: threading.Event | None = None) -> None:
     """Forever, RATE_HZ times a second: calibrate if the followers need it, then every arm a step as its hand
     steers. Ctrl+C ends it."""
 
@@ -1327,7 +1401,7 @@ def follow(followers: dict[str, Follower], hands: Hands, arms: dict | None = Non
     calibration = Calibration(sorted(set(sides.values())), hold_s)
     period, last, said, reported, unseen = 1.0 / RATE_HZ, clock(), None, -math.inf, 0.0
     stopped, home_queue = False, []
-    while True:
+    while shutdown is None or not shutdown.is_set():
         now = clock()
         dt, last = min(max(now - last, 0.0), 0.1), now
         for command in hands.take_commands():
