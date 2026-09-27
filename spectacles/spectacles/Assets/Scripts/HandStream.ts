@@ -200,7 +200,12 @@ export class HandStream extends BaseScriptComponent {
       left: hand("left"),
       right: hand("right"),
     };
-    this.ui.updateHands(message);
+    if (this.ui.updateHands(message)) {
+      // A pinch on the wrist menu is an interface action. The follower's
+      // existing hand-loss behavior holds both arms until the menu closes.
+      message.left = { tracked: false };
+      message.right = { tracked: false };
+    }
     try {
       this.socket.send(JSON.stringify(message));
     } catch (error) {

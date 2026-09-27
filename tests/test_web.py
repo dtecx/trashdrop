@@ -243,6 +243,21 @@ class SpectaclesControlsTests(unittest.TestCase):
         bridge.active = True
         self.assertIs(bridge._decorate_video(source), source, "manual control needs an unobscured view")
 
+    def test_spectacles_auto_overlay_marks_the_selected_drop_path(self) -> None:
+        source = np.zeros((120, 240, 3), dtype=np.uint8)
+        state = {"scene": {"size": [240, 120], "zone": [], "searched": [],
+                           "bases": {}, "drops": {"left": [220, 100]},
+                           "sides": {"plastic": "left"}},
+                 "last": {"outline": [[30, 40], [50, 40], [50, 60], [30, 60]],
+                          "moving": [45, 50], "arm": "left",
+                          "probabilities": {"plastic": 0.9}}}
+        bridge = ManualBridge.__new__(ManualBridge)
+        bridge.active = bridge.starting = False
+        bridge.cell = SimpleNamespace(state=lambda: state)
+        annotated = bridge._decorate_video(source)
+        self.assertGreater(int(annotated[74, 130].sum()), 0)
+        self.assertEqual(int(source.sum()), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

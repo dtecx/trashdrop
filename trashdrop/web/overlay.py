@@ -50,6 +50,16 @@ def draw(frame, state: dict):
 
     outline = look.get("outline") or []
     if len(outline) >= 2:
+        destination = (scene.get("drops") or {}).get(look.get("arm"))
+        if destination:
+            moving = look.get("moving")
+            origin = moving or (sum(p[0] for p in outline) / len(outline),
+                                sum(p[1] for p in outline) / len(outline))
+            # The path is a plan, not a live robot trajectory; draw it behind
+            # the grasp and contour so the pick remains legible.
+            cv2.arrowedLine(canvas, point(origin), point(destination),
+                            (255, 175, 56), max(2, round(2 * scale * 2)),
+                            cv2.LINE_AA, tipLength=0.07)
         polygon(outline, (240, 208, 63), 3)
         fixed, moving = look.get("fixed"), look.get("moving")
         if fixed and moving:

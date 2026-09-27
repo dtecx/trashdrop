@@ -38,7 +38,7 @@ to send the Lens to the glasses (see "Lens Studio facts").
 | `trashdrop/web/manual.py` | The unified page's owner of both Spectacles sockets, overhead stream and exclusive manual session. It reuses the cell's already-open camera and arm objects, so no bus is opened twice |
 | `spectacles/spectacles/` | Lens Studio **5.15.4** project (committed). Scripts in `Assets/Scripts/` |
 | `.../Assets/Scripts/HandStream.ts` | Sends both hands ~30/s and handles requested optical snapshots / spectator frames by encoding the colour camera and Lens render target. `previewToo` is off, so the LS preview does not connect |
-| `.../Assets/Scripts/SpectaclesUI.ts` | World-locked per-arm cards, hand labels and four UIKit controls: manual hand control, auto sort, neutral and exit |
+| `.../Assets/Scripts/SpectaclesUI.ts` | Movable video Frame, compact hand tags and a wrist-revealed UIKit menu: manual hand control, auto sort, neutral and exit |
 | `.../Assets/Scripts/WebcamView.ts` | Video WebSocket 8766 -> `Base64.decodeTextureAsync` -> a movable/resizable UIKit Frame. Sorting overlays are burned into the camera stream by `trashdrop/web/overlay.py`; manual mode keeps the camera unobscured |
 | `tests/test_spectacles.py` | Socket, snapshots, spectator stream, video pacing, wearer frame, calibration, joystick, pinch, fist/jaw and two-arm-clearance tests |
 | `trashdrop/kinematics.py` `links()` | The arm's centre line (foot, lift, elbow, wrist, TCP) for keeping the arms apart |
@@ -258,14 +258,22 @@ findings above were made; no replay tool is in the repo yet (worth adding).
    the bridge validates both JPEGs and writes them plus their additive
    composite to `out/spectacles/snaps/`. Still needs a real-glasses capture
    after the next Preview Lens push.
-2. **Proper UIKit interface: built in `bc097ef`.** The video is in a movable,
-   resizable Frame; arm cards, hand labels and four mode controls are
-   world-locked. **MANUAL ON/OFF** starts or stops following the wearer's
-   tracked hands; **AUTO ON/OFF** starts or stops ordinary sorting; **NEUTRAL**
+2. **Spatial UIKit interface: built after `bc097ef`; device QA pending.**
+   The video stays in a movable, resizable Frame. Compact status tags follow
+   the wearer's tracked hands during manual control. Raise either wrist within
+   45 cm below head height, 20-85 cm from the glasses, and look at it for
+   0.45 s to reveal the menu beside it. The menu stays fixed in space while
+   pressed and hides after 1.6 s without a look at the wrist or menu.
+   While it is open, hand packets are marked untracked so menu pinches hold
+   the robot instead of dragging it. **MANUAL** starts or stops following the
+   wearer's tracked hands; **AUTO** starts or stops ordinary sorting; **NEUTRAL**
    stops the active mode and returns both arms to their saved neutral poses;
    **EXIT UI** returns to the web controls. Starting a mode first releases the
-   previous owner of the arms. The next real optical snapshots decide final
-   type and angular sizes.
+   previous owner of the arms. Active modes are highlighted; neutral is
+   prominent and exit is small. The next real optical snapshots decide final
+   type and angular sizes. In auto mode the video also draws a planned path
+   arrow from the selected grasp to the chosen drop; this is not live motion
+   tracking.
 3. **Unified jury page: implemented locally after `bc097ef`, real-device QA
    pending.** `trashdrop web` owns the existing Cell and the Spectacles
    bridge together. It has auto sort/pick, manual start/stop/mode, arm state,
