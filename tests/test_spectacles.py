@@ -24,9 +24,11 @@ import json
 import re
 import socket
 import struct
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 
 import numpy as np
 
@@ -46,6 +48,7 @@ from trashdrop.spectacles import (
     Calibration,
     Hands,
     JAW_DELAY_S,
+    Snapshots,
     VideoFrames,
     accept_key,
     angle_delta,
@@ -168,6 +171,66 @@ class SocketTests(unittest.TestCase):
         payload = b"x" * 100_000
         final, opcode, received = read_frame(io.BytesIO(frame(payload)))
         self.assertEqual((final, opcode, received), (True, 1, payload))
+
+
+class SnapshotTests(unittest.TestCase):
+    @staticmethod
+    def jpeg(colour: tuple[int, int, int], shape=(12, 8)) -> bytes:
+        import cv2
+
+        picture = np.full((shape[0], shape[1], 3), colour, dtype=np.uint8)
+        ok, jpeg = cv2.imencode(".jpg", picture)
+        assert ok
+        return jpeg.tobytes()
+
+    def test_trigger_requests_one_id_until_both_images_are_saved(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trigger, folder = root / "snap", root / "snaps"
+            trigger.touch()
+            logs = []
+            snapshots = Snapshots(folder, trigger, wall_clock=lambda: 123.456, log=logs.append)
+            self.assertEqual(snapshots.requested(), 123456)
+            self.assertEqual(snapshots.requested(), 123456)
+            self.assertFalse(trigger.exists())
+
+            view = self.jpeg((0, 0, 20))
+            camera = self.jpeg((30, 40, 50), shape=(6, 4))
+            saved = snapshots.receive({"snap": 123456, "view": base64.b64encode(view).decode(),
+                                       "camera": base64.b64encode(camera).decode()})
+            self.assertIsNotNone(saved)
+            self.assertEqual([path.name for path in saved], ["snap-123456-view.jpg", "snap-123456-camera.jpg",
+                                                             "snap-123456-composite.jpg"])
+            self.assertTrue(all(path.exists() for path in saved))
+            self.assertIsNone(snapshots.requested())
+
+            import cv2
+
+            composite = cv2.imread(str(saved[2]))
+            self.assertEqual(composite.shape[:2], (12, 8))
+            self.assertGreater(float(composite[:, :, 2].mean()), 50)
+
+    def test_snapshot_messages_do_not_replace_the_latest_hands(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trigger = root / "snap"
+            trigger.touch()
+            snapshots = Snapshots(root / "snaps", trigger, wall_clock=lambda: 1.0, log=lambda _: None)
+            hands = Hands(snapshots=snapshots)
+            hands.put({"left": {"tracked": True}})
+            self.assertEqual(json.loads(hands.answer())["snap"], 1000)
+            hands.receive({"snap": 999, "view": "late", "camera": "late"})
+            self.assertEqual(hands.latest()[0], {"left": {"tracked": True}})
+
+    def test_bad_image_keeps_the_request_pending_for_a_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trigger = root / "snap"
+            trigger.touch()
+            snapshots = Snapshots(root / "snaps", trigger, wall_clock=lambda: 2.0, log=lambda _: None)
+            self.assertEqual(snapshots.requested(), 2000)
+            self.assertIsNone(snapshots.receive({"snap": 2000, "view": "bad", "camera": "bad"}))
+            self.assertEqual(snapshots.requested(), 2000)
 
 
 class VideoSocketTests(unittest.TestCase):

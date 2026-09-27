@@ -1865,6 +1865,7 @@
       url: "ws://127.0.0.1:8765"
       rate: !<float> 30.000000
       status: !<reference.Text> 8d0bb99d-7657-4f66-a129-f784328e1220
+      view: !<reference.Texture> 923415f5-4245-4675-ade1-6d69d6d23e71
       previewToo: false
   ScriptTypes:
     "":

@@ -86,6 +86,7 @@ import socketserver
 import struct
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -203,14 +204,23 @@ class Hands:
     each with the bridge's time as "at": what the hands really did, to replay.
     """
 
-    def __init__(self, clock=time.monotonic, record=None) -> None:
+    def __init__(self, clock=time.monotonic, record=None, snapshots=None) -> None:
         self._lock = threading.Lock()
         self._message, self._at = None, -math.inf
         self.clock = clock
         self.record = record
+        self.snapshots = snapshots
         self.status = "waiting for the arms"  # what the arms do, in words
         self.report: str | None = None  # what the glasses are sent: JSON with the status, boxes and stops (report())
         self.connected = False
+
+    def receive(self, message: dict) -> None:
+        """Route a Lens message without letting a multi-megabyte snapshot become hand state."""
+
+        if self.snapshots is not None and isinstance(message, dict) and "snap" in message:
+            self.snapshots.receive(message)
+            return
+        self.put(message)
 
     def put(self, message: dict) -> None:
         with self._lock:
@@ -229,6 +239,100 @@ class Hands:
 
         with self._lock:
             return self._message, self.clock() - self._at
+
+    def answer(self) -> str:
+        """Current arm report, with a snapshot request while the trigger is pending."""
+
+        answer = self.report or self.status
+        snap = self.snapshots.requested() if self.snapshots is not None else None
+        if snap is None:
+            return answer
+        try:
+            report = json.loads(answer)
+        except ValueError:
+            report = {"status": answer}
+        if not isinstance(report, dict):
+            report = {"status": answer}
+        report["snap"] = snap
+        return json.dumps(report, separators=(",", ":"))
+
+
+class Snapshots:
+    """Request, validate and save the optical camera and rendered Lens view."""
+
+    def __init__(self, folder: Path, trigger: Path, *, wall_clock=time.time, log=print) -> None:
+        self.folder, self.trigger = Path(folder), Path(trigger)
+        self.wall_clock, self.log = wall_clock, log
+        self._lock = threading.Lock()
+        self._pending: int | None = None
+        self._last_id = 0
+
+    def requested(self) -> int | None:
+        """Consume a trigger file and return one stable request id until its pictures arrive."""
+
+        with self._lock:
+            if self._pending is None and self.trigger.exists():
+                self.trigger.unlink(missing_ok=True)
+                self._last_id = max(self._last_id + 1, round(self.wall_clock() * 1000))
+                self._pending = self._last_id
+                self.log(f"requesting Spectacles snapshot {self._pending}")
+            return self._pending
+
+    @staticmethod
+    def _jpeg(message: dict, name: str) -> bytes:
+        value = message.get(name)
+        if not isinstance(value, str):
+            raise ValueError(f"snapshot has no {name} image")
+        try:
+            picture = base64.b64decode(value, validate=True)
+        except (ValueError, TypeError) as error:
+            raise ValueError(f"snapshot {name} is not base64") from error
+        if not picture.startswith(b"\xff\xd8") or not picture.endswith(b"\xff\xd9"):
+            raise ValueError(f"snapshot {name} is not a JPEG")
+        return picture
+
+    @staticmethod
+    def _composite(camera_jpeg: bytes, view_jpeg: bytes) -> bytes:
+        """Add the emissive Lens view to the colour camera, as the eye sees both."""
+
+        import cv2
+
+        camera = cv2.imdecode(np.frombuffer(camera_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        view = cv2.imdecode(np.frombuffer(view_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if camera is None or view is None:
+            raise ValueError("snapshot JPEG cannot be decoded")
+        if camera.shape[:2] != view.shape[:2]:
+            camera = cv2.resize(camera, (view.shape[1], view.shape[0]), interpolation=cv2.INTER_AREA)
+        composite = cv2.add(camera, view)  # saturated addition: black Lens pixels stay transparent
+        ok, encoded = cv2.imencode(".jpg", composite, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        if not ok:
+            raise ValueError("snapshot composite cannot be encoded")
+        return encoded.tobytes()
+
+    def receive(self, message: dict) -> tuple[Path, Path, Path] | None:
+        """Save a response for the outstanding id; ignore late duplicate responses."""
+
+        snap = message.get("snap")
+        with self._lock:
+            if not isinstance(snap, int) or snap != self._pending:
+                return None
+            try:
+                view, camera = self._jpeg(message, "view"), self._jpeg(message, "camera")
+                composite = self._composite(camera, view)
+            except (ValueError, ImportError) as error:
+                self.log(f"cannot save Spectacles snapshot {snap}: {error}")
+                return None
+            self.folder.mkdir(parents=True, exist_ok=True)
+            stem = f"snap-{snap}"
+            view_path = self.folder / f"{stem}-view.jpg"
+            camera_path = self.folder / f"{stem}-camera.jpg"
+            composite_path = self.folder / f"{stem}-composite.jpg"
+            view_path.write_bytes(view)
+            camera_path.write_bytes(camera)
+            composite_path.write_bytes(composite)
+            self._pending = None
+        self.log(f"Spectacles snapshot {snap}: {view_path}, {camera_path}, {composite_path}")
+        return view_path, camera_path, composite_path
 
 
 class _Server(socketserver.ThreadingTCPServer):
@@ -273,10 +377,10 @@ def make_server(hands: Hands, host: str = "0.0.0.0", port: int = PORT) -> socket
                         continue
                     text, parts = b"".join(parts), []
                     try:
-                        hands.put(json.loads(text))
+                        hands.receive(json.loads(text))
                     except ValueError:
                         continue
-                    answer = hands.report or hands.status
+                    answer = hands.answer()
                     if answer != told:
                         told = answer
                         self.wfile.write(frame(told.encode()))
@@ -1262,16 +1366,14 @@ def main(argv: list[str] | None = None) -> int:
     names = [args.arm] if args.arm else ["left", "right"]
     kinematics = {name: Kinematics(rig.arms[name].wrist_roll_offset) for name in names}
     placements = {name: Placement(*rig.arms[name].sheet) if rig.arms[name].sheet else None for name in names}
+    folder = Path(__file__).resolve().parent.parent / "out" / "spectacles"
+    folder.mkdir(parents=True, exist_ok=True)
     record = None
     if not args.no_record:
-        from pathlib import Path
-
-        folder = Path(__file__).resolve().parent.parent / "out" / "spectacles"
-        folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"session-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
         record = path.open("w", buffering=1)  # a line at a time: a crash loses nothing
         print(f"keeping what the glasses send in {path}")
-    hands = Hands(record=record)
+    hands = Hands(record=record, snapshots=Snapshots(folder / "snaps", folder / "snap"))
     video = video_server = None
     if args.video:
         from .__main__ import _require_same_camera, _resolve_camera, _webcam

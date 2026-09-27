@@ -47,6 +47,10 @@ export class HandStream extends BaseScriptComponent {
   status: Text;
 
   @input
+  @hint("The Render Target drawn by the scene camera; encoded when the Mac requests a snapshot")
+  view: Texture;
+
+  @input
   @hint("Connect from Lens Studio's preview too, to try the link without the glasses. Leave it off otherwise: the preview runs on the Mac, reaches it at the same address, and its hands would mix with the glasses'")
   previewToo: boolean = false;
 
@@ -55,6 +59,9 @@ export class HandStream extends BaseScriptComponent {
   private connectingSince = 0;
   private lastSent = 0;
   private retryAt = 0;
+  private cameraTexture: Texture | null = null;
+  private snap: { id: number; view?: string; camera?: string } | null = null;
+  private lastSnap: { id: number; view: string; camera: string } | null = null;
 
   onAwake() {
     if (global.deviceInfoSystem.isEditor() && !this.previewToo) {
@@ -62,6 +69,17 @@ export class HandStream extends BaseScriptComponent {
       // each arm every other message, and the arms would barely move.
       this.say("Lens Studio's preview: not connecting (tick Preview Too to try the link here)");
       return;
+    }
+    if (!global.deviceInfoSystem.isEditor()) {
+      // CameraModule is @wearableOnly: even requiring it in the editor makes
+      // the preview fail before it can show the rest of the Lens.
+      const cameraModule = require("LensStudio:CameraModule") as CameraModule;
+      const request = CameraModule.createCameraRequest();
+      request.cameraId = CameraModule.CameraId.Default_Color;
+      request.imageSmallerDimension = 720;
+      this.cameraTexture = cameraModule.requestCamera(request);
+      const provider = this.cameraTexture.control as CameraTextureProvider;
+      provider.onNewFrame.add(() => this.encodeCameraFrame());
     }
     this.createEvent("UpdateEvent").bind(() => this.update());
     this.createEvent("OnDestroyEvent").bind(() => this.drop(null));
@@ -170,6 +188,9 @@ export class HandStream extends BaseScriptComponent {
     } catch (error) {
       report = null;
     }
+    if (report !== null && typeof report === "object" && typeof report.snap === "number") {
+      this.capture(report.snap);
+    }
     if (report === null || typeof report !== "object" || typeof report.status !== "string") {
       this.say(data);
       return;
@@ -193,6 +214,73 @@ export class HandStream extends BaseScriptComponent {
     if (this.status) {
       this.status.textFill.color = atTable ? new vec4(1, 0.25, 0.2, 1) : new vec4(1, 1, 1, 1);
     }
+  }
+
+  private capture(id: number) {
+    if (this.lastSnap !== null && this.lastSnap.id === id) {
+      this.sendSnapshot(this.lastSnap);
+      return;
+    }
+    if (this.snap !== null && this.snap.id === id) {
+      return;
+    }
+    if (!this.view || this.cameraTexture === null) {
+      this.say("snapshot unavailable: run the Lens on Spectacles and assign its Render Target");
+      return;
+    }
+    this.snap = { id: id };
+    Base64.encodeTextureAsync(this.view, (jpeg: string) => {
+      if (this.snap !== null && this.snap.id === id) {
+        this.snap.view = jpeg;
+        this.finishSnapshot();
+      }
+    }, () => this.failSnapshot(id, "cannot encode the rendered view"),
+    CompressionQuality.HighQuality, EncodingType.Jpg);
+    // The colour camera is encoded by encodeCameraFrame on its next frame,
+    // so the physical scene and rendered overlay are from the same moment.
+  }
+
+  private encodeCameraFrame() {
+    if (this.snap === null || this.snap.camera !== undefined || this.cameraTexture === null) {
+      return;
+    }
+    const id = this.snap.id;
+    Base64.encodeTextureAsync(this.cameraTexture, (jpeg: string) => {
+      if (this.snap !== null && this.snap.id === id) {
+        this.snap.camera = jpeg;
+        this.finishSnapshot();
+      }
+    }, () => this.failSnapshot(id, "cannot encode the colour camera"),
+    CompressionQuality.HighQuality, EncodingType.Jpg);
+  }
+
+  private finishSnapshot() {
+    if (this.snap === null || this.snap.view === undefined || this.snap.camera === undefined) {
+      return;
+    }
+    const ready = { id: this.snap.id, view: this.snap.view, camera: this.snap.camera };
+    this.snap = null;
+    this.lastSnap = ready;
+    this.sendSnapshot(ready);
+  }
+
+  private sendSnapshot(ready: { id: number; view: string; camera: string }) {
+    if (this.socket === null || !this.open) {
+      return;
+    }
+    try {
+      this.socket.send(JSON.stringify({ snap: ready.id, view: ready.view, camera: ready.camera }));
+      print("HandStream: sent snapshot " + ready.id);
+    } catch (error) {
+      this.drop("cannot send snapshot: " + error);
+    }
+  }
+
+  private failSnapshot(id: number, reason: string) {
+    if (this.snap !== null && this.snap.id === id) {
+      this.snap = null;
+    }
+    this.say("snapshot " + id + ": " + reason);
   }
 
   private say(text: string) {
