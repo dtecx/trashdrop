@@ -191,6 +191,10 @@ findings above were made; no replay tool is in the repo yet (worth adding).
   login, device connection and push events.
 - The LS preview has no hand tracking. Sockets it opens with `previewToo` on
   survive a preview reset: restart the bridge after such a test.
+- `CameraModule.createCameraRequest()` cannot run from a script's `onAwake`:
+  the real Spectacles throw `Unable to access camera` and the rest of that
+  callback (including the hand socket) never starts. Create it from an
+  `OnStartEvent`, and keep camera failure non-fatal so controls still connect.
 - `adb` works (`adb reverse` for the sockets) but the glasses' shell is
   closed: `adb exec-out screencap` answers `error: closed`.
 - The Spectacles UI Kit (`Packages/SpectaclesUIKit.lspkg`: Frame, Capsule/

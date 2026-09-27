@@ -75,13 +75,23 @@ export class HandStream extends BaseScriptComponent {
     if (this.videoFrame) {
       this.ui.placeVideo(this.videoFrame);
     }
+    this.createEvent("OnDestroyEvent").bind(() => this.drop(null));
     if (global.deviceInfoSystem.isEditor() && !this.previewToo) {
       // Mixed in, the preview's hands -- none, as a rule -- would re-anchor
       // each arm every other message, and the arms would barely move.
       this.say("Lens Studio's preview: not connecting (tick Preview Too to try the link here)");
       return;
     }
+    this.createEvent("UpdateEvent").bind(() => this.update());
     if (!global.deviceInfoSystem.isEditor()) {
+      // Spectacles rejects createCameraRequest during onAwake. Defer it until
+      // OnStart, after the Lens and its camera permissions are initialized.
+      this.createEvent("OnStartEvent").bind(() => this.startCamera());
+    }
+  }
+
+  private startCamera() {
+    try {
       // CameraModule is @wearableOnly: even requiring it in the editor makes
       // the preview fail before it can show the rest of the Lens.
       const cameraModule = require("LensStudio:CameraModule") as CameraModule;
@@ -91,9 +101,12 @@ export class HandStream extends BaseScriptComponent {
       this.cameraTexture = cameraModule.requestCamera(request);
       const provider = this.cameraTexture.control as CameraTextureProvider;
       provider.onNewFrame.add(() => this.encodeCameraFrame());
+    } catch (error) {
+      // A missing optical camera must not take the hand link or control UI
+      // down with it; snapshots stay unavailable while teleoperation works.
+      this.cameraTexture = null;
+      this.say("optical camera unavailable: " + error);
     }
-    this.createEvent("UpdateEvent").bind(() => this.update());
-    this.createEvent("OnDestroyEvent").bind(() => this.drop(null));
   }
 
   private connect() {
