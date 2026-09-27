@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from .b601 import B601HandMotion, B601Preview
-from .b601_motor import JOINT_SPEED, B601Motor
+from .b601_motor import B601_SDK, JOINT_SPEED, B601Motor
 from .spectacles import (
     VIDEO_CAPTURE_HEIGHT, VIDEO_CAPTURE_WIDTH, VIDEO_FPS, VIDEO_PORT, VIDEO_QUALITY, VIDEO_WIDTH,
     Hands, VideoFrames, make_server, make_video_server, usb_tunnel,
@@ -328,7 +328,7 @@ class B601GlassesBridge:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="B601-RS Spectacles bridge (SO-101 disconnected)")
-    parser.add_argument("--sdk-root", type=Path, default=Path("/private/tmp/trashdrop-rebot-sdk"))
+    parser.add_argument("--sdk-root", type=Path, default=B601_SDK)
     parser.add_argument("--channel", default="can0@1000000")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--live", action="store_true", help="allow the separate B601 LIVE button to enable motors")

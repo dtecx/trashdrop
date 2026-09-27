@@ -7,13 +7,20 @@ handles and CAN transactions stay on one control thread.
 
 from __future__ import annotations
 
+import argparse
 import math
+import os
 import sys
 import time
 import tomllib
 from pathlib import Path
 
 import numpy as np
+
+# The vendor SDK (motorbridge, pinocchio, the URDF) in its own Python 3.11 environment, and the
+# MacCAN library its CAN adapter needs. Session paths at the venue (docs/SPECTACLES.md).
+B601_SDK = Path(os.environ.get("TRASHDROP_B601_SDK", "/private/tmp/trashdrop-rebot-sdk"))
+B601_PCBUSB = Path(os.environ.get("TRASHDROP_B601_PCBUSB", "/private/tmp/trashdrop-pcbusb/PCBUSB"))
 
 
 # The one motion limit for now (the user, 2026-09-27 14:40): no travel, turn or floor envelope. The
@@ -32,6 +39,12 @@ ROTATION_WEIGHT = 0.1  # m per rad: a radian of tool orientation counts like 10 
 LEAD_M = 0.05  # a tick aims at most this far ahead of the tool...
 LEAD_RAD = math.radians(20.0)  # ...or turns towards at most this much of its orientation
 LIMIT_MARGIN = math.radians(2.0)  # kept inside the URDF joint limits, the mechanical stops
+# Gravity feed-forward, the vendor's own law (reBotArm_control_py GravityCompensation): g(q) from the
+# URDF, times tau_scale from config/rebotarm_rs.yaml, joint directions +1. Without it the stiff MIT
+# hold sagged about 2.3 degrees (14:18 session). It fades in over GRAVITY_RAMP_S after enabling.
+TAU_SCALE = np.array([1.0, 0.98, 0.98, 1.0, 1.0, 1.0])
+GRAVITY_RAMP_S = 1.0
+TAU_LIMIT = np.array([18.0, 18.0, 18.0, 7.0, 7.0, 7.0])  # N m: half the URDF efforts, a sanity bound
 HOST_ID = 0xFD
 MECH_POS = 0x7019
 MODELS = ("rs-06", "rs-06", "rs-06", "rs-00", "rs-00", "rs-00", "rs-00")
@@ -47,6 +60,24 @@ def sleep_pose(path: Path) -> np.ndarray:
     if pose.shape != (7,) or not np.isfinite(pose).all():
         raise ValueError("b601_park.toml needs seven finite joint angles")
     return pose
+
+
+def gripper_range(path: Path, closed: float) -> tuple[float, float]:
+    """The gripper motor's closed and open angles, radians.
+
+    ``gripper_closed_degrees`` and ``gripper_open_degrees`` in b601_park.toml, once measured
+    (``python -m trashdrop.b601_motor --read`` with the jaw shut, then open by hand). Until then:
+    ``closed`` (where it was at LIVE) and GRIP_ENVELOPE further.
+    """
+
+    values = tomllib.loads(path.read_text())
+    if "gripper_closed_degrees" in values and "gripper_open_degrees" in values:
+        shut, wide = math.radians(float(values["gripper_closed_degrees"])), math.radians(
+            float(values["gripper_open_degrees"]))
+        if math.isfinite(shut) and math.isfinite(wide) and shut != wide:
+            return shut, wide
+        raise ValueError("b601_park.toml: gripper_closed_degrees and gripper_open_degrees must differ")
+    return closed, closed + GRIP_ENVELOPE
 
 
 def velocity_step(current: np.ndarray, desired: np.ndarray, elapsed: float) -> np.ndarray:
@@ -92,6 +123,9 @@ class B601Motor:
     def __init__(self, *, channel: str, urdf: Path, park: Path) -> None:
         self.channel, self.urdf = channel, Path(urdf)
         self.park = sleep_pose(park)
+        self.park_file = Path(park)
+        self.grip_closed = self.grip_open = 0.0
+        self._enabled_at = math.inf
         self.controller = None
         self.motors = []
         self.enabled = []
@@ -165,7 +199,9 @@ class B601Motor:
                 if abs(self._read(motor) - angle) > math.radians(1):
                     raise RuntimeError(f"B601 J{index} moved unexpectedly while enabling")
             self._last_at = time.monotonic()
-            self.state = "holding: pinch with the right hand"
+            self._enabled_at = self._last_at
+            self.grip_closed, self.grip_open = gripper_range(self.park_file, float(present[6]))
+            self.state = "holding: pinch with either hand"
         except Exception:
             self.close()
             raise
@@ -222,16 +258,29 @@ class B601Motor:
         else:
             self.state = f"following the hand · {math.degrees(JOINT_SPEED):.0f}°/s max"
 
+    def _gravity(self, now: float) -> np.ndarray:
+        """This tick's gravity torques for the six arm joints, N m, faded in after enabling."""
+
+        import pinocchio as pin
+
+        q = np.zeros(self.model.nq)
+        q[:6] = self.command[:6]
+        torque = TAU_SCALE * np.asarray(pin.computeGeneralizedGravity(self.model, self.data, q))[:6]
+        fade = min(max((now - self._enabled_at) / GRAVITY_RAMP_S, 0.0), 1.0)
+        return np.clip(torque * fade, -TAU_LIMIT, TAU_LIMIT)
+
     def set_grip(self, open_grip: bool) -> None:
         self.set_grip_fraction(1.0 if open_grip else 0.0)
 
     def set_grip_fraction(self, fraction: float) -> None:
-        """Open the jaw this share of its travel (0: as it was at LIVE, GRIP_ENVELOPE further: 1)."""
+        """Open the jaw this share of the way from closed (0) to open (1): gripper_range."""
 
-        self.desired[6] = self.start[6] + GRIP_ENVELOPE * min(max(float(fraction), 0.0), 1.0)
+        share = min(max(float(fraction), 0.0), 1.0)
+        self.desired[6] = self.grip_closed + share * (self.grip_open - self.grip_closed)
 
     def grip_fraction(self) -> float:
-        return min(max(float(self.desired[6] - self.start[6]) / GRIP_ENVELOPE, 0.0), 1.0)
+        share = float(self.desired[6] - self.grip_closed) / (self.grip_open - self.grip_closed)
+        return min(max(share, 0.0), 1.0)
 
     def hold(self) -> None:
         self.target = None
@@ -262,8 +311,9 @@ class B601Motor:
             self._track(min(elapsed, 0.05))
         self.command = velocity_step(self.command, self.desired, elapsed)
         self._last_at = now
-        for motor, angle, (kp, kd) in zip(self.motors, self.command, GAINS):
-            motor.send_mit(float(angle), 0.0, kp, kd, 0.0)
+        torque = np.append(self._gravity(now), 0.0)  # the gripper holds by position alone
+        for motor, angle, (kp, kd), feed in zip(self.motors, self.command, GAINS, torque):
+            motor.send_mit(float(angle), 0.0, kp, kd, float(feed))
         motor = self.motors[self._feedback_index]
         actual = self._read(motor)
         self.feedback[self._feedback_index] = actual
@@ -304,3 +354,41 @@ class B601Motor:
             self.controller = None
         self.command = self.desired = None
         self.parking = False
+
+
+def read_angles(channel: str = "can0@1000000") -> np.ndarray:
+    """All seven motors' angles, degrees, enabling none: to measure the gripper, or a pose."""
+
+    from motorbridge import Controller
+
+    controller = Controller(channel)
+    motors = []
+    try:
+        for index, model_name in enumerate(MODELS, 1):
+            motors.append(controller.add_robstride_motor(index, HOST_ID, model_name))
+        return np.degrees([motor.robstride_get_param_f32_host_id(MECH_POS, HOST_ID, 500) for motor in motors])
+    finally:
+        for motor in motors:
+            motor.close()
+        try:
+            controller.close_bus()
+        finally:
+            controller.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m trashdrop.b601_motor",
+                                     description="B601-RS readings; stop `trashdrop web --b601` first (one CAN owner)")
+    parser.add_argument("--read", action="store_true", help="print all seven angles; enables no motor")
+    parser.add_argument("--channel", default="can0@1000000")
+    args = parser.parse_args(argv)
+    if not args.read:
+        parser.print_help()
+        return 1
+    angles = read_angles(args.channel)
+    print("B601 angles, degrees, J1..J6 then the gripper J7: " + ", ".join(f"{angle:.3f}" for angle in angles))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

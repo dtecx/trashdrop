@@ -10,7 +10,7 @@ thumb/middle touch held briefly, then a sideways move, turns it about the
 vertical (right: clockwise from above, 5 degrees a centimetre) without moving
 its position. Thumb/pinky touch held briefly, then a sideways move, sets the
 gripper: right closes, left opens, 10% of its travel a centimetre. Release
-any gesture to hold.
+any gesture to hold. Either hand drives: whichever starts a gesture.
 **NEUTRAL** parks to the recorded sleep pose and disables the motors; **HOLD**
 keeps the current position. The parked pose is in factory motor coordinates,
 not a new software zero. The one motion limit is 15 degrees/s per joint

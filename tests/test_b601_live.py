@@ -253,6 +253,59 @@ class B601ControlTests(unittest.TestCase):
         motion.update(touching(pinky=True, x=-20.0), 0, now=0.9)  # far right: shut, and no further
         self.assertEqual(motion.jaw, 0.0)
 
+    def test_either_hand_drives_whichever_starts_a_gesture(self) -> None:
+        def left(message: dict) -> dict:
+            return {"head": message["head"], "left": message["right"]}
+
+        motion = B601HandMotion(scale=1.0)
+        self.assertIsNone(motion.update(left(packet(pinch=False)), 0))
+        self.assertEqual(motion.side, "left")
+        motion.update(left(packet(pinch=True)), 0)
+        moved = motion.update(left(packet(pinch=True, y=2)), 0)
+        self.assertAlmostEqual(moved[0][2], 0.02)
+        both = {**packet(pinch=True, y=5), "left": left(packet(pinch=True, y=4))["left"]}
+        self.assertAlmostEqual(motion.update(both, 0)[0][2], 0.04, msg="mid-gesture the other hand cannot take over")
+
+    def test_the_gripper_range_comes_from_the_park_file_once_measured(self) -> None:
+        import tempfile
+
+        from trashdrop.b601_motor import GRIP_ENVELOPE, gripper_range
+
+        with tempfile.TemporaryDirectory() as folder:
+            park = Path(folder) / "park.toml"
+            park.write_text("joint_degrees = [0, 0, 0, 0, 0, 0, 0]\n")
+            self.assertEqual(gripper_range(park, 0.25), (0.25, 0.25 + GRIP_ENVELOPE))
+            park.write_text("joint_degrees = [0, 0, 0, 0, 0, 0, 0]\ngripper_closed_degrees = 10\n"
+                            "gripper_open_degrees = -80\n")
+            closed, opened = gripper_range(park, 0.25)
+            self.assertAlmostEqual(math.degrees(closed), 10)
+            self.assertAlmostEqual(math.degrees(opened), -80)
+
+    def test_web_b601_carries_on_in_the_sdk_environment_without_motorbridge(self) -> None:
+        import argparse
+        import os
+        import tempfile
+
+        from trashdrop import __main__ as cli
+
+        with tempfile.TemporaryDirectory() as folder:
+            python = Path(folder) / ".venv" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.touch()
+            args = argparse.Namespace(camera="auto")
+            with patch("trashdrop.b601_motor.B601_SDK", Path(folder)), \
+                    patch.object(cli, "_resolve_camera", return_value=0), \
+                    patch.object(cli.sys, "argv", ["trashdrop", "web", "--b601", "--open"]), \
+                    patch.dict(os.environ, {}, clear=False), \
+                    patch("os.execve") as execve:
+                os.environ.pop("TRASHDROP_IN_B601_SDK", None)
+                cli._web_in_b601_sdk(args)
+        program, argv, env = execve.call_args.args
+        self.assertEqual(program, str(python))
+        self.assertEqual(argv[1:], ["-m", "trashdrop", "web", "--b601", "--open", "--camera", "0"])
+        self.assertIn("PCBUSB", env["DYLD_LIBRARY_PATH"])
+        self.assertEqual(env["TRASHDROP_IN_B601_SDK"], "1")  # and so it cannot loop
+
 
 if __name__ == "__main__":
     unittest.main()

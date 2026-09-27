@@ -403,10 +403,30 @@ speed clip joint by joint bent its path. Now, as the SO-101 pinch mode does:
 Replayed on the 14:18 hand recording with the real URDF: the arm moves in 96%
 of the dragging ticks (at a joint limit in 1.5%), almost always at the 15
 degree/s cap, the tool 1.8 cm behind its target at the median, 6.7 cm at p90.
-Still to do: the motors sag about 2.3 degrees under gravity (no feed-forward;
-the SDK's `compute_generalized_gravity` with `tau_scale` from
-`config/rebotarm_rs.yaml` is the vetted fix); the dragging hand is the right
-one only.
+**Then (~15:20):**
+- `uv run trashdrop web --b601 --open` failed on LIVE with "No module named
+  'motorbridge'". The project environment (Python 3.13) has neither motorbridge
+  nor pinocchio; the SDK's (3.11) has both. `web --b601` without `--dry-run`
+  now finds the webcam where that works, then re-executes itself with the SDK
+  environment's Python (`B601_SDK/.venv/bin/python`), with `PYTHONPATH` set to
+  the repository, `DYLD_LIBRARY_PATH` to `B601_PCBUSB` and `--camera <index>`.
+  In the SDK environment the stream probing had been interrupted in
+  `capture.release()`. The paths can be overridden with `TRASHDROP_B601_SDK`
+  and `TRASHDROP_B601_PCBUSB`.
+- Gravity feed-forward, the vendor's own law (`GravityCompensation`): g(q)
+  from the URDF times `tau_scale` [1, .98, .98, 1, 1, 1], joint directions +1,
+  sent as the MIT torque. It fades in over 1 s after LIVE and is clamped to
+  half the URDF efforts. At the park pose it is 5.8 N m on J3: with kp 150
+  that is the 2.2 degrees the arm sagged by. If a joint sags more rather than
+  less, the sign is wrong, and the 5 degree did-not-follow hold catches it.
+- Either hand drives: between gestures, whichever starts one.
+- The gripper's range: `gripper_closed_degrees` and `gripper_open_degrees`
+  (motor J7) in `b601_park.toml`, once measured. Stop the web page, then run
+  `DYLD_LIBRARY_PATH=/private/tmp/trashdrop-pcbusb/PCBUSB PYTHONPATH=.
+  /private/tmp/trashdrop-rebot-sdk/.venv/bin/python -m trashdrop.b601_motor --read`
+  with the jaw shut, and again with it opened by hand. It enables no motor.
+  Until then the jaw moves `GRIP_ENVELOPE`, 5 degrees, from where it was at
+  LIVE.
 
 With the SO-101 arms removed, stop any earlier bridge (the Lens hand socket
 can have only one owner), then run the camera-only unified page in the

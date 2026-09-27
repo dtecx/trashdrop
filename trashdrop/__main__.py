@@ -899,6 +899,46 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     return 0
 
 
+def _b601_sdk_missing() -> bool:
+    import importlib.util
+
+    return any(importlib.util.find_spec(name) is None for name in ("motorbridge", "pinocchio"))
+
+
+def _web_in_b601_sdk(args: argparse.Namespace) -> int:
+    """Carry on in the B601 SDK's own environment, which has motorbridge and pinocchio.
+
+    `uv run trashdrop web --b601` runs in the project's environment (Python 3.13), which has
+    neither, and LIVE failed with "No module named 'motorbridge'" (2026-09-27). The webcam is
+    found here first and handed over by index, so the SDK's OpenCV does not probe the streams.
+    """
+
+    import os
+
+    from .b601_motor import B601_PCBUSB, B601_SDK
+    from .station import repository_root
+
+    python = B601_SDK / ".venv" / "bin" / "python"
+    if os.environ.get("TRASHDROP_IN_B601_SDK") or not python.exists():
+        print(f"B601 LIVE needs motorbridge and pinocchio: restore the B601 SDK at {B601_SDK} "
+              "(docs/SPECTACLES.md), or add --dry-run for the preview")
+        return 1
+    argv = sys.argv[1:]
+    if args.camera == "auto":
+        camera = str(_resolve_camera("auto", 1920, 1080))
+        if "--camera" in argv:
+            argv[argv.index("--camera") + 1] = camera
+        else:
+            argv = [value for value in argv if not value.startswith("--camera=")] + ["--camera", camera]
+    env = dict(os.environ, TRASHDROP_IN_B601_SDK="1")
+    for name, folder in (("PYTHONPATH", repository_root()), ("DYLD_LIBRARY_PATH", B601_PCBUSB)):
+        env[name] = os.pathsep.join(filter(None, [str(folder), env.get(name)]))
+    print(f"B601: carrying on in the SDK's environment ({python}), which has motorbridge and pinocchio",
+          flush=True)
+    os.execve(str(python), [str(python), "-m", "trashdrop", *argv], env)
+    return 1  # not reached
+
+
 def _cmd_web(args: argparse.Namespace) -> int:
     """The cell's page: the overhead stream with what it sees drawn over it, and its controls."""
 
@@ -915,12 +955,14 @@ def _cmd_web(args: argparse.Namespace) -> int:
     if args.b601 and args.arm:
         print("--b601 runs with the SO-101 arms unplugged; omit --arm")
         return 1
+    if args.b601 and not args.dry_run and _b601_sdk_missing():
+        return _web_in_b601_sdk(args)
     if args.b601:
+        from .b601_motor import B601_SDK
         from .web.b601 import B601WebControl
 
         cell = Cell.open_camera_only(camera=args.camera)
-        spectacles = B601WebControl(cell, live_allowed=not args.dry_run,
-                                    sdk_root=Path("/private/tmp/trashdrop-rebot-sdk"))
+        spectacles = B601WebControl(cell, live_allowed=not args.dry_run, sdk_root=B601_SDK)
     elif args.demo:
         out = repository_root() / "out"
         cell = Cell.demo(empty=out / "pick_background.jpg", item=out / "pick_frame.jpg")

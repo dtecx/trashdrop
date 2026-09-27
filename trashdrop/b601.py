@@ -128,7 +128,8 @@ class B601HandMotion:
     limit and silently blocked lifting. Thumb-pinky touch sets the jaw the same
     way, JAW_PER_CM of its travel a centimetre (right closes, left opens),
     into ``jaw`` (0 closed, 1 open); it used to toggle open and shut. Missing
-    tracking releases any clutch.
+    tracking releases any clutch. Either hand drives: between gestures,
+    whichever starts one (it was the right hand only).
     """
 
     def __init__(self, scale: float = 1.0) -> None:
@@ -137,62 +138,82 @@ class B601HandMotion:
         self.anchor: tuple[np.ndarray, np.ndarray] | None = None  # palm point, wearer-to-base mapping
         self.gesture = "free"
         self.anchor_generation = 0
+        self.side = "right"  # the hand that drives: between gestures, whichever starts one
         self._middle_since: float | None = None
         self._pinky_since: float | None = None
         self.jaw = 0.0  # how far open the jaw is to be: 0 closed, 1 open
         self._jaw_start = 0.0
         self.state = "release pinch to arm"
 
+    @staticmethod
+    def _read(hand) -> dict | None:
+        """A tracked, sound hand's palm centre and finger gaps (cm); None for anything less."""
+
+        if not isinstance(hand, dict) or not hand.get("tracked"):
+            return None
+        try:
+            points = {name: np.asarray(hand[name], dtype=float)
+                      for name in ("thumb", "index", "middleTip", "wrist", "middleKnuckle")}
+        except (KeyError, TypeError, ValueError):
+            return None
+        if any(point.shape != (3,) or not np.isfinite(point).all() for point in points.values()):
+            return None
+        thumb = points["thumb"]
+        try:
+            pinky = np.asarray(hand["pinkyTip"], dtype=float)
+            pinky_gap = float(np.linalg.norm(thumb - pinky)) if pinky.shape == (3,) else math.inf
+        except (KeyError, TypeError, ValueError):
+            pinky_gap = math.inf
+        index_gap = float(np.linalg.norm(thumb - points["index"]))
+        middle_gap = float(np.linalg.norm(thumb - points["middleTip"]))
+        detected = hand.get("pinch")
+        pinched = detected if isinstance(detected, bool) else index_gap < 2.5
+        return {"point": (points["wrist"] + points["middleKnuckle"]) / 2, "pinched": pinched,
+                "index_gap": index_gap, "middle_gap": middle_gap,
+                "pinky_gap": pinky_gap if math.isfinite(pinky_gap) else math.inf}
+
+    @staticmethod
+    def _touches(read: dict) -> tuple[bool, bool]:
+        """Thumb on the middle tip, thumb on the pinky tip: the index well apart, no pinch."""
+
+        apart = not read["pinched"] and read["index_gap"] > 4.0
+        return (apart and read["middle_gap"] < 2.5 and read["pinky_gap"] > 3.0,
+                apart and read["pinky_gap"] < 2.5 and read["middle_gap"] > 3.0)
+
     def update(self, packet: dict | None, age: float, *, now: float | None = None
                ) -> tuple[np.ndarray, np.ndarray] | None:
         now = time.monotonic() if now is None else now
-        hand = packet.get("right") if isinstance(packet, dict) and age <= 0.3 else None
+        fresh = isinstance(packet, dict) and age <= 0.3
         head = packet.get("head") if isinstance(packet, dict) else None
-        if not isinstance(hand, dict) or not hand.get("tracked") or not isinstance(head, dict):
+        if fresh and self.anchor is None:  # between gestures either hand may take over
+            other = "left" if self.side == "right" else "right"
+            mine, theirs = self._read(packet.get(self.side)), self._read(packet.get(other))
+            busy = lambda read: read is not None and (read["pinched"] or any(self._touches(read)))
+            if theirs is not None and (mine is None or (busy(theirs) and not busy(mine))):
+                self.side, self._middle_since, self._pinky_since = other, None, None
+        read = self._read(packet.get(self.side)) if fresh else None
+        try:
+            look = np.asarray(head["look"], dtype=float)
+            eye = np.asarray(head["p"], dtype=float)
+            if look.shape != (3,) or eye.shape != (3,) or not np.isfinite(np.concatenate((look, eye))).all():
+                raise ValueError("invalid head")
+        except (KeyError, TypeError, ValueError):
+            read = None
+        if read is None:
             self.anchor = None
             self.ready = False
             self.gesture = "free"
             self._middle_since = self._pinky_since = None
             self.state = "hand lost: holding"
             return None
-        try:
-            thumb = np.asarray(hand["thumb"], dtype=float)
-            index = np.asarray(hand["index"], dtype=float)
-            middle = np.asarray(hand["middleTip"], dtype=float)
-            wrist = np.asarray(hand["wrist"], dtype=float)
-            knuckle = np.asarray(hand["middleKnuckle"], dtype=float)
-            look = np.asarray(head["look"], dtype=float)
-            eye = np.asarray(head["p"], dtype=float)
-            if any(value.shape != (3,) or not np.isfinite(value).all()
-                   for value in (thumb, index, middle, wrist, knuckle, look, eye)):
-                raise ValueError("invalid tracking vector")
-        except (KeyError, TypeError, ValueError):
-            self.anchor = None
-            self.ready = False
-            self.gesture = "free"
-            self._middle_since = self._pinky_since = None
-            self.state = "tracking incomplete: holding"
-            return None
 
-        point = (wrist + knuckle) / 2
-        index_gap = float(np.linalg.norm(thumb - index))
-        middle_gap = float(np.linalg.norm(thumb - middle))
-        detected = hand.get("pinch")
-        pinched = detected if isinstance(detected, bool) else index_gap < 2.5
-        try:
-            pinky = np.asarray(hand["pinkyTip"], dtype=float)
-            pinky_gap = float(np.linalg.norm(thumb - pinky)) if pinky.shape == (3,) else math.inf
-        except (KeyError, TypeError, ValueError):
-            pinky_gap = math.inf
-        if not math.isfinite(pinky_gap):
-            pinky_gap = math.inf
-        middle_touch = not pinched and index_gap > 4.0 and middle_gap < 2.5 and pinky_gap > 3.0
-        pinky_touch = not pinched and index_gap > 4.0 and pinky_gap < 2.5 and middle_gap > 3.0
+        point, pinched = read["point"], read["pinched"]
+        middle_touch, pinky_touch = self._touches(read)
         self._middle_since = (self._middle_since or now) if middle_touch else None
         self._pinky_since = (self._pinky_since or now) if pinky_touch else None
-        turning = (self.gesture == "turn" and not pinched and index_gap > 3.5 and middle_gap < 3.5)
+        turning = (self.gesture == "turn" and not pinched and read["index_gap"] > 3.5 and read["middle_gap"] < 3.5)
         turning = turning or (middle_touch and now - self._middle_since >= 0.15)
-        gripping = (self.gesture == "grip" and not pinched and index_gap > 3.5 and pinky_gap < 3.5)
+        gripping = (self.gesture == "grip" and not pinched and read["index_gap"] > 3.5 and read["pinky_gap"] < 3.5)
         gripping = gripping or (pinky_touch and now - self._pinky_since >= 0.15)
         gesture = "drag" if pinched else "turn" if turning else "grip" if gripping else "free"
         if gesture == "free":
