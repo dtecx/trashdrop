@@ -13,6 +13,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -20,6 +21,7 @@ import pytest
 pytest.importorskip("cv2", reason="needs the dataset extra")
 
 from trashdrop.web.server import make_server  # noqa: E402
+from trashdrop.web.manual import ManualBridge  # noqa: E402
 
 
 class StandInCell:
@@ -59,6 +61,7 @@ class StandInSpectacles:
         self.folder = folder
         self.active = False
         self.presentation = False
+        self.manual_options = None
         self.commands = []
         self.spectator = type("Spectator", (), {"latest": lambda _self: (jpeg, 4)})()
 
@@ -83,6 +86,10 @@ class StandInSpectacles:
 
     def set_presentation(self, enabled):
         self.presentation = enabled
+        return None
+
+    def configure(self, **options):
+        self.manual_options = options
         return None
 
 
@@ -160,11 +167,12 @@ class SpectaclesServerTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             return response.status, json.loads(response.read())
 
-    def test_presentation_starts_manual_mode(self) -> None:
+    def test_presentation_opens_the_glasses_ui_without_moving_the_arms(self) -> None:
         status, reply = self.post("/api/spectacles/presentation", {"enabled": True, "mode": "pinch", "scale": 0.5})
         self.assertEqual((status, reply["ok"]), (200, True))
-        self.assertTrue(self.spectacles.active)
+        self.assertFalse(self.spectacles.active)
         self.assertTrue(self.spectacles.presentation)
+        self.assertEqual(self.spectacles.manual_options, {"mode": "pinch", "scale": 0.5, "facing": "same"})
         self.post("/api/spectacles/presentation", {"enabled": False})
         self.assertFalse(self.spectacles.active)
         self.assertFalse(self.spectacles.presentation)
@@ -173,6 +181,67 @@ class SpectaclesServerTests(unittest.TestCase):
         self.spectacles.active = True
         self.post("/api/spectacles/command", {"command": "home"})
         self.assertEqual(self.spectacles.commands, [{"command": "home"}])
+
+
+class SpectaclesControlsTests(unittest.TestCase):
+    def test_glasses_switch_between_hand_control_auto_neutral_and_web(self) -> None:
+        actions = []
+
+        class Cell:
+            busy = None
+            auto = False
+
+            def begin(self, action):
+                actions.append(action)
+                self.busy = action
+                self.auto = action == "auto"
+                return None
+
+            def stop(self):
+                actions.append("stop")
+                self.busy = None
+                self.auto = False
+
+        bridge = ManualBridge.__new__(ManualBridge)
+        bridge.cell = Cell()
+        bridge.hands = SimpleNamespace(presentation=True)
+        bridge.active = bridge.starting = False
+        bridge.mode, bridge.scale, bridge.facing = "pinch", 0.5, "same"
+        bridge._wait_for_cell = lambda timeout=5.0: None
+        bridge.set_presentation = lambda enabled: setattr(bridge.hands, "presentation", enabled)
+
+        def start(**options):
+            actions.append(("manual", options))
+            bridge.active, bridge.cell.busy = True, "spectacles"
+
+        def stop():
+            actions.append("manual stop")
+            bridge.active, bridge.cell.busy = False, None
+
+        bridge.start, bridge.stop = start, stop
+        self.assertIsNone(bridge._run_lens_command({"command": "manual", "enabled": True}))
+        self.assertIsNone(bridge._run_lens_command({"command": "auto", "enabled": True}))
+        self.assertIsNone(bridge._run_lens_command({"command": "neutral"}))
+        self.assertIsNone(bridge._run_lens_command({"command": "presentation", "enabled": False}))
+        self.assertEqual(actions, [("manual", {"mode": "pinch", "scale": 0.5, "facing": "same"}),
+                                   "manual stop", "auto", "stop", "neutral"])
+        self.assertFalse(bridge.hands.presentation)
+
+    def test_spectacles_video_draws_the_same_sorting_information_as_the_page(self) -> None:
+        source = np.zeros((120, 240, 3), dtype=np.uint8)
+        state = {"scene": {"size": [240, 120], "zone": [[40, 25], [200, 25], [200, 100], [40, 100]],
+                           "searched": [], "bases": {}, "drops": {}, "sides": {}},
+                 "last": {"outline": [[80, 45], [125, 45], [125, 80], [80, 80]],
+                          "fixed": [90, 60], "moving": [115, 60],
+                          "probabilities": {"plastic": 0.92}, "arm": "left"}}
+        bridge = ManualBridge.__new__(ManualBridge)
+        bridge.active = bridge.starting = False
+        bridge.cell = SimpleNamespace(state=lambda: state)
+        annotated = bridge._decorate_video(source)
+        self.assertTrue(np.any(annotated != source))
+        self.assertEqual(int(source.sum()), 0, "the camera frame shared with the web page is untouched")
+        bridge.active = True
+        self.assertIs(bridge._decorate_video(source), source, "manual control needs an unobscured view")
 
 
 if __name__ == "__main__":

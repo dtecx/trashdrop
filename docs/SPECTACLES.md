@@ -38,8 +38,8 @@ to send the Lens to the glasses (see "Lens Studio facts").
 | `trashdrop/web/manual.py` | The unified page's owner of both Spectacles sockets, overhead stream and exclusive manual session. It reuses the cell's already-open camera and arm objects, so no bus is opened twice |
 | `spectacles/spectacles/` | Lens Studio **5.15.4** project (committed). Scripts in `Assets/Scripts/` |
 | `.../Assets/Scripts/HandStream.ts` | Sends both hands ~30/s and handles requested optical snapshots / spectator frames by encoding the colour camera and Lens render target. `previewToo` is off, so the LS preview does not connect |
-| `.../Assets/Scripts/SpectaclesUI.ts` | World-locked per-arm cards, hand labels and UIKit menu: grips, fine mode, park, hold/resume, re-center and return to Web UI |
-| `.../Assets/Scripts/WebcamView.ts` | Video WebSocket 8766 -> `Base64.decodeTextureAsync` -> a movable/resizable UIKit Frame. The cropped image is letterboxed to preserve its complete width |
+| `.../Assets/Scripts/SpectaclesUI.ts` | World-locked per-arm cards, hand labels and four UIKit controls: manual hand control, auto sort, neutral and exit |
+| `.../Assets/Scripts/WebcamView.ts` | Video WebSocket 8766 -> `Base64.decodeTextureAsync` -> a movable/resizable UIKit Frame. Sorting overlays are burned into the camera stream by `trashdrop/web/overlay.py`; manual mode keeps the camera unobscured |
 | `tests/test_spectacles.py` | Socket, snapshots, spectator stream, video pacing, wearer frame, calibration, joystick, pinch, fist/jaw and two-arm-clearance tests |
 | `trashdrop/kinematics.py` `links()` | The arm's centre line (foot, lift, elbow, wrist, TCP) for keeping the arms apart |
 | `trashdrop/placement.py` `to_sheet()` | Arm frame -> sheet frame (inverse of `to_arm`) |
@@ -108,6 +108,7 @@ not draw it yet.
 
 ```json
 {"status": "left: free | right: dragging: at the table (dry run)",
+ "manual": true, "auto": false, "busy": "spectacles", "presentation": true,
  "hands": {"right": {"mode": "moving", "blocked": ["down"], "tip": 3}}}
 ```
 
@@ -116,6 +117,10 @@ arm): `mode` (holding/moving/turning/lost/centring/calibrating), `blocked`
 (directions in the wearer's words), `tip` (fingertip cm above the table);
 joystick mode adds `centre`, `axes`, `half` (the dead-zone box). The Lens
 falls back to showing plain text from an older bridge.
+The unified web bridge adds `manual`, `auto`, `busy`, `controlError` and
+`presentation` even when no hand follower is running, so the four controls
+show the actual cell state. Lens commands are `manual` and `auto` with an
+`enabled` boolean, `neutral`, and `presentation` with `enabled: false`.
 
 ### Video
 
@@ -254,17 +259,22 @@ findings above were made; no replay tool is in the repo yet (worth adding).
    composite to `out/spectacles/snaps/`. Still needs a real-glasses capture
    after the next Preview Lens push.
 2. **Proper UIKit interface: built in `bc097ef`.** The video is in a movable,
-   resizable Frame; arm cards, hand labels and the grips / precision / home /
-   stop menu are world-locked. The controls were subsequently made explicit:
-   open/close grips, fine/normal mode, park arms, hold/resume, re-center the
-   complete layout and exit to the web UI. The next real optical snapshots
-   decide final type and angular sizes.
+   resizable Frame; arm cards, hand labels and four mode controls are
+   world-locked. **MANUAL ON/OFF** starts or stops following the wearer's
+   tracked hands; **AUTO ON/OFF** starts or stops ordinary sorting; **NEUTRAL**
+   stops the active mode and returns both arms to their saved neutral poses;
+   **EXIT UI** returns to the web controls. Starting a mode first releases the
+   previous owner of the arms. The next real optical snapshots decide final
+   type and angular sizes.
 3. **Unified jury page: implemented locally after `bc097ef`, real-device QA
    pending.** `trashdrop web` owns the existing Cell and the Spectacles
    bridge together. It has auto sort/pick, manual start/stop/mode, arm state,
    snapshots and the complete calibration checklist. **Enter Spectacles UI**
    hides every ordinary web control and shows only the stable overhead camera;
-   **EXIT UI** in the glasses stops manual mode and restores the page. The raw
+   it does not start manual mode or move the arms. **EXIT UI** in the glasses
+   stops manual mode and restores the page, while auto sorting can continue.
+   The video Frame shows the camera with zone, arm, drop, item, grasp and class
+   overlays outside manual mode. The raw
    optical spectator stream works, but is deliberately parked while the Lens
    UI is tuned. The overhead Frame now contains the whole cropped width instead
    of cropping its left edge. Next: push Preview Lens, test this round trip and

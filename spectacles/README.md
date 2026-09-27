@@ -68,6 +68,17 @@ say which way ("back to the middle: up 6 cm"). Both hands out of sight for
 
 ## The Mac
 
+For the unified jury demo, run `uv run trashdrop web --dry-run --open` and
+select **Enter Spectacles UI** on the page. Entering only opens the glasses
+interface; it does not move the arms. The glasses show four controls:
+**MANUAL ON/OFF** follows the wearer's two tracked hands, **AUTO ON/OFF**
+sorts without hand control, **NEUTRAL** returns both arms to their saved
+upright pose, and **EXIT UI** returns to the web controls. Manual mode uses
+the hand-control scheme selected on the page before entering. In auto mode,
+the video Frame shows the same sorting information as the web page drawn
+over the overhead camera; in manual mode it shows the clear camera feed.
+The modes share the web process and its already-open arm buses.
+
     uv run python -m trashdrop.spectacles --dry-run   # first: no arms, just the link and where they would go
     uv run python -m trashdrop.spectacles             # then the arms (stop `trashdrop web` first: one program a bus)
 

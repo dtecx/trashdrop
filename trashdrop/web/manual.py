@@ -75,11 +75,13 @@ class ManualBridge:
             self.folder / "snaps", self.folder / "snap", log=self.cell.log), spectator=self.spectator)
         self.hands.presentation = False
         self.hands.command_handler = self._lens_command
+        self.hands.context = self._report_context
         self.hand_server = self.video_server = self.video = None
         self._servers_started = False
         self.network_error: str | None = None
         self.urls: dict[str, str] = {}
         self._lock = threading.Lock()
+        self._command_lock = threading.Lock()
         self._shutdown = threading.Event()
         self._thread: threading.Thread | None = None
         self.active = False
@@ -89,17 +91,94 @@ class ManualBridge:
         self.facing = "same"
         self.dry_run = True
         self.error: str | None = None
+        self.control_error: str | None = None
+        self._overlay_error_at = 0.0
+
+    def _report_context(self) -> dict:
+        """Tell the Lens which mode actually owns the arms, even without a follower."""
+
+        manual = self.active or self.starting
+        auto = self.cell.auto or self.cell.busy == "auto"
+        context = {"manual": manual, "auto": auto, "busy": self.cell.busy,
+                   "controlError": self.control_error}
+        if not manual:
+            context.update(arms={}, hands={}, status=("auto sort: running" if auto else
+                           "moving arms to neutral" if self.cell.busy == "neutral" else "ready"))
+        return context
 
     def _lens_command(self, message: dict) -> bool:
-        """Handle navigation that belongs to the demo shell, not to an arm follower."""
+        """Run the four Lens controls through the same cell owner as the web page."""
 
-        if message.get("command") != "presentation":
+        action = message.get("command")
+        if action not in ("presentation", "manual", "auto", "neutral"):
             return False
-        if message.get("enabled") is False:
+        with self._command_lock:
+            self.control_error = self._run_lens_command(message)
+        if self.control_error:
+            self.cell.log("Spectacles control: " + self.control_error)
+        return True
+
+    def _wait_for_cell(self, timeout: float = 5.0) -> str | None:
+        deadline = time.monotonic() + timeout
+        while self.cell.busy is not None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return f"busy: {self.cell.busy}" if self.cell.busy is not None else None
+
+    def _run_lens_command(self, message: dict) -> str | None:
+        action = message["command"]
+        if action == "presentation":
+            if message.get("enabled") is not False:
+                return "use the web page to enter Spectacles UI"
             self.set_presentation(False)
             if self.active or self.starting:
-                threading.Thread(target=self.stop, name="spectacles-exit", daemon=True).start()
-        return True
+                self.stop()
+            return None
+        if not self.hands.presentation:
+            return "enter Spectacles UI from the web page first"
+        if action == "manual":
+            if message.get("enabled") is False:
+                if self.active or self.starting:
+                    self.stop()
+                return None
+            if self.active or self.starting:
+                return None
+            if self.cell.busy == "auto":
+                self.cell.stop()
+                error = self._wait_for_cell()
+                if error:
+                    return error
+            return self.start(mode=self.mode, scale=self.scale, facing=self.facing)
+        if action == "auto":
+            if message.get("enabled") is False:
+                if self.cell.busy == "auto":
+                    self.cell.stop()
+                return None
+            if self.cell.busy == "auto":
+                return None
+            if self.active or self.starting:
+                self.stop()
+                error = self._wait_for_cell()
+                if error:
+                    return error
+            return self.cell.begin("auto")
+        if self.active or self.starting:
+            self.stop()
+        if self.cell.busy == "auto":
+            self.cell.stop()
+        error = self._wait_for_cell()
+        return error or self.cell.begin("neutral")
+
+    def configure(self, *, mode: str = "pinch", scale: float = SCALE, facing: str = "same") -> str | None:
+        """Save the manual settings selected before entering the glasses UI."""
+
+        if mode not in ("pinch", "joystick"):
+            return "mode must be pinch or joystick"
+        if facing not in ("same", "them"):
+            return "facing must be same or them"
+        if not 0 < float(scale) <= 3:
+            return "scale must be above 0 and at most 3"
+        self.mode, self.scale, self.facing = mode, float(scale), facing
+        return None
 
     def start_network(self) -> None:
         """Start both WebSockets without taking control of either arm."""
@@ -110,7 +189,7 @@ class ManualBridge:
             reference_size = tuple(self.cell.scene()["size"])
             self.video = VideoFrames(capture, fps=self.video_fps, width=self.video_width,
                                      quality=self.video_quality, tape_pixels=self.cell.rig.tape_pixels,
-                                     reference_size=reference_size)
+                                     reference_size=reference_size, decorate=self._decorate_video)
             self.video_server = make_video_server(self.video, "0.0.0.0", self.video_port)
             self.video.start()
             threading.Thread(target=self.hand_server.serve_forever, name="spectacles-hands", daemon=True).start()
@@ -128,6 +207,23 @@ class ManualBridge:
             self.network_error = str(error)
             self.cell.log(f"Spectacles bridge unavailable: {error}")
             self._close_network()
+
+    def _decorate_video(self, frame):
+        """Mirror the web overlays during sorting; hand control gets a clear view."""
+
+        if self.active or self.starting:
+            return frame
+        from .overlay import draw
+
+        try:
+            return draw(frame, self.cell.state())
+        except Exception as error:
+            # A bad annotation must not tear down the glasses' video socket.
+            now = time.monotonic()
+            if now - self._overlay_error_at > 10:
+                self._overlay_error_at = now
+                self.cell.log(f"Spectacles video overlay unavailable: {error}")
+            return frame
 
     def start(self, *, mode: str = "pinch", scale: float = SCALE, facing: str = "same") -> str | None:
         """Reserve the arms and start following hands; return why that was refused."""
@@ -221,6 +317,9 @@ class ManualBridge:
         return "Spectacles manual mode stopped; the arms hold where they are"
 
     def command(self, message: dict) -> str | None:
+        if message.get("command") in ("presentation", "manual", "auto", "neutral"):
+            self._lens_command(message)
+            return self.control_error
         if not self.active:
             return "manual mode is not running"
         if message.get("command") not in ("jaw", "precision", "home", "hold", "stop"):
@@ -240,6 +339,7 @@ class ManualBridge:
 
         if enabled and not self.hands.connected:
             return "the glasses are not connected"
+        self.control_error = None
         self.hands.presentation = bool(enabled)
         # Raw optical streaming is parked while the on-device UI is tuned.
         # Keep the encoder idle; the jury page uses the stable overhead camera.
@@ -253,6 +353,7 @@ class ManualBridge:
             report = json.loads(self.hands.report) if self.hands.report else {}
         except ValueError:
             report = {"status": self.hands.status}
+        context = self._report_context()
         snaps = []
         folder = self.folder / "snaps"
         if folder.is_dir():
@@ -273,9 +374,9 @@ class ManualBridge:
             "facing": self.facing,
             "dry_run": self.dry_run,
             "error": self.error,
-            "status": report.get("status", self.hands.status),
-            "hands": report.get("hands", {}),
-            "arms": report.get("arms", {}),
+            "status": context.get("status", report.get("status", self.hands.status)),
+            "hands": report.get("hands", {}) if context["manual"] else {},
+            "arms": report.get("arms", {}) if context["manual"] else {},
             "stopped": report.get("stopped", False),
             "presentation": bool(self.hands.presentation),
             "optical_stream": False,

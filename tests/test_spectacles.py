@@ -273,6 +273,17 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(received, [{"command": "presentation", "enabled": False}])
         self.assertEqual(hands.take_commands(), [])
 
+    def test_the_glasses_receive_mode_state_without_a_running_follower(self) -> None:
+        hands = Hands()
+        hands.presentation = True
+        hands.context = lambda: {"manual": False, "auto": True, "busy": "auto", "arms": {},
+                                 "status": "auto sort: running"}
+        report = json.loads(hands.answer())
+        self.assertTrue(report["presentation"])
+        self.assertTrue(report["auto"])
+        self.assertFalse(report["manual"])
+        self.assertEqual(report["status"], "auto sort: running")
+
 
 class VideoSocketTests(unittest.TestCase):
     def test_video_sends_the_newest_jpeg_with_capture_time(self) -> None:

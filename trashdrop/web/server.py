@@ -178,11 +178,11 @@ def make_handler(cell, spectacles=None):
                         spectacles.set_presentation(False)
                         message = spectacles.stop() if spectacles.active else "returned to the web controls"
                         return self._json({"ok": True, "message": message})
-                    error = spectacles.set_presentation(True)
-                    if error is None and not spectacles.active:
-                        error = spectacles.start(mode=body.get("mode", "pinch"),
-                                                  scale=float(body.get("scale", 1.0)),
-                                                  facing=body.get("facing", "same"))
+                    error = spectacles.configure(mode=body.get("mode", "pinch"),
+                                                 scale=float(body.get("scale", 1.0)),
+                                                 facing=body.get("facing", "same"))
+                    if error is None:
+                        error = spectacles.set_presentation(True)
                     if error is not None:
                         spectacles.set_presentation(False)
                     return self._json({"ok": error is None, "error": error}, 200 if error is None else 409)

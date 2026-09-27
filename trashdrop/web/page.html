@@ -132,7 +132,7 @@
   </section>
   <aside>
     <div class="card">
-      <h2>Spectacles manual mode</h2>
+      <h2>Spectacles</h2>
       <div class="manual-status" id="manual-status">bridge starting…</div>
       <div class="row"><label for="manual-mode">Hand control</label><select id="manual-mode"><option value="pinch">pinch and drag</option><option value="joystick">joystick</option></select></div>
       <div class="row"><label for="manual-scale">Precision</label><select id="manual-scale"><option value="1">normal · 1×</option><option value="0.5">precise · ½×</option></select></div>
@@ -368,7 +368,7 @@ function renderManual(s) {
   $('manual-status').innerHTML = p.available === false ? `<b style="color:var(--danger)">${esc(p.network_error || 'bridge unavailable')}</b>` : `${link}${running}`;
   $('manual-start').disabled = !p.available || !!p.active || !!s.busy;
   $('manual-stop').disabled = !p.active;
-  $('presentation').disabled = !p.connected || (!!s.busy && !p.active);
+  $('presentation').disabled = !p.connected;
   $('manual-grip').disabled = !p.active;
   $('manual-home').disabled = !p.active;
   $('snapshot').disabled = !p.connected;
@@ -384,7 +384,7 @@ function renderManual(s) {
   }).join('');
   $('snapshots').innerHTML = (p.snapshots || []).slice(0, 6).map((shot) =>
     `<a href="${esc(shot.composite)}" target="_blank" title="camera + Lens render"><img src="${esc(shot.composite)}" alt="Spectacles snapshot"></a>`).join('');
-  $('presentation-caption').textContent = `${p.status || 'Spectacles UI'} · overhead camera · tap WEB UI in the glasses to return`;
+  $('presentation-caption').textContent = `${p.status || 'Spectacles UI'} · overhead camera · tap EXIT UI in the glasses to return`;
 }
 
 function renderCalibrations(items) {
@@ -442,15 +442,14 @@ $('dry').addEventListener('click', () => post('/api/options', { dry_run: !(state
 function manualOptions() {
   return { mode: $('manual-mode').value, scale: Number($('manual-scale').value), facing: $('manual-facing').value };
 }
-async function startManual(presentation) {
+async function startManual() {
   if (!state) return;
   if (!state.options.dry_run && !confirm('The real arms will move to their ready pose, then follow your hands. Is the shared volume clear?')) return;
-  const path = presentation ? '/api/spectacles/presentation' : '/api/spectacles/start';
-  await post(path, { ...manualOptions(), ...(presentation ? { enabled: true } : {}) });
+  await post('/api/spectacles/start', manualOptions());
 }
-$('manual-start').addEventListener('click', () => startManual(false));
+$('manual-start').addEventListener('click', startManual);
 $('manual-stop').addEventListener('click', () => post('/api/spectacles/stop'));
-$('presentation').addEventListener('click', () => startManual(true));
+$('presentation').addEventListener('click', () => post('/api/spectacles/presentation', { ...manualOptions(), enabled: true }));
 $('manual-grip').addEventListener('click', () => post('/api/spectacles/command', { command: 'jaw' }));
 $('manual-home').addEventListener('click', () => post('/api/spectacles/command', { command: 'home' }));
 $('snapshot').addEventListener('click', () => post('/api/spectacles/snapshot'));

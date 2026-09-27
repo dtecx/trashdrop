@@ -33,17 +33,15 @@ const HIDE_DELAY_S = 1;
 export class SpectaclesUI {
   private cards: { left: Card; right: Card };
   private view: Camera;
-  private precision = false;
-  private jawOpen = false;
-  private precisionLabel: Text;
-  private gripLabel: Text;
-  private holdLabel: Text;
-  private stopped = false;
+  private manualActive = false;
+  private autoActive = false;
+  private manualLabel: Text;
+  private autoLabel: Text;
+  private modeLabel: Text;
   private menu: SceneObject;
   private video: SceneObject | null = null;
   private presentationVisible = true;
   private hideAt = 0;
-  private recenterRequested = false;
 
   constructor(private camera: SceneObject, private send: (command: Command) => void) {
     this.view = camera.getComponent("Component.Camera") as Camera;
@@ -66,28 +64,24 @@ export class SpectaclesUI {
     if (typeof report.presentation === "boolean") {
       this.setPresentation(report.presentation);
     }
-    const arms = report && typeof report === "object" ? report.arms || report.hands || {} : {};
+    this.manualActive = report.manual === true;
+    this.autoActive = report.auto === true;
+    const arms = report && typeof report === "object" && report.manual ? report.arms || report.hands || {} : {};
     for (const side of ["left", "right"] as const) {
       const guide = arms[side] && typeof arms[side] === "object" ? arms[side] as ArmGuide : null;
       this.cards[side].guide = guide;
       this.renderCard(side, guide);
     }
-    this.precision = typeof report.scale === "number" && report.scale <= 0.5;
-    this.stopped = report.stopped === true;
-    this.setText(this.precisionLabel, this.precision ? "NORMAL MODE" : "FINE MODE");
-    this.setText(this.holdLabel, this.stopped ? "RESUME" : "HOLD ARMS");
-    const jaws = [this.cards.left.guide, this.cards.right.guide]
-      .filter((guide) => guide !== null && typeof guide.jaw === "number") as ArmGuide[];
-    this.jawOpen = jaws.length > 0 && jaws.every((guide) => (guide.jaw as number) >= OPEN_PERCENT);
-    this.setText(this.gripLabel, this.jawOpen ? "CLOSE GRIPS" : "OPEN GRIPS");
+    this.setText(this.manualLabel, this.manualActive ? "MANUAL OFF" : "MANUAL ON");
+    this.setText(this.autoLabel, this.autoActive ? "AUTO OFF" : "AUTO ON");
+    const mode = typeof report.controlError === "string" && report.controlError ? report.controlError :
+      this.manualActive ? "MANUAL: HAND CONTROL" : this.autoActive ? "AUTO: SORTING" :
+      report.busy === "neutral" ? "MOVING TO NEUTRAL" : "READY";
+    this.setText(this.modeLabel, mode.toUpperCase());
   }
 
   public updateHands(message: any) {
     this.applyDelayedHide();
-    if (this.recenterRequested) {
-      this.recenterRequested = false;
-      this.layout();
-    }
     for (const side of ["left", "right"] as const) {
       const hand = message && message[side];
       const marker = this.cards[side].marker;
@@ -123,30 +117,21 @@ export class SpectaclesUI {
   private createMenu(): SceneObject {
     const menu = global.scene.createSceneObject("Arm Control Menu");
     this.place(menu, new vec2(0.5, 0.82), 62);
-    const grip = this.createButton(menu, "OPEN GRIPS", -7.6, 2.1, () => {
-      this.send({ command: "jaw", open: !this.jawOpen });
+    const modeObject = global.scene.createSceneObject("Control Mode");
+    modeObject.setParent(menu);
+    modeObject.getTransform().setLocalPosition(new vec3(0, 5.1, 0));
+    this.modeLabel = this.createText(modeObject, 19, 2.4, 17);
+    this.modeLabel.text = "READY";
+    const manual = this.createButton(menu, "MANUAL ON", -4.6, 2.1, () => {
+      this.send({ command: "manual", enabled: !this.manualActive });
     });
-    this.gripLabel = grip.label;
-    const precision = this.createButton(menu, "FINE MODE", 0, 2.1, () => {
-      this.precision = !this.precision;
-      this.setText(this.precisionLabel, this.precision ? "NORMAL MODE" : "FINE MODE");
-      this.send({ command: "precision", enabled: this.precision });
+    this.manualLabel = manual.label;
+    const auto = this.createButton(menu, "AUTO ON", 4.6, 2.1, () => {
+      this.send({ command: "auto", enabled: !this.autoActive });
     });
-    this.precisionLabel = precision.label;
-    this.createButton(menu, "PARK ARMS", 7.6, 2.1, () => this.send({ command: "home" }));
-    const hold = this.createButton(menu, "HOLD ARMS", -7.6, -2.1, () => {
-      this.stopped = !this.stopped;
-      this.setText(this.holdLabel, this.stopped ? "RESUME" : "HOLD ARMS");
-      this.send({ command: "hold", enabled: this.stopped });
-    });
-    hold.label.textFill.color = new vec4(1, 0.72, 0.2, 1);
-    this.holdLabel = hold.label;
-    this.createButton(menu, "RE-CENTER", 0, -2.1, () => {
-      // Move objects on the following update, after UIKit finishes dispatching
-      // this trigger. Mutating a hovered hierarchy inside the callback is unsafe.
-      this.recenterRequested = true;
-    });
-    this.createButton(menu, "EXIT UI", 7.6, -2.1, () => {
+    this.autoLabel = auto.label;
+    this.createButton(menu, "NEUTRAL", -4.6, -2.1, () => this.send({ command: "neutral" }));
+    this.createButton(menu, "EXIT UI", 4.6, -2.1, () => {
       this.send({ command: "presentation", enabled: false });
     });
     return menu;
@@ -206,15 +191,6 @@ export class SpectaclesUI {
     }
   }
 
-  private layout() {
-    this.place(this.cards.left.object, new vec2(0.27, 0.18), 62);
-    this.place(this.cards.right.object, new vec2(0.73, 0.18), 62);
-    this.place(this.menu, new vec2(0.5, 0.82), 62);
-    if (this.video !== null) {
-      this.place(this.video, new vec2(0.5, 0.55), 78);
-    }
-  }
-
   private createText(object: SceneObject, width: number, height: number, size: number): Text {
     const text = object.createComponent("Component.Text") as Text;
     text.text = "";
@@ -250,7 +226,8 @@ export class SpectaclesUI {
     const title = side === "left" ? "LEFT ARM" : "RIGHT ARM";
     let body: string;
     if (guide === null) {
-      body = title + "\nOFFLINE\nGRIP  --\nHEIGHT  --------\nTURN  --";
+      body = title + (this.autoActive ? "\nAUTO SORT" : "\nSTANDBY") +
+        "\nGRIP  --\nHEIGHT  --------\nTURN  --";
     } else {
       const state = this.stateName(guide);
       const jaw = typeof guide.jaw === "number" && guide.jaw >= OPEN_PERCENT ? "OPEN" : "CLOSED";

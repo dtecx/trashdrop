@@ -213,6 +213,7 @@ class Hands:
         self.snapshots = snapshots
         self.spectator = spectator
         self.command_handler = None
+        self.context = None  # optional current cell mode supplied by the unified web bridge
         self.status = "waiting for the arms"  # what the arms do, in words
         self.report: str | None = None  # what the glasses are sent: JSON with the status, boxes and stops (report())
         self.connected = False
@@ -265,9 +266,10 @@ class Hands:
         """Current arm report, with a snapshot request while the trigger is pending."""
 
         answer = self.report or self.status
+        context = self.context() if self.context is not None else {}
         snap = self.snapshots.requested() if self.snapshots is not None else None
         spectator = self.spectator.requested() if self.spectator is not None else None
-        if snap is None and spectator is None and self.presentation is None:
+        if snap is None and spectator is None and self.presentation is None and not context:
             return answer
         try:
             report = json.loads(answer)
@@ -275,6 +277,7 @@ class Hands:
             report = {"status": answer}
         if not isinstance(report, dict):
             report = {"status": answer}
+        report.update(context)
         if snap is not None:
             report["snap"] = snap
         if spectator is not None:
@@ -502,12 +505,13 @@ class VideoFrames:
 
     def __init__(self, capture=None, *, fps: float = VIDEO_FPS, width: int = VIDEO_WIDTH,
                  quality: int = VIDEO_QUALITY, tape_pixels=None, reference_size=(0, 0),
-                 clock=time.monotonic, wall_clock=time.time) -> None:
+                 clock=time.monotonic, wall_clock=time.time, decorate=None) -> None:
         self.capture = capture
         self.fps, self.width, self.quality = fps, width, quality
         self.tape_pixels = tape_pixels or {}
         self.reference_size = reference_size
         self.clock, self.wall_clock = clock, wall_clock
+        self.decorate = decorate
         self.condition = threading.Condition()
         self.sequence = 0
         self.packet: bytes | None = None
@@ -548,6 +552,8 @@ class VideoFrames:
             # a camera at just --video-fps must not lose every other frame to its jitter.
             if now < next_encode - 0.25 / self.fps:
                 continue
+            if self.decorate is not None:
+                picture = self.decorate(picture)
             picture = crop_video(picture, self.tape_pixels, self.reference_size)
             jpeg = encode(picture, width=self.width, quality=self.quality)
             self.publish(jpeg, captured_ms)
