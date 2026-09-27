@@ -425,8 +425,21 @@ degree/s cap, the tool 1.8 cm behind its target at the median, 6.7 cm at p90.
   `DYLD_LIBRARY_PATH=/private/tmp/trashdrop-pcbusb/PCBUSB PYTHONPATH=.
   /private/tmp/trashdrop-rebot-sdk/.venv/bin/python -m trashdrop.b601_motor --read`
   with the jaw shut, and again with it opened by hand. It enables no motor.
-  Until then the jaw moves `GRIP_ENVELOPE`, 5 degrees, from where it was at
-  LIVE.
+  Measured ~15:30: 1.707 shut, 343.514 open. That is one motor turn for the
+  whole travel, a pinion on a rack; the old 5 degrees was 1.5% of it. The
+  values are signed (the park pose read -0.004), so 343.5 is not a wrapped
+  -16.5. In the file: closed 1.707, open 340 (3.5 degrees short of the stop).
+  Hence three gripper rules that differ from the arm's:
+  - `GRIP_SPEED` is 90 degrees/s of the motor, the full travel in about 4 s.
+    At the arm's 15 degrees/s it took 23 s.
+  - `GRIP_SQUEEZE`: the gripper is read every tick, and its set point never
+    goes further than 5 degrees from where it is (kp 50: about 4.4 N m).
+    Otherwise a jaw closed on an item, with its target still far off, would
+    squeeze at full torque. The set point's velocity is sent as a feed-forward
+    and stops when the limit holds it.
+  - The did-not-follow hold covers the six arm joints only, because an item
+    in the jaw blocks the gripper by design. Parking leaves the gripper as it
+    is.
 
 With the SO-101 arms removed, stop any earlier bridge (the Lens hand socket
 can have only one owner), then run the camera-only unified page in the

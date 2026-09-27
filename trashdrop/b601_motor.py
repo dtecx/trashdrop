@@ -27,11 +27,15 @@ B601_PCBUSB = Path(os.environ.get("TRASHDROP_B601_PCBUSB", "/private/tmp/trashdr
 # old demo envelope (5 cm, 15 degrees, not below the start) refused 77% of the drag ticks of the
 # 14:18 session, and a refused target left the arm standing until the next one got through.
 JOINT_SPEED = math.radians(15.0)
-GRIP_SPEED = math.radians(15.0)
-# Not a demo limit: the gripper motor's open position is not measured yet, and a target past its
-# mechanical stop would have the motor push against it.
+# The gripper motor turns about 340 degrees shut to open (b601_park.toml): at 15 degrees/s one
+# opening took 23 s. 90 degrees/s of the motor opens it in about 4 s.
+GRIP_SPEED = math.radians(90.0)
+# Without measured gripper angles in b601_park.toml: this far from where it was at LIVE.
 GRIP_ENVELOPE = math.radians(5.0)
-FOLLOW_ERROR = math.radians(5.0)
+# Closing on an item stops the jaw, and a far target would have the motor squeeze at full torque:
+# the gripper is never commanded further than this from where it is (kp 50: about 4.4 N m).
+GRIP_SQUEEZE = math.radians(5.0)
+FOLLOW_ERROR = math.radians(5.0)  # the arm joints only: an item in the jaw blocks the gripper by design
 # Each tick takes one damped least-squares step of the six arm joints towards the tool target.
 IK_GAIN = 6.0  # 1/s: the step heads for the target at this rate, then JOINT_SPEED caps it
 IK_DAMPING = 0.02  # m: keeps the step small and steady near a singular pose
@@ -78,6 +82,19 @@ def gripper_range(path: Path, closed: float) -> tuple[float, float]:
             return shut, wide
         raise ValueError("b601_park.toml: gripper_closed_degrees and gripper_open_degrees must differ")
     return closed, closed + GRIP_ENVELOPE
+
+
+def grip_step(previous: float, stepped: float, actual: float, elapsed: float) -> tuple[float, float]:
+    """The gripper's set point, held within GRIP_SQUEEZE of where it is, and its velocity (rad/s).
+
+    The velocity goes with the set point as a feed-forward: without it the damping held a moving
+    jaw back (kd 4 at 90 degrees/s: 7 degrees). Held at the squeeze limit, the set point stops,
+    and so does the feed-forward: what presses on an item is kp times GRIP_SQUEEZE, no more.
+    """
+
+    angle = min(max(stepped, actual - GRIP_SQUEEZE), actual + GRIP_SQUEEZE)
+    velocity = (angle - previous) / elapsed if elapsed > 1e-4 else 0.0
+    return angle, velocity
 
 
 def velocity_step(current: np.ndarray, desired: np.ndarray, elapsed: float) -> np.ndarray:
@@ -295,6 +312,7 @@ class B601Motor:
         # joints go straight to the sleep pose at JOINT_SPEED, so watch a long way home.
         self.target = None
         self.desired = self.park.copy()
+        self.desired[6] = self.command[6]
         self.parking = True
         self._park_settle_since = 0.0
         self.state = "parking slowly to saved sleep pose"
@@ -309,11 +327,17 @@ class B601Motor:
         elapsed = max(0.0, now - self._last_at)
         if self.target is not None and not self.parking:
             self._track(min(elapsed, 0.05))
+        previous = float(self.command[6])
         self.command = velocity_step(self.command, self.desired, elapsed)
         self._last_at = now
+        # The gripper is read every tick: its set point must stay within GRIP_SQUEEZE of it.
+        self.feedback[6] = self._read(self.motors[6])
+        self.command[6], grip_velocity = grip_step(previous, float(self.command[6]), float(self.feedback[6]),
+                                                   min(elapsed, 0.05))
         torque = np.append(self._gravity(now), 0.0)  # the gripper holds by position alone
-        for motor, angle, (kp, kd), feed in zip(self.motors, self.command, GAINS, torque):
-            motor.send_mit(float(angle), 0.0, kp, kd, float(feed))
+        velocity = [0.0] * 6 + [grip_velocity]
+        for motor, angle, (kp, kd), speed, feed in zip(self.motors, self.command, GAINS, velocity, torque):
+            motor.send_mit(float(angle), float(speed), kp, kd, float(feed))
         motor = self.motors[self._feedback_index]
         actual = self._read(motor)
         self.feedback[self._feedback_index] = actual
@@ -321,10 +345,10 @@ class B601Motor:
             self.hold()
             self.fault = f"J{self._feedback_index + 1} did not follow: holding"
             self.state = self.fault
-        self._feedback_index = (self._feedback_index + 1) % len(self.motors)
-        if self.parking:
-            close_command = np.max(np.abs(self.command - self.park)) < math.radians(0.2)
-            close_feedback = np.max(np.abs(self.feedback - self.park)) < math.radians(1)
+        self._feedback_index = (self._feedback_index + 1) % 6  # the arm joints; the gripper is read above
+        if self.parking:  # the gripper stays as it is: it may hold an item
+            close_command = np.max(np.abs(self.command[:6] - self.park[:6])) < math.radians(0.2)
+            close_feedback = np.max(np.abs(self.feedback[:6] - self.park[:6])) < math.radians(1)
             if close_command and close_feedback:
                 if self._park_settle_since == 0:
                     self._park_settle_since = now

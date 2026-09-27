@@ -281,6 +281,23 @@ class B601ControlTests(unittest.TestCase):
             self.assertAlmostEqual(math.degrees(closed), 10)
             self.assertAlmostEqual(math.degrees(opened), -80)
 
+    def test_the_measured_gripper_travel_is_about_one_motor_turn(self) -> None:
+        from trashdrop.b601_motor import gripper_range
+
+        closed, opened = gripper_range(Path(__file__).resolve().parents[1] / "b601_park.toml", 0.0)
+        self.assertAlmostEqual(math.degrees(closed), 1.707)
+        self.assertGreater(math.degrees(opened - closed), 300)
+
+    def test_closing_on_an_item_squeezes_no_harder_than_the_limit(self) -> None:
+        from trashdrop.b601_motor import GRIP_SQUEEZE, grip_step
+
+        free, velocity = grip_step(1.0, 0.9, 0.95, 0.05)  # moving freely: as stepped, with its velocity
+        self.assertAlmostEqual(free, 0.9)
+        self.assertAlmostEqual(velocity, -2.0)
+        blocked, velocity = grip_step(1.0 - GRIP_SQUEEZE, 0.2, 1.0, 0.05)  # the jaw stopped on an item at 1.0
+        self.assertAlmostEqual(blocked, 1.0 - GRIP_SQUEEZE)
+        self.assertAlmostEqual(velocity, 0.0)  # held there: no feed-forward pushing on
+
     def test_web_b601_carries_on_in_the_sdk_environment_without_motorbridge(self) -> None:
         import argparse
         import os

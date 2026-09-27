@@ -3,3 +3,9 @@
 # These are factory-coordinate mechanical angles, NOT new motor zero offsets.
 # Never command this pose automatically on startup or on an emergency stop.
 joint_degrees = [0.779, -0.686, 11.021, -51.374, 0.800, 1.160, -0.004]
+
+# The gripper motor J7, read with `python -m trashdrop.b601_motor --read` (motors disabled) on
+# 2026-09-27 ~15:30: 1.707 with the jaw shut by hand, 343.514 with it opened by hand: one turn
+# for the full travel (a pinion on a rack). Open is kept 3.5 degrees short of that stop.
+gripper_closed_degrees = 1.707
+gripper_open_degrees = 340.0
