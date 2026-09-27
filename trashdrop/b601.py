@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
+from .spectacles import facing_frame
+
 
 def _hand_frame(hand: dict) -> list[list[float]] | None:
     """A right-handed frame from the wrist and knuckles, if tracking is sound."""
@@ -108,3 +112,71 @@ class B601Preview:
     def guide(self) -> dict:
         return {"mode": "moving" if self._anchor else "holding", "state": self.state,
                 "offset": self.offset.copy(), "rotation": self.rotation_deg.copy(), "blocked": []}
+
+
+class B601HandMotion:
+    """A clutched six-axis hand displacement, expressed in the robot base frame.
+
+    This class does not solve IK or command hardware. One unpinched hand packet
+    is required before the first clutch, so releasing a UIKit button cannot
+    become an arm movement. Missing tracking immediately releases the clutch.
+    """
+
+    def __init__(self, scale: float = 0.5) -> None:
+        self.scale = scale
+        self.ready = False
+        self.anchor: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        self.state = "release pinch to arm"
+
+    def update(self, packet: dict | None, age: float) -> tuple[np.ndarray, np.ndarray] | None:
+        hand = packet.get("right") if isinstance(packet, dict) and age <= 0.3 else None
+        head = packet.get("head") if isinstance(packet, dict) else None
+        if not isinstance(hand, dict) or not hand.get("tracked") or not isinstance(head, dict):
+            self.anchor = None
+            self.ready = False
+            self.state = "hand lost: holding"
+            return None
+        try:
+            thumb = np.asarray(hand["thumb"], dtype=float)
+            index = np.asarray(hand["index"], dtype=float)
+            look = np.asarray(head["look"], dtype=float)
+            eye = np.asarray(head["p"], dtype=float)
+            if any(value.shape != (3,) or not np.isfinite(value).all()
+                   for value in (thumb, index, look, eye)):
+                raise ValueError("invalid tracking vector")
+        except (KeyError, TypeError, ValueError):
+            self.anchor = None
+            self.ready = False
+            self.state = "tracking incomplete: holding"
+            return None
+        point = (thumb + index) / 2
+        frame = _hand_frame(hand)
+        if frame is None:
+            self.anchor = None
+            self.ready = False
+            self.state = "knuckles missing: holding"
+            return None
+        frame = np.asarray(frame, dtype=float)
+        pinch = hand.get("pinch")
+        pinched = pinch if isinstance(pinch, bool) else float(np.linalg.norm(thumb - index)) < 2.5
+        if not pinched:
+            self.anchor = None
+            self.ready = True
+            self.state = "free: pinch to move"
+            return None
+        if not self.ready:
+            self.state = "release pinch to arm"
+            return None
+        if self.anchor is None:
+            wearer = facing_frame(look, eye, point)
+            # The robot's +X points forward, -Y to the wearer's right, +Z up.
+            mapping = np.stack((wearer[0], -wearer[1], wearer[2]))
+            self.anchor = point, frame, mapping
+            self.state = "clutch set: move slowly"
+            return np.zeros(3), np.eye(3)
+        start, first_frame, mapping = self.anchor
+        delta_m = mapping @ (point - start) * (self.scale / 100)
+        rotation_world = frame.T @ first_frame
+        rotation_robot = mapping @ rotation_world @ mapping.T
+        self.state = "following right hand"
+        return delta_m, rotation_robot

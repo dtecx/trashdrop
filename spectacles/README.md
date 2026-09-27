@@ -1,5 +1,34 @@
 # Spectacles drive the arms
 
+## Central B601-RS while the SO-101 arms are removed
+
+The separate bridge in `trashdrop/b601_glasses.py` uses the right hand's
+thumb/index pinch as a clutch for six-axis tool translation and rotation.
+Release to hold, re-pinch to continue. Touch thumb to pinky to request the
+gripper (currently limited to five motor degrees). The palm menu has distinct
+**B601 PREV** and **B601 LIVE** buttons; **NEUTRAL** parks to the recorded
+sleep pose and disables the motors. The fourth button becomes **HOLD** rather
+than EXIT UI: there is no web page in this dedicated bridge, and the parking
+control must remain visible. This pose is in factory motor coordinates,
+not a new software zero. LIVE is deliberately slow: 4 degrees/s at each arm
+joint, 2 degrees/s at the gripper, with an eight-degree per-joint envelope.
+
+Stop `trashdrop web` first: it owns the same Lens hand socket. With the
+official B601 SDK and MacCAN runtime at the current venue paths, run from the
+repository root in the operator's terminal:
+
+```bash
+DYLD_LIBRARY_PATH=/private/tmp/trashdrop-pcbusb/PCBUSB uv run --no-sync --project /private/tmp/trashdrop-rebot-sdk python -m trashdrop.b601_glasses --live
+```
+
+Without `--live`, B601 LIVE cannot enable motors. This dedicated bridge does
+not open the SO-101 buses or the overhead camera; the Frame is hidden in the
+glasses while it runs. Press **Preview Lens** in Lens Studio 5.15.4 to send
+the updated interface. After parking, Ctrl+C exits; the first Ctrl+C while
+motors are active holds them, and a second forcibly disables them. Be beside
+the 48 V switch during the first trial. See `docs/SPECTACLES.md` for the
+current commissioning limits and what has actually been tested on hardware.
+
 Each hand drives the arm on its side. The glasses run a Lens (the Lens
 Studio project in `spectacles/spectacles/`) that sends the hands to the Mac
 over a WebSocket; the Mac (`trashdrop/spectacles.py`) drives the arms. The

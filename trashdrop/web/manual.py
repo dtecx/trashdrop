@@ -113,7 +113,7 @@ class ManualBridge:
         """Run Lens controls through the same cell owner as the web page."""
 
         action = message.get("command")
-        if action not in ("presentation", "manual", "b601", "auto", "neutral", "empty"):
+        if action not in ("presentation", "manual", "b601", "b601_live", "auto", "neutral", "empty"):
             return False
         with self._command_lock:
             self.control_error = self._run_lens_command(message)
@@ -138,6 +138,8 @@ class ManualBridge:
             return None
         if not self.hands.presentation:
             return "enter Spectacles UI from the web page first"
+        if action == "b601_live":
+            return "B601 LIVE uses the separate B601 bridge while the SO-101 arms are removed"
         if action == "manual":
             if message.get("enabled") is False:
                 if self.active or self.starting:
@@ -397,7 +399,7 @@ class ManualBridge:
         return "Spectacles manual mode stopped; the arms hold where they are"
 
     def command(self, message: dict) -> str | None:
-        if message.get("command") in ("presentation", "manual", "b601", "auto", "neutral", "empty"):
+        if message.get("command") in ("presentation", "manual", "b601", "b601_live", "auto", "neutral", "empty"):
             self._lens_command(message)
             return self.control_error
         if not self.active:

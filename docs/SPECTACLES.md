@@ -319,13 +319,21 @@ enumerates the adapter as `XCAN-USB` (`0c72:000c`); it does not create a
 termination and firmware boot, not a serial mode. Do not switch to BOOT or
 flash firmware as part of routine setup.
 
-**Wiring hold (2026-09-27):** the user reported that the two conductors on
-the UTC-101 are connected to `CANL` (red) and `GND`, leaving `CANH` empty.
-This is not a complete CAN differential pair. Power off the 48 V supply and
-unplug USB before touching any wiring; do not infer the signal identities
-from wire colors. Trace both conductors back to the labeled power/signal
-splitter and verify against Seeed's RS wiring diagram before trying even a
-read-only bus scan. The Lens/web B601 mode remains preview-only.
+**Verified CAN on macOS (2026-09-27):** the user corrected the UTC-101 wiring
+to the CANH/CANL differential pair. The official MotorBridge package with
+MacCAN PCBUSB opened `can0@1000000` on the `XCAN-USB` adapter. Read-only pings
+and mechanical-position reads succeeded for IDs 1-7. A separately authorised,
+slow J1 test reached +4.409 degrees and -4.248 degrees relative to its start,
+then returned within 0.715 degrees and disabled the motor. This verified the
+transport and base joint, not the other six axes under torque.
+
+The operator subsequently placed the arm in a supported sleep pose. All
+seven factory-coordinate angles were read with the motors disabled and saved
+to `b601_park.toml`: `[0.779, -0.686, 11.021, -51.374, 0.800, 1.160,
+-0.004]` degrees. **These are not new zero offsets.** The motor/URDF factory
+zero remains the coordinate origin. A live session seeds every set point from
+the actual encoder readings, and NEUTRAL parks slowly to the saved pose before
+disabling. Never send all-zero targets on startup.
 
 The two SO-101 arms must be put in their saved neutral poses before the B601
 is commissioned. `trashdrop web --dry-run` offers **center B601-RS · preview**
@@ -340,27 +348,47 @@ The preview does not put the SO-101 arms in neutral. `Cell.neutral()` does
 move real SO-101 arms even when the page's Dry run option is on, so inspect
 clearance before pressing Neutral if the centre arm is already mounted.
 
-Before enabling real B601-RS motion, verify the seven motor identities and
-their zero calibration, establish a working read-only CAN transport on this
-Mac, measure the central base transform and clearance to *both* SO-101
-neutral poses, and only then test tiny single-joint moves with a physical
-stop ready and the user's explicit permission. The RS model uses RobStride
-RS06/RS00 motors, CAN at 1 Mbit/s and 48 V. The official SDK's RS config is
-`config/rebotarm_rs.yaml` (`vendor: robstride`, `channel: can0`); using the
-earlier DM serial transport and 24 V instructions would be wrong. Linux
-SocketCAN does not supply `can0` on macOS. A Mac CAN user-space transport may
-be possible, but has **not** been verified with this UTC-101 adapter. The
-MacCAN PCBUSB library documents support for genuine PEAK devices only, so
-its compatibility with this `XCAN-USB` cannot be assumed. This repository
-uses Python 3.13 while the cloned SDK has a separate Python 3.11 environment;
-that import test did **not** prove USB-CAN access or actuation. The two SO-101
-buses must remain owned by the web process.
+The two SO-101 arms have been physically removed for the central-arm test.
+The RS model uses RobStride RS06/RS00 motors, CAN at 1 Mbit/s and 48 V. The
+official SDK config is `config/rebotarm_rs.yaml`; the MacCAN dylib currently
+lives outside the repository at `/private/tmp/trashdrop-pcbusb/PCBUSB`, and
+the official SDK's isolated Python 3.11 environment at
+`/private/tmp/trashdrop-rebot-sdk`. These are session-specific paths: restore
+the official SDK and MacCAN setup before a later run. Neither the main
+project's `uv.lock` nor the SO-101 buses are changed by B601 work.
 
-The SDK's `RebotArmEndPose.start()` begins with a zero target. Do not use it
-unchanged on the live arm: read and validate all seven present positions,
-seed every target to those positions *before* enabling, and do not run an
-automatic home move on stop. The rig-specific workspace and collision
-clearance remain to be measured.
+The SDK's `RebotArmEndPose.start()` begins with a zero target. The new
+`trashdrop.b601_glasses` bridge does not use it: it reads and validates all
+seven actual positions, seeds MIT targets to those positions, then enables
+one motor at a time. The LIVE mode uses the right hand's thumb/index pinch
+as a clutch. Hand translation controls tool XYZ; hand rotation controls tool
+orientation through the official RS URDF and Pinocchio IK; thumb/pinky touch
+requests the gripper. First trials are capped at 4 degrees/s on arm joints,
+2 degrees/s on the gripper, 8 degrees per arm joint from the session start,
+5 degrees of gripper travel, 3 cm tool travel and 10 degrees tool rotation.
+Downward movement below the starting gripper height is refused because the
+parked gripper is close to the table. Hand loss or menu interaction holds the
+command and requires an unpinch/re-pinch. This is a cautious commissioning
+envelope, **not a measured collision checker**. The six non-base axes have
+not yet had a real movement test.
+
+With the SO-101 arms removed, stop `trashdrop web` (the Lens hand socket can
+have only one owner), then run in the operator's terminal:
+
+```bash
+DYLD_LIBRARY_PATH=/private/tmp/trashdrop-pcbusb/PCBUSB uv run --no-sync --project /private/tmp/trashdrop-rebot-sdk python -m trashdrop.b601_glasses --live
+```
+
+Without `--live`, the dedicated B601 LIVE button is refused and B601 PREV
+only previews hand input. With it, the Lens menu's **B601 LIVE** is the
+second, on-device enable gate. **NEUTRAL** slowly moves to `b601_park.toml`
+and disables after encoder confirmation; switching LIVE off only holds the
+present position. The standalone menu replaces EXIT UI with HOLD so the
+parking control cannot disappear. First Ctrl+C also holds; second Ctrl+C forcibly disables
+and requires a person to support the arm. The dedicated bridge does not open
+the overhead webcam or SO-101 buses, so it hides the empty video Frame in
+the glasses; the normal unified web demo still owns those features. The user
+must press Preview Lens to send the updated UI to Spectacles.
 
 - https://wiki.seeedstudio.com/rebot_b601_rs_getting_started/
 - https://wiki.seeedstudio.com/rebot_arm_b601_rs_pinocchio_meshcat/

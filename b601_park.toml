@@ -1,0 +1,5 @@
+# Measured with all seven B601-RS motors disabled on 2026-09-27, after the
+# operator placed the arm in a supported, safe-to-power-off sleep pose.
+# These are factory-coordinate mechanical angles, NOT new motor zero offsets.
+# Never command this pose automatically on startup or on an emergency stop.
+joint_degrees = [0.779, -0.686, 11.021, -51.374, 0.800, 1.160, -0.004]
