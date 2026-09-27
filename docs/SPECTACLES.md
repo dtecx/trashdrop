@@ -54,8 +54,13 @@ kits and OPEN TEACH do it), with pinches for buttons.
   moves more than `DRAG_CM` = 1.5 cm -> **drag**: the jaw goes to where it
   was at the pinch plus `--scale` x the hand's travel (forward/right/up from
   the gaze at the pinch, level); the wrist does not turn. The hand twists
-  like a screwdriver more than `TWIST_DEG` = 12 deg -> **twist**: the jaw
-  turns about where it points, the first 12 deg aside, and does not move.
+  like a screwdriver more than `TWIST_DEG` = 10 deg -> **twist**: the jaw
+  turns about where it points, the first 10 deg aside, and does not move.
+  A twist about the forearm swings the pinch point ~9 cm round it (12 deg is
+  already 1.9 cm), so a pinch taken for a drag becomes a twist after all
+  past `LATE_TWIST` (25 deg while it has gone < 4 cm), and the jaw goes back
+  to where the pinch found it. Turning into the wrist's limit shows `turning:
+  at the wrist's limit`.
   Clockwise as the wearer sees the back of the hand = clockwise from above
   (as the overhead camera shows the jaw); `roll_sense()` derives the joint's
   sign from the model (on these arms +wrist_roll turns the downward jaw
@@ -130,6 +135,18 @@ slows itself down.
   point *and* the wrist strayed 3-8 cm while twisting (so the drag/twist
   split, not a different reference point). Replayed, 12 deg / 1.5 cm sorts 40
   of 41 drags and 13 of 19 twists (the wearer not yet knowing the rule).
+- `session-20260927-025229` and `-030424` (pinch mode, drag/twist split):
+  "the left arm behaves strangely when turning, the right is fine". The
+  left hand's twists mostly started as drags (8 of 20 recognised over three
+  sessions, right hand 19 of 24): the pinch swings with the twist and the
+  left hand also shifts. The wrist as the reference point did not help (the
+  whole hand moves). 10 deg plus the late switch: 15 of 20 left twists,
+  drags unchanged. Also: the **left arm's wrist roll range is lopsided** --
+  `wrist_roll_offset` -80 in `rig.toml`, so the model allows LeRobot roll
+  -77..243 and from the ready pose (0) only 77 deg clockwise (the right arm:
+  -162..158). The real limits come from the servos' EEPROM
+  (`Arm.limits_degrees()`) and were not read; check them if the left jaw
+  still stops turning early.
 
 To replay a session through the real controller, feed its lines to a
 `Follower`/`PinchFollower` with `dt` from successive `at` values and the

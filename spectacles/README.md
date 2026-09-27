@@ -15,11 +15,13 @@ button:
 2. **Grab and twist.** Pinch and, without moving your hand, twist it like a
    screwdriver: the jaw turns the same way -- clockwise as you see the back
    of your hand is clockwise from above, as the overhead camera shows it.
-   The first 12 degrees do nothing; the glasses say how far it has turned
-   ("turned 30° cw"). Let go, turn your hand back, pinch and twist again to
-   turn further. A pinch either drags or twists, whichever your hand does
-   first (moves 1.5 cm or turns 12 degrees), never both, so dragging does
-   not turn the jaw and twisting does not move it.
+   The first 10 degrees do nothing; the glasses say how far it has turned
+   ("turned 30° cw", or "at the wrist's limit"). Let go, turn your hand
+   back, pinch and twist again to turn further. A pinch either drags or
+   twists, whichever your hand does first (moves 1.5 cm or turns 10
+   degrees), never both, so dragging does not turn the jaw and twisting does
+   not move it; a pinch that began as a drag but turns past 25 degrees
+   within 4 cm was a twist after all, and the jaw goes back.
 3. **Open and close.** Touch thumb and pinky: a closed jaw opens, an open
    one closes. Once per touch; never while pinching.
 4. No calibration: forward is where you look when you pinch.

@@ -123,10 +123,14 @@ GRAB_CM = (2.5, 4.0)
 TOGGLE_CM = (3.5, 5.5)
 # Each pinch does one thing, whichever the hand does first: turning past TWIST_DEG makes it a twist (the
 # jaw turns, and stays put), moving the pinch past DRAG_CM makes it a drag (the jaw moves, and does not
-# turn). Replayed on a recorded session, 40 of 41 drags and 13 of 19 twists came out so -- the wearer not
-# yet knowing the rule; with DRAG_CM 2, one drag fewer.
-TWIST_DEG = 12.0
+# turn). A twist about the forearm swings the pinch ~9 cm round it -- 12 degrees is 1.9 cm, past DRAG_CM
+# -- so a twist that began as a drag becomes one after all past LATE_TWIST (degrees, while the pinch has gone
+# less than cm), and the jaw goes back to where the pinch found it. Replayed on three sessions: left-hand
+# twists 8 of 20 came out as twists before (12 degrees, no late switch), 15 of 20 now; drags unchanged (78 of
+# 83 left, 119 of 130 right).
+TWIST_DEG = 10.0
 DRAG_CM = 1.5
+LATE_TWIST = (25.0, 4.0)
 SCALE = 1.0  # --mode pinch: jaw cm per hand cm
 # 1-euro filter (Casiez, Roussel and Vogel, CHI 2012) on the pinch point: cutoff Hz at rest, and how much
 # faster it gets per cm/s -- steady when the hand is still, little lag when it moves.
@@ -1059,11 +1063,15 @@ class PinchFollower(Follower):
                         self.gesture = "turning"
                     elif float(np.linalg.norm(seen)) > DRAG_CM:
                         self.gesture = "dragging"
-                wanted = jaw_at
+                elif self.gesture == "dragging" and abs(turn) > LATE_TWIST[0] \
+                        and float(np.linalg.norm(seen)) < LATE_TWIST[1]:
+                    self.gesture = "turning"  # a twist after all: the "drag" was the pinch swinging with it
+                wanted, wrist_stopped = jaw_at, False
                 if self.gesture == "turning":
                     low, high = self.limits.get("wrist_roll", (-math.inf, math.inf))
                     past = math.copysign(max(abs(turn) - TWIST_DEG, 0.0), turn)
                     self.roll = min(max(roll_at + self.sense * past, low), high)
+                    wrist_stopped = self.roll != roll_at + self.sense * past
                 elif self.gesture == "dragging":
                     forward, right, up = seen
                     moved = np.array([forward, -right, up] if self.facing == "same" else [-forward, right, up])
@@ -1073,6 +1081,8 @@ class PinchFollower(Follower):
                 stopped = self.advance(target, dt, others, stopped, min(float(np.linalg.norm(target - tcp)), 0.2))
                 self.state = self.gesture or "pinched"
                 self.mode = {"turning": "turning", "dragging": "moving"}.get(self.gesture, "holding")
+                if wrist_stopped:  # the left arm, say, turns only 77 degrees clockwise from its ready pose
+                    self.state += ": at the wrist's limit"
                 if stopped and self.gesture == "dragging":
                     self.state += f": at {stopped}"
                     push = wanted - tcp  # the arm's frame; back into the wearer's words
