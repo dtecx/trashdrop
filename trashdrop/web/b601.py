@@ -55,8 +55,8 @@ class B601WebControl:
                   target: str = "b601") -> str | None:
         if target != "b601":
             return "SO-101 arms are unplugged; select B601"
-        if mode != "pinch":
-            return "B601 uses pinch control"
+        # The B601 is always driven by pinches, whatever the page's hand-control box holds: it was
+        # empty in B601 mode, and "B601 uses pinch control" refused Enter Spectacles UI (16:05).
         return None
 
     def set_presentation(self, enabled: bool) -> str | None:
