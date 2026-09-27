@@ -195,12 +195,12 @@ findings above were made; no replay tool is in the repo yet (worth adding).
   the real Spectacles throw `Unable to access camera` and the rest of that
   callback (including the hand socket) never starts. Create it from an
   `OnStartEvent`, and keep camera failure non-fatal so controls still connect.
-- Do not encode the Render Target and colour camera concurrently. A spectator
-  request used to start both, then `onNewFrame` started more camera encoders at
-  30 fps until the first callback; the real Lens exited to Lens Explorer as
-  soon as jury mode requested its first frame. The capture path is serial and
-  uses low-quality JPEGs for the 2 fps stream; explicit snapshots stay high
-  quality.
+- The Render Target already uses `Device Camera Texture` as its background, so
+  it contains the real optical image plus the Lens UI. The 2 fps spectator
+  stream encodes that one composite at low JPEG quality. Encoding it and the
+  separate `CameraModule` texture for every spectator frame made the real Lens
+  exit to Lens Explorer on the first request, even when the two encoders were
+  serial. Explicit snapshots still encode both separately at high quality.
 - `adb` works (`adb reverse` for the sockets) but the glasses' shell is
   closed: `adb exec-out screencap` answers `error: closed`.
 - The Spectacles UI Kit (`Packages/SpectaclesUIKit.lspkg`: Frame, Capsule/

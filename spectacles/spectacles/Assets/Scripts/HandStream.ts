@@ -256,31 +256,43 @@ export class HandStream extends BaseScriptComponent {
     if (this.snap !== null) {
       return;
     }
-    if (!this.view || this.cameraTexture === null) {
+    if (!this.view || (kind === "snap" && this.cameraTexture === null)) {
       this.say("snapshot unavailable: run the Lens on Spectacles and assign its Render Target");
       return;
     }
     this.snap = { id: id, kind: kind };
     this.cameraEncoding = false;
-    const quality = kind === "spectator" ? CompressionQuality.LowQuality : CompressionQuality.HighQuality;
+    if (kind === "spectator") {
+      // The Render Target already has Device Camera Texture as its background,
+      // so it is the complete optical view. Encoding CameraModule as well made
+      // the real Lens exit to Lens Explorer on the first spectator request.
+      print("HandStream: encoding spectator composite " + id);
+      Base64.encodeTextureAsync(this.view, (jpeg: string) => {
+        if (this.snap !== null && this.snap.id === id) {
+          this.snap = null;
+          this.sendSpectator(id, jpeg);
+        }
+      }, () => this.failSnapshot(id, "cannot encode the spectator view"),
+      CompressionQuality.LowQuality, EncodingType.Jpg);
+      return;
+    }
     Base64.encodeTextureAsync(this.view, (jpeg: string) => {
       if (this.snap !== null && this.snap.id === id) {
         this.snap.view = jpeg;
       }
     }, () => this.failSnapshot(id, "cannot encode the rendered view"),
-    quality, EncodingType.Jpg);
+    CompressionQuality.HighQuality, EncodingType.Jpg);
     // The colour camera is deliberately encoded only after the render target
     // finishes. Starting both jobs together -- and another camera job on every
     // 30 fps frame until the first callback -- can make SnapOS kill the Lens.
   }
 
   private encodeCameraFrame() {
-    if (this.snap === null || this.snap.view === undefined || this.snap.camera !== undefined ||
+    if (this.snap === null || this.snap.kind !== "snap" || this.snap.view === undefined || this.snap.camera !== undefined ||
         this.cameraEncoding || this.cameraTexture === null) {
       return;
     }
     const id = this.snap.id;
-    const quality = this.snap.kind === "spectator" ? CompressionQuality.LowQuality : CompressionQuality.HighQuality;
     this.cameraEncoding = true;
     Base64.encodeTextureAsync(this.cameraTexture, (jpeg: string) => {
       this.cameraEncoding = false;
@@ -291,7 +303,7 @@ export class HandStream extends BaseScriptComponent {
     }, () => {
       this.cameraEncoding = false;
       this.failSnapshot(id, "cannot encode the colour camera");
-    }, quality, EncodingType.Jpg);
+    }, CompressionQuality.HighQuality, EncodingType.Jpg);
   }
 
   private finishSnapshot() {
@@ -320,6 +332,18 @@ export class HandStream extends BaseScriptComponent {
       }
     } catch (error) {
       this.drop("cannot send snapshot: " + error);
+    }
+  }
+
+  private sendSpectator(id: number, composite: string) {
+    if (this.socket === null || !this.open) {
+      return;
+    }
+    try {
+      this.socket.send(JSON.stringify({ spectator: id, composite: composite }));
+      print("HandStream: sent spectator composite " + id + " (" + Math.round(composite.length / 1024) + " KiB)");
+    } catch (error) {
+      this.drop("cannot send spectator view: " + error);
     }
   }
 

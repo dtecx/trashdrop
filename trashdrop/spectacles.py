@@ -399,9 +399,12 @@ class SpectatorFrames:
             if not isinstance(request, int) or request != self._pending:
                 return False
         try:
-            view = Snapshots._jpeg(message, "view")
-            camera = Snapshots._jpeg(message, "camera")
-            composite = Snapshots._composite(camera, view)
+            if isinstance(message.get("composite"), str):
+                composite = Snapshots._jpeg(message, "composite")
+            else:  # older Lens: camera and transparent render target arrived separately
+                view = Snapshots._jpeg(message, "view")
+                camera = Snapshots._jpeg(message, "camera")
+                composite = Snapshots._composite(camera, view)
         except (ValueError, ImportError) as error:
             self.log(f"cannot decode Spectacles spectator frame {request}: {error}")
             with self._lock:

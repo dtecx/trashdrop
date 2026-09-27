@@ -255,13 +255,11 @@ class SnapshotTests(unittest.TestCase):
         hands.put({"left": {"tracked": True}})
         request = json.loads(hands.answer())["spectator"]
         self.assertEqual(request, spectator.requested())
-        view = self.jpeg((0, 0, 20))
-        camera = self.jpeg((30, 40, 50))
-        hands.receive({"spectator": request, "view": base64.b64encode(view).decode(),
-                       "camera": base64.b64encode(camera).decode()})
+        composite = self.jpeg((30, 40, 50))
+        hands.receive({"spectator": request, "composite": base64.b64encode(composite).decode()})
         self.assertEqual(hands.latest()[0], {"left": {"tracked": True}})
         jpeg, sequence = spectator.latest()
-        self.assertTrue(jpeg.startswith(b"\xff\xd8"))
+        self.assertEqual(jpeg, composite)
         self.assertEqual(sequence, 1)
         self.assertIsNone(spectator.requested(), "rate limited")
         now[0] += 0.5
