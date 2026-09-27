@@ -266,6 +266,15 @@ findings above were made; no replay tool is in the repo yet (worth adding).
    --tape` (refits the placement, absorbing a pan offset; large residuals
    mean a lift/elbow/flex zero is off: redo the servo calibration first);
    `rig roll left`.
+   **Done 2026-09-27 ~03:45** (commit after `ead8c3c`): new touches (fit
+   0.6-1.4 cm; they moved 1.4-3.4 cm from the stale ones), wrist roll zero
+   -81.6 (was -80: the gripper had not moved on its shaft). Still open: the
+   left `shoulder_pan` servo limits are +-84 deg, yet the tape's near-left
+   corner needed pan 97.9 deg (moved there by hand, limp): under its own
+   power the left arm cannot reach that corner. Widen the pan's EEPROM
+   limits (the servo calibration, moving the pan through its whole physical
+   range). Also odd: `rig touch` printed the same residuals for the right
+   arm as for the left.
 5. Cleanups: delete `spectables/`; fix the Lens project's `.gitattributes`;
    add a session replay tool; reconcile the layout description in
    `AGENTS.md` with `rig.toml`.
