@@ -321,6 +321,9 @@ the clutch start, and sends **no** motor commands to
 the B601 or the SO-101 arms. The B601 entry is refused when dry run is off;
 do not present the preview as working robot teleoperation. The menu still
 suppresses hand tracking while a button or video Frame is manipulated.
+The preview does not put the SO-101 arms in neutral. `Cell.neutral()` does
+move real SO-101 arms even when the page's Dry run option is on, so inspect
+clearance before pressing Neutral if the centre arm is already mounted.
 
 Before enabling real B601 motion, obtain the actual adapter identity,
 confirm the exact DM model and 24 V power arrangement, perform Seeed's
