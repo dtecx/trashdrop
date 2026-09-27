@@ -50,6 +50,12 @@ LIMIT_MARGIN = math.radians(2.0)  # kept inside the URDF joint limits, the mecha
 TAU_SCALE = np.array([1.0, 0.98, 0.98, 1.0, 1.0, 1.0])
 GRAVITY_RAMP_S = 1.0
 TAU_LIMIT = np.array([18.0, 18.0, 18.0, 7.0, 7.0, 7.0])  # N m: half the URDF efforts, a sanity bound
+# A motor that carries more than it is rated for, for long, trips its own protection and goes limp:
+# at 15:20 J2 (an RS06, rated 11 N m, peak 36) held 10-13 N m against gravity for 205 of 218 s with
+# the arm stretched 60 cm out, then gave way, and the arm fell on the table. No step is taken that
+# would leave a joint holding more than this (about 70% of the rating: RS06 J1-J3, RS00 J4-J6, 5 N m).
+LOAD_LIMIT = np.array([8.0, 8.0, 8.0, 3.5, 3.5, 3.5])
+HOT_C = 70.0  # a motor at least this warm (its driver or its rotor) is named in the state
 HOST_ID = 0xFD
 MECH_POS = 0x7019
 MODELS = ("rs-06", "rs-06", "rs-06", "rs-00", "rs-00", "rs-00", "rs-00")
@@ -155,6 +161,8 @@ class B601Motor:
         self._last_at = 0.0
         self._park_settle_since = 0.0
         self.target: tuple[np.ndarray, np.ndarray] | None = None  # where the tool is headed, base frame
+        self.temperature = np.zeros(7)  # degrees C, the hotter of each motor's driver and rotor
+        self.status = np.zeros(7, dtype=int)  # each motor's last reported status code
         self._sdk_root = self.urdf.parents[3]
         self.fault: str | None = None
         self.parking = False
@@ -268,8 +276,18 @@ class B601Motor:
         lower = np.asarray(self.model.lowerPositionLimit[:6])
         upper = np.asarray(self.model.upperPositionLimit[:6])
         moved, pinned = dls_step(self.command[:6], np.concatenate((short, turn)), jacobian, lower, upper, dt)
+        load, heavier = self._load(self.command[:6]), self._load(moved)
+        over = (np.abs(heavier) > LOAD_LIMIT) & (np.abs(heavier) > np.abs(load) + 0.05)
+        if over.any():
+            joint = int(np.argmax(np.where(over, np.abs(heavier) - LOAD_LIMIT, -np.inf)))
+            self.desired[:6] = self.command[:6]
+            self.state = f"at the load limit: J{joint + 1} would hold {abs(heavier[joint]):.0f} N m; come back or up"
+            return
         self.desired[:6] = moved
-        if pinned:
+        hot = int(np.argmax(self.temperature))
+        if self.temperature[hot] >= HOT_C:
+            self.state = f"J{hot + 1} is hot ({self.temperature[hot]:.0f} °C): rest it, park soon"
+        elif pinned:
             self.state = "at a joint limit: " + ", ".join(f"J{joint + 1}" for joint in pinned)
         elif distance < 0.003 and angle < math.radians(1.0):
             self.state = "at the hand"
@@ -301,17 +319,23 @@ class B601Motor:
                 continue
             if state is not None and math.isfinite(state.pos):
                 self.feedback[index] = state.pos
+                self.temperature[index] = max(state.t_mos, state.t_rotor)
+                self.status[index] = state.status_code
 
-    def _gravity(self, now: float) -> np.ndarray:
-        """This tick's gravity torques for the six arm joints, N m, faded in after enabling."""
+    def _load(self, joints: np.ndarray) -> np.ndarray:
+        """What the six arm joints hold against gravity at these angles, N m (the vendor's model)."""
 
         import pinocchio as pin
 
         q = np.zeros(self.model.nq)
-        q[:6] = self.command[:6]
-        torque = TAU_SCALE * np.asarray(pin.computeGeneralizedGravity(self.model, self.data, q))[:6]
+        q[:6] = joints
+        return TAU_SCALE * np.asarray(pin.computeGeneralizedGravity(self.model, self.data, q))[:6]
+
+    def _gravity(self, now: float) -> np.ndarray:
+        """This tick's gravity torques for the six arm joints, N m, faded in after enabling."""
+
         fade = min(max((now - self._enabled_at) / GRAVITY_RAMP_S, 0.0), 1.0)
-        return np.clip(torque * fade, -TAU_LIMIT, TAU_LIMIT)
+        return np.clip(self._load(self.command[:6]) * fade, -TAU_LIMIT, TAU_LIMIT)
 
     def set_grip(self, open_grip: bool) -> None:
         self.set_grip_fraction(1.0 if open_grip else 0.0)
@@ -372,8 +396,15 @@ class B601Motor:
         self._lagging = self._lagging + 1 if behind.any() else 0
         if self._lagging >= FOLLOW_TICKS:
             self._lagging = 0
+            joint = int(np.argmax(behind))
+            # Hold where the arm is, not where it was told: a motor that gave way and comes back would
+            # otherwise snap back to the old set point at full torque (J2 was 14 degrees off at 15:20).
             self.hold()
-            self.fault = f"J{int(np.argmax(behind)) + 1} did not follow: holding"
+            self.command[:6] = self.feedback[:6]
+            self.desired = self.command.copy()
+            self.fault = (f"J{joint + 1} did not follow: holding where it is"
+                          + (f" (status {self.status[joint]}, {self.temperature[joint]:.0f} °C)"
+                             if self.temperature[joint] > 0 else ""))
             self.state = self.fault
         if self.parking:  # the gripper stays as it is: it may hold an item
             close_command = np.max(np.abs(self.command[:6] - self.park[:6])) < math.radians(0.2)

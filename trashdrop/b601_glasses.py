@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .b601 import B601HandMotion, B601Preview, pointing_down
+from .b601 import B601HandMotion, B601Preview, heading_and_pitch, jaw_frame
 from .b601_motor import B601_SDK, JOINT_SPEED, B601Motor
 from .spectacles import (
     VIDEO_CAPTURE_HEIGHT, VIDEO_CAPTURE_WIDTH, VIDEO_FPS, VIDEO_PORT, VIDEO_QUALITY, VIDEO_WIDTH,
@@ -231,13 +231,16 @@ class B601GlassesBridge:
                 else:
                     if self.anchor_generation != self.motion.anchor_generation:
                         position, rotation = self.driver.tool_pose()
-                        self.anchor_pose = position, pointing_down(rotation)
+                        self.anchor_pose = (position, *heading_and_pitch(rotation))
                         self.anchor_generation = self.motion.anchor_generation
                     if self.anchor_pose is not None:
-                        delta, rotation = displacement
-                        target_position = self.anchor_pose[0] + delta
-                        target_rotation = rotation @ self.anchor_pose[1]
-                        self.driver.target_tool(target_position, target_rotation)
+                        delta, turn = displacement
+                        start, heading, pitch = self.anchor_pose
+                        heading += math.degrees(math.atan2(turn[1, 0], turn[0, 0]))  # thumb-middle
+                        if self.motion.gesture == "drag" and self.motion.pitch is not None:
+                            # The jaw points as far down as the hand does: level to straight down.
+                            pitch = min(max(self.motion.pitch, -90.0), 0.0)
+                        self.driver.target_tool(start + delta, jaw_frame(heading, pitch))
                 # Thumb-pinky sets how far the jaw is open; every tick, so a hold keeps it there.
                 self.driver.set_grip_fraction(self.motion.jaw)
         if self.driver is not None:
@@ -279,6 +282,8 @@ class B601GlassesBridge:
             record["command_deg"] = np.degrees(motor.command).round(2).tolist()
             record["feedback_deg"] = np.degrees(motor.feedback).round(2).tolist()
             record["desired_deg"] = np.degrees(motor.desired).round(2).tolist()
+            record["temperature_c"] = np.round(getattr(motor, "temperature", np.zeros(7)), 1).tolist()
+            record["status"] = [int(code) for code in getattr(motor, "status", np.zeros(7))]
         self.telemetry.write(json.dumps(record, separators=(",", ":")) + "\n")
         if state != self._last_state:
             self._last_state = state

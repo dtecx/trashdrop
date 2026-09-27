@@ -14,31 +14,47 @@ import numpy as np
 from .spectacles import TURN_DEG_PER_CM, facing_frame
 
 JAW_PER_CM = 0.1  # thumb-pinky touch: the jaw's opening changes this share of its travel a sideways centimetre
+PITCH_SMOOTHING = 0.25  # the share of each tick's hand pitch taken: steadies the tracking's jitter
 
 
-def pointing_down(rotation) -> np.ndarray:
-    """The tool frame turned the least way that points the jaw straight down.
+def jaw_frame(heading: float, pitch: float) -> np.ndarray:
+    """The tool frame with the jaw pointing ``pitch`` degrees below the horizontal (0 level, -90 straight
+    down) towards ``heading`` degrees (0 forward, +x of the base; positive to the left), its fingers
+    level.
 
-    The jaw points along the gripper_end frame's +x: the gripper's own mass lies behind it, along
-    -x (URDF). Parked, it points 40 degrees below the horizontal, and a drag kept whatever it had,
-    so the jaw could not be put square to the table (the user, 2026-09-27); now, as the SO-101's,
-    it points down, turned about the vertical only by the thumb-middle gesture.
+    The jaw points along the gripper_end frame's +x: the gripper's own mass lies behind it, along -x
+    (URDF); heading 0 and pitch 0 is the URDF zero pose's tool frame. Straight down, the heading is
+    the jaw's turn about the vertical.
     """
 
+    psi, phi = math.radians(heading), math.radians(pitch)
+    approach = np.array([math.cos(phi) * math.cos(psi), math.cos(phi) * math.sin(psi), math.sin(phi)])
+    across = np.array([-math.sin(psi), math.cos(psi), 0.0])
+    return np.column_stack((approach, across, np.cross(approach, across)))
+
+
+def heading_and_pitch(rotation) -> tuple[float, float]:
+    """The heading and pitch (degrees) of jaw_frame nearest this tool frame."""
+
     rotation = np.asarray(rotation, dtype=float)
-    approach, down = rotation[:, 0], np.array([0.0, 0.0, -1.0])
-    axis = np.cross(approach, down)
-    sine, cosine = float(np.linalg.norm(axis)), float(np.dot(approach, down))
-    if sine < 1e-9:
-        if cosine > 0:
-            return rotation.copy()
-        axis, sine = np.array([0.0, 1.0, 0.0]), 0.0  # pointing straight up: half a turn about y
-    else:
-        axis = axis / sine
-    angle = math.atan2(sine, cosine)
-    cross = np.array([[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]])
-    turn = np.eye(3) + math.sin(angle) * cross + (1 - math.cos(angle)) * cross @ cross
-    return turn @ rotation
+    approach, across = rotation[:, 0], rotation[:, 1]
+    return (math.degrees(math.atan2(-across[0], across[1])),
+            math.degrees(math.asin(min(max(approach[2], -1.0), 1.0))))
+
+
+def hand_pitch(hand: dict) -> float | None:
+    """How far the hand points below the horizontal, degrees: wrist to middle knuckle, the Lens world
+    being y up. A pinch leaves that line alone; the fingers do not bend it."""
+
+    try:
+        wrist = np.asarray(hand["wrist"], dtype=float)
+        knuckle = np.asarray(hand["middleKnuckle"], dtype=float)
+    except (KeyError, TypeError, ValueError):
+        return None
+    along = knuckle - wrist
+    if along.shape != (3,) or not np.isfinite(along).all() or np.linalg.norm(along) < 1.0:
+        return None
+    return math.degrees(math.atan2(along[1], math.hypot(along[0], along[2])))
 
 
 def _hand_frame(hand: dict) -> list[list[float]] | None:
@@ -154,7 +170,10 @@ class B601HandMotion:
     way, JAW_PER_CM of its travel a centimetre (right closes, left opens),
     into ``jaw`` (0 closed, 1 open); it used to toggle open and shut. Missing
     tracking releases any clutch. Either hand drives: between gestures,
-    whichever starts one (it was the right hand only).
+    whichever starts one (it was the right hand only). While the pinch drags,
+    ``pitch`` is how far the hand points down (hand_pitch, steadied), for the
+    jaw to point as far down: level hand, level jaw; hand bent down at the
+    wrist, jaw straight down (the user, 2026-09-27, as the photos showed).
     """
 
     def __init__(self, scale: float = 1.0) -> None:
@@ -168,6 +187,8 @@ class B601HandMotion:
         self._pinky_since: float | None = None
         self.jaw = 0.0  # how far open the jaw is to be: 0 closed, 1 open
         self._jaw_start = 0.0
+        self.pitch: float | None = None  # while dragging: how far the hand points down, degrees
+        self._hand = None  # the driving hand's last packet
         self.state = "release pinch to arm"
 
     @staticmethod
@@ -217,6 +238,7 @@ class B601HandMotion:
             if theirs is not None and (mine is None or (busy(theirs) and not busy(mine))):
                 self.side, self._middle_since, self._pinky_since = other, None, None
         read = self._read(packet.get(self.side)) if fresh else None
+        self._hand = packet.get(self.side) if fresh else None
         try:
             look = np.asarray(head["look"], dtype=float)
             eye = np.asarray(head["p"], dtype=float)
@@ -265,13 +287,17 @@ class B601HandMotion:
             self.anchor_generation += 1
             self.gesture = gesture
             self._jaw_start = self.jaw
+            self.pitch = hand_pitch(self._hand) if gesture == "drag" else None
             self.state = {"drag": "drag: move palm up/forward/sideways", "turn": "turn: move the hand sideways",
                           "grip": "jaw: move the hand sideways, right closes"}[gesture]
             return np.zeros(3), np.eye(3)
         start, mapping = self.anchor
         moved = mapping @ (point - start)  # cm: forward, left, up
         if gesture == "drag":
-            self.state = "drag: move palm up/forward/sideways"
+            pitch = hand_pitch(self._hand)
+            if pitch is not None:
+                self.pitch = pitch if self.pitch is None else self.pitch + PITCH_SMOOTHING * (pitch - self.pitch)
+            self.state = "drag: move palm up/forward/sideways; tilt the hand to tilt the jaw"
             return moved * (self.scale / 100), np.eye(3)
         if gesture == "grip":  # the arm holds while the jaw is set
             self.jaw = min(max(self._jaw_start + JAW_PER_CM * moved[1], 0.0), 1.0)

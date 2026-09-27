@@ -331,17 +331,36 @@ class B601ControlTests(unittest.TestCase):
         self.assertIn("holding", bridge.error)
         self.assertEqual(bridge.motion.jaw, 0.4)  # the jaw is not dropped either
 
-    def test_a_drag_points_the_jaw_straight_down_turning_it_the_least(self) -> None:
-        from trashdrop.b601 import pointing_down
+    def test_the_jaw_frame_levels_its_fingers_and_reads_back(self) -> None:
+        from trashdrop.b601 import heading_and_pitch, jaw_frame
 
-        tilt = math.radians(40)  # parked: the jaw 40 degrees below the horizontal, along +x
-        parked = np.array([[math.cos(tilt), 0.0, math.sin(tilt)], [0.0, 1.0, 0.0],
-                           [-math.sin(tilt), 0.0, math.cos(tilt)]])
-        down = pointing_down(parked)
+        np.testing.assert_allclose(jaw_frame(0, 0), np.eye(3), atol=1e-12)  # the URDF zero pose's tool
+        down = jaw_frame(30, -90)
         np.testing.assert_allclose(down[:, 0], [0, 0, -1], atol=1e-12)
-        np.testing.assert_allclose(down.T @ down, np.eye(3), atol=1e-12)
-        np.testing.assert_allclose(down[:, 1], parked[:, 1], atol=1e-12)  # turned about y alone: 50 degrees
-        np.testing.assert_allclose(pointing_down(down), down, atol=1e-12)
+        for heading, pitch in ((30, -90), (-45, -20), (120, 0)):
+            frame = jaw_frame(heading, pitch)
+            np.testing.assert_allclose(frame.T @ frame, np.eye(3), atol=1e-12)
+            self.assertAlmostEqual(frame[2, 1], 0.0)  # the fingers' axis stays level
+            np.testing.assert_allclose(heading_and_pitch(frame), (heading, pitch), atol=1e-9)
+
+    def test_while_dragging_the_jaw_points_as_far_down_as_the_hand(self) -> None:
+        from trashdrop.b601 import hand_pitch
+
+        level = {"wrist": [0, 0, 20], "middleKnuckle": [0, 0, 28]}
+        bent = {"wrist": [0, 0, 20], "middleKnuckle": [0, -8, 20.0]}  # the Lens world is y up
+        self.assertAlmostEqual(hand_pitch(level), 0.0)
+        self.assertAlmostEqual(hand_pitch(bent), -90.0)
+        motion = B601HandMotion(scale=1.0)
+        motion.update(packet(pinch=False), 0)
+        motion.update(packet(pinch=True), 0)
+        start = motion.pitch
+        tilted = packet(pinch=True)
+        tilted["right"]["middleKnuckle"] = [0, -8, 20]
+        tilted["right"]["wrist"] = [0, 0, 20]
+        for _ in range(30):
+            motion.update(tilted, 0)
+        self.assertNotEqual(start, motion.pitch)
+        self.assertAlmostEqual(motion.pitch, -90.0, delta=1.0)
 
     def test_letting_go_of_thumb_and_pinky_stops_the_jaw_where_it_is(self) -> None:
         class Motion:

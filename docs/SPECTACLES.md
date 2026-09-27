@@ -492,6 +492,32 @@ and made the timeout likelier. Now:
   system programs (SIP), so a `perl`/`env` wrapper loses it and MacCAN fails
   to load ("load PCBUSB failed"). Start the SDK's python directly.
 
+**The arm fell again (15:20), fixed ~16:50; the jaw's tilt now follows the hand.**
+- The cause was different from 14:55. The control log shows J2 steady (set point
+  151.5, reading 152.5 degrees), then 14 degrees further down in under half a
+  second, and never pulled back although its set point stayed where it was.
+  J2's motor had gone limp. With the jaw forced straight down, the arm had been
+  stretched 60 cm out, and J2, an RS06 rated 11 N m (peak 36), held 10-13 N m
+  against gravity for 205 of the 218 s: its own protection tripped. The gravity
+  feed-forward was right (1 degree of error, where 13 N m at kp 150 would sag
+  5). The 14:51 session never loaded J2 past 7.6 N m; that fall was the CAN
+  handler, fixed at 8246970.
+- `LOAD_LIMIT` (8 N m on J1-J3, about 70% of the RS06's rating; 3.5 on the RS00
+  wrist): `_track` takes no step that would leave a joint holding more against
+  gravity ("at the load limit: J2 would hold 8 N m; come back or up"). On the
+  URDF, at 12 cm height the jaw reaches 35 cm straight down, or 50 cm at 45
+  degrees. The 15:20 pose would have loaded J2 with 12.7 N m.
+- On did-not-follow the arm is held where it is (set points = readings). Without
+  that, a motor that gave way and came back would snap 14 degrees back at full
+  torque. Motor temperatures and status codes are now in the control log; at
+  70 C or more the state names the hot motor.
+- The jaw no longer always points down, which made it hard to send forward.
+  While the pinch drags, the jaw points as far down as the hand does: the line
+  from the wrist to the middle knuckle, which a pinch leaves alone; level hand,
+  level jaw; hand bent down at the wrist, jaw straight down (the user's photos).
+  `jaw_frame(heading, pitch)` keeps the fingers level; thumb-middle still turns
+  the heading.
+
 With the SO-101 arms removed, stop any earlier bridge (the Lens hand socket
 can have only one owner), then run the camera-only unified page in the
 operator's camera-enabled terminal:
