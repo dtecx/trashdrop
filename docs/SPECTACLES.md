@@ -254,6 +254,18 @@ findings above were made; no replay tool is in the repo yet (worth adding).
    already streams the overhead camera with overlays and runs pick/auto
    sort/stop/speeds), and run the Spectacles bridge inside that same process
    (one program a bus), with a mode switch.
-4. Cleanups: delete `spectables/`; fix the Lens project's `.gitattributes`;
+4. **Recalibrate the left arm** (the team took it apart and may have put a
+   horn or the gripper back at another angle). Evidence, read with
+   `uv run trashdrop arm status` on 2026-09-27 03:30: `rig.toml`'s left
+   `touch_poses` reach `shoulder_pan` 105.5 deg, but the servo's limits now
+   are 836..2794 ticks, +-84 deg -- the pan's zero or range changed after
+   the tape was touched (the right arm agrees: touches to -97, limits
+   +-112). Its `wrist_roll_offset` (-80; the right arm's is 5) may be stale
+   too. In order, arm clear, bridge and `trashdrop web` stopped: `arm zero
+   left` if the gripper sits turned on the roll shaft; `rig touch left
+   --tape` (refits the placement, absorbing a pan offset; large residuals
+   mean a lift/elbow/flex zero is off: redo the servo calibration first);
+   `rig roll left`.
+5. Cleanups: delete `spectables/`; fix the Lens project's `.gitattributes`;
    add a session replay tool; reconcile the layout description in
    `AGENTS.md` with `rig.toml`.
