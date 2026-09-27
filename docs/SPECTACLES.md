@@ -333,6 +333,21 @@ or a verified compatible driver will be needed rather than importing the
 SDK into `trashdrop web` as it stands. The two SO-101 buses must remain
 owned by the web process.
 
+Mac feasibility check (read-only, 2026-09-27): the official SDK cloned into a
+separate Python 3.11 uv environment and MotorBridge imported on this Mac.
+The SDK's lockfile selected `cmeel-tinyxml2` 10, although its Pinocchio/URDF
+wheel links `libtinyxml2.11.dylib`; upgrading that package to 11 in the
+temporary environment made the 8-DoF URDF load. This proves imports, **not**
+USB-CAN or actuation. More importantly, SDK `RebotArm._make_controller()`
+selects the DM serial transport only for a `/dev/tty...` prefix (Mac ports
+are usually `/dev/cu...`), and the example `RebotArmEndPose.start()` leaves
+its first joint target at zero. Neither path is safe to use unchanged on
+the live arm. The eventual adapter must explicitly use
+`Controller.from_dm_serial(channel, 921600)`, read and validate all seven
+joint positions, seed every target to those measured positions **before**
+enabling, and never run `safe_home()` automatically on stop. The rig-specific
+base transform, workspace and collision clearance remain to be measured.
+
 - https://wiki.seeedstudio.com/rebot_b601_dm_getting_started/
 - https://wiki.seeedstudio.com/rebot_arm_b601_dm_pinocchio_meshcat/
 - https://github.com/Seeed-Projects/reBotArm_control_py
