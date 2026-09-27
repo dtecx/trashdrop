@@ -15,8 +15,9 @@ gripper: right closes, left opens, 10% of its travel a centimetre. Release
 any gesture to hold. Either hand drives: whichever starts a gesture.
 **NEUTRAL** parks to the recorded sleep pose and disables the motors; **HOLD**
 keeps the current position. The parked pose is in factory motor coordinates,
-not a new software zero. The one motion limit is 15 degrees/s per joint
-(gripper too): no travel, turn or floor envelope, so nothing but the operator
+not a new software zero. Motion is limited to 20 degrees/s per joint (the
+gripper 90) and by a load limit on each joint's torque (9 N m on J1-J3,
+3.5 on J4-J6): no travel, turn or floor envelope, so nothing but the operator
 keeps the gripper off the table. The joints stay inside their URDF limits.
 There is no collision detection.
 
