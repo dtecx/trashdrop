@@ -12,6 +12,8 @@ frames/
 artifacts/
 *.mp4
 *.png
+# ...but the README's logo is hand-made, not generated.
+!docs/assets/*.png
 MUJOCO_LOG.TXT
 
 # Captured dataset: large, and it belongs in shared storage rather than git.

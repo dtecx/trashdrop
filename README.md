@@ -1,20 +1,25 @@
 <div align="center">
 
-# TrashDrop
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.png">
+  <img src="docs/assets/logo-light.png" alt="TrashDrop" width="400">
+</picture>
+
+<br>
+<br>
 
 **Pinch the air, and a robot arm follows your hand.**
 
-This repository holds two things. The first is teleoperation of a reBot B601-RS arm
-through Snap Spectacles. The second is a cell in which two SO-101 arms sort trash by
-material. Both were built at the Alien Bazaar 2026 hackathon.
+Snap Spectacles teleoperation of a reBot B601-RS arm, and a two-arm SO-101 cell
+that sorts trash by material. Built at the Alien Bazaar 2026 hackathon.
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
-![uv](https://img.shields.io/badge/deps-uv-DE5FE9)
-![Snap Spectacles](https://img.shields.io/badge/Snap%20Spectacles-2024-FFFC00?logo=snapchat&logoColor=black)
-![Lens Studio](https://img.shields.io/badge/Lens%20Studio-5.15.4-FFFC00)
-![reBot B601-RS](https://img.shields.io/badge/arm-reBot%20B601--RS-2E7D32)
-![SO-101](https://img.shields.io/badge/arms-2%C3%97%20SO--101-555555)
-![MuJoCo](https://img.shields.io/badge/sim-MuJoCo-0A7BBB)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-7F3E99?style=flat-square&logo=python&logoColor=white&labelColor=111111)
+![uv](https://img.shields.io/badge/deps-uv-7F3E99?style=flat-square&labelColor=111111)
+![Snap Spectacles](https://img.shields.io/badge/Snap%20Spectacles-2024-7F3E99?style=flat-square&logo=snapchat&logoColor=white&labelColor=111111)
+![Lens Studio](https://img.shields.io/badge/Lens%20Studio-5.15.4-7F3E99?style=flat-square&labelColor=111111)
+![reBot B601-RS](https://img.shields.io/badge/arm-reBot%20B601--RS-7F3E99?style=flat-square&labelColor=111111)
+![SO-101](https://img.shields.io/badge/arms-2%C3%97%20SO--101-7F3E99?style=flat-square&labelColor=111111)
+![MuJoCo](https://img.shields.io/badge/sim-MuJoCo-7F3E99?style=flat-square&labelColor=111111)
 
 [Gestures](#gestures) · [How it works](#how-it-works) · [Quick start](#quick-start) ·
 [The sorting cell](#the-sorting-cell) · [Documentation](#documentation)
@@ -315,3 +320,11 @@ own crops.
 - [pinocchio](https://github.com/stack-of-tasks/pinocchio) for the B601's kinematics and
   gravity model, and [MuJoCo](https://mujoco.org) for the simulated cell.
 - Snap's Spectacles Interaction Kit and UI Kit, on which the Lens is built.
+
+<br>
+
+<div align="center">
+  <img src="docs/assets/fish.png" alt="" width="28">
+  <br>
+  <sub>TrashDrop · Alien Bazaar 2026</sub>
+</div>
