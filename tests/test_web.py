@@ -206,9 +206,13 @@ class SpectaclesControlsTests(unittest.TestCase):
         bridge.cell = Cell()
         bridge.hands = SimpleNamespace(presentation=True)
         bridge.active = bridge.starting = False
+        bridge.control_error = None
         bridge.mode, bridge.scale, bridge.facing = "pinch", 0.5, "same"
         bridge._wait_for_cell = lambda timeout=5.0: None
         bridge.set_presentation = lambda enabled: setattr(bridge.hands, "presentation", enabled)
+        self.assertFalse(bridge._report_context()["emptyPhotographed"])
+        bridge.cell.background = object()
+        self.assertTrue(bridge._report_context()["emptyPhotographed"])
 
         def start(**options):
             actions.append(("manual", options))
@@ -222,9 +226,10 @@ class SpectaclesControlsTests(unittest.TestCase):
         self.assertIsNone(bridge._run_lens_command({"command": "manual", "enabled": True}))
         self.assertIsNone(bridge._run_lens_command({"command": "auto", "enabled": True}))
         self.assertIsNone(bridge._run_lens_command({"command": "neutral"}))
+        self.assertIsNone(bridge._run_lens_command({"command": "empty"}))
         self.assertIsNone(bridge._run_lens_command({"command": "presentation", "enabled": False}))
         self.assertEqual(actions, [("manual", {"mode": "pinch", "scale": 0.5, "facing": "same"}),
-                                   "manual stop", "auto", "stop", "neutral"])
+                                   "manual stop", "auto", "stop", "neutral", "empty"])
         self.assertFalse(bridge.hands.presentation)
 
     def test_spectacles_video_draws_the_same_sorting_information_as_the_page(self) -> None:

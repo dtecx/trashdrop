@@ -100,17 +100,18 @@ class ManualBridge:
         manual = self.active or self.starting
         auto = self.cell.auto or self.cell.busy == "auto"
         context = {"manual": manual, "auto": auto, "busy": self.cell.busy,
-                   "controlError": self.control_error}
+                   "controlError": self.control_error,
+                   "emptyPhotographed": getattr(self.cell, "background", None) is not None}
         if not manual:
             context.update(arms={}, hands={}, status=("auto sort: running" if auto else
                            "moving arms to neutral" if self.cell.busy == "neutral" else "ready"))
         return context
 
     def _lens_command(self, message: dict) -> bool:
-        """Run the four Lens controls through the same cell owner as the web page."""
+        """Run Lens controls through the same cell owner as the web page."""
 
         action = message.get("command")
-        if action not in ("presentation", "manual", "auto", "neutral"):
+        if action not in ("presentation", "manual", "auto", "neutral", "empty"):
             return False
         with self._command_lock:
             self.control_error = self._run_lens_command(message)
@@ -161,6 +162,13 @@ class ManualBridge:
                 if error:
                     return error
             return self.cell.begin("auto")
+        if action == "empty":
+            if self.active or self.starting:
+                self.stop()
+            if self.cell.busy == "auto":
+                self.cell.stop()
+            error = self._wait_for_cell()
+            return error or self.cell.begin("empty")
         if self.active or self.starting:
             self.stop()
         if self.cell.busy == "auto":
@@ -317,7 +325,7 @@ class ManualBridge:
         return "Spectacles manual mode stopped; the arms hold where they are"
 
     def command(self, message: dict) -> str | None:
-        if message.get("command") in ("presentation", "manual", "auto", "neutral"):
+        if message.get("command") in ("presentation", "manual", "auto", "neutral", "empty"):
             self._lens_command(message)
             return self.control_error
         if not self.active:

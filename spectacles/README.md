@@ -76,7 +76,11 @@ its wrist briefly to open the menu beside it. The two large controls are
 hand control); the active mode is highlighted. **NEUTRAL** returns both arms
 to their saved upright pose, and the small **EXIT UI** returns to the web
 controls. The menu holds the arms while it is open, so tapping it cannot
-become a robot-hand gesture. Look away and it closes after a short pause.
+become a robot-hand gesture. It closes after a mode choice, or after you look
+away for a short pause. Grabbing, resizing or pressing the video Frame holds
+both arms too; release your pinches before driving again. If AUTO says it
+needs an empty zone, clear the taped area, tap **EMPTY ZONE** in the menu to
+photograph it, then tap **AUTO** again. Do not capture an item as background.
 Manual mode uses
 the hand-control scheme selected on the page before entering. In auto mode,
 the movable video Frame shows the same sorting information as the web page,

@@ -117,10 +117,12 @@ arm): `mode` (holding/moving/turning/lost/centring/calibrating), `blocked`
 (directions in the wearer's words), `tip` (fingertip cm above the table);
 joystick mode adds `centre`, `axes`, `half` (the dead-zone box). The Lens
 falls back to showing plain text from an older bridge.
-The unified web bridge adds `manual`, `auto`, `busy`, `controlError` and
-`presentation` even when no hand follower is running, so the four controls
-show the actual cell state. Lens commands are `manual` and `auto` with an
-`enabled` boolean, `neutral`, and `presentation` with `enabled: false`.
+The unified web bridge adds `manual`, `auto`, `busy`, `controlError`,
+`emptyPhotographed` and `presentation` even when no hand follower is
+running, so the controls show the actual cell state. Lens commands are
+`manual` and `auto` with an `enabled` boolean, `neutral`, `empty`
+(explicitly photograph the cleared zone), and `presentation` with
+`enabled: false`.
 
 ### Video
 
@@ -265,12 +267,19 @@ findings above were made; no replay tool is in the repo yet (worth adding).
    0.45 s to reveal the menu beside it. The menu stays fixed in space while
    pressed and hides after 1.6 s without a look at the wrist or menu.
    While it is open, hand packets are marked untracked so menu pinches hold
-   the robot instead of dragging it. **MANUAL** starts or stops following the
+   the robot instead of dragging it. Grabbing, resizing or pressing the video
+   Frame also holds both arms; release both pinches before hand control resumes.
+   Mode actions close the menu after the UIKit trigger has finished, so manual
+   control does not stay blocked by a menu still under the wearer's gaze.
+   **MANUAL** starts or stops following the
    wearer's tracked hands; **AUTO** starts or stops ordinary sorting; **NEUTRAL**
    stops the active mode and returns both arms to their saved neutral poses;
    **EXIT UI** returns to the web controls. Starting a mode first releases the
-   previous owner of the arms. Active modes are highlighted; neutral is
-   prominent and exit is small. The next real optical snapshots decide final
+   previous owner of the arms. If no empty-zone reference exists, the menu
+   offers **EMPTY ZONE**: clear the taped zone, capture its background, then
+   tap **AUTO** again. It never photographs automatically with an item present.
+   Active modes are highlighted; neutral is prominent and exit is small.
+   The next real optical snapshots decide final
    type and angular sizes. In auto mode the video also draws a planned path
    arrow from the selected grasp to the chosen drop; this is not live motion
    tracking.
