@@ -6,14 +6,17 @@ The B601 bridge uses the same Lens, palm menu and overhead video Frame as
 the two-SO-101 demo. Its one extra **B601** button enables the central arm;
 **MANUAL** and **AUTO** remain visible but report that the removed SO-101 arms
 are offline. Index/thumb pinch moves the tool in XYZ from the palm's centre;
-thumb/middle touch held briefly rotates it without moving its position.
-Release either gesture to hold. Thumb/pinky toggles the gripper. Separating
-move and turn prevents normal wrist motion during a lift from blocking IK.
+thumb/middle touch held briefly, then a sideways move, turns it about the
+vertical (right: clockwise from above, 5 degrees a centimetre) without moving
+its position. Thumb/pinky touch held briefly, then a sideways move, sets the
+gripper: right closes, left opens, 10% of its travel a centimetre. Release
+any gesture to hold.
 **NEUTRAL** parks to the recorded sleep pose and disables the motors; **HOLD**
 keeps the current position. The parked pose is in factory motor coordinates,
-not a new software zero. Live motion is capped at 8 degrees/s per arm joint,
-4 degrees/s at the gripper, 15 degrees per joint from startup and 5 cm of
-tool travel. These are commissioning limits, not collision detection.
+not a new software zero. The one motion limit is 15 degrees/s per joint
+(gripper too): no travel, turn or floor envelope, so nothing but the operator
+keeps the gripper off the table. The joints stay inside their URDF limits.
+There is no collision detection.
 
 Stop any earlier `trashdrop web` or B601 bridge first: one process owns the
 Lens socket and the B601 CAN bus. With the official B601 SDK and MacCAN

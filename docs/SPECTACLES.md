@@ -368,14 +368,45 @@ of J3 travel for a 5 cm vertical lift, beyond the initial eight-degree
 envelope; four degrees/s made the small allowed motion hard to see. The
 revised B601 algorithm uses right thumb/index pinch for palm-centre XYZ only
 and thumb/middle touch for orientation only, with release between gestures.
-Thumb/pinky toggles the gripper. It is capped at 8 degrees/s on arm joints,
-4 degrees/s on the gripper, 15 degrees per arm joint from the session start,
-5 degrees of gripper travel, 5 cm tool travel and 15 degrees tool rotation.
-Downward movement below the starting gripper height is refused because the
-parked gripper is close to the table. Hand loss or menu interaction holds the
-command and requires an unpinch/re-pinch. This is a cautious commissioning
-envelope, **not a measured collision checker**. The six non-base axes have
-not yet had a real movement test.
+Thumb/pinky toggled the gripper, and it was capped at 8 degrees/s on arm
+joints, 15 degrees per arm joint from the session start, 5 cm tool travel,
+15 degrees tool rotation and no lower than the start.
+
+**Pinch control rewritten for the B601 (2026-09-27 ~14:50, "moves, but very
+crooked").** The control log of the 14:18 session showed why: while the hand
+dragged, 77% of the ticks ended in "at the short demo reach limit" (plus
+joint, IK, turn and floor refusals), and only 14% moved. Each tick solved IK
+to the absolute target and threw the whole target away on any refusal, so the
+arm stood still until a later target got through and then lunged at it; the
+speed clip joint by joint bent its path. Now, as the SO-101 pinch mode does:
+- every tick is one damped least-squares step (`b601_motor.dls_step`) towards
+  the target, scaled down as a whole to the speed cap so the tool keeps its
+  direction; out of reach it gets as near as it can and slides along a joint
+  limit, never stopping dead;
+- the **only** motion limit, at the user's request, is **15 degrees/s** per
+  joint (the gripper too). There is no travel, turn or floor envelope any more:
+  nothing keeps the jaw off the table except the operator. The URDF joint
+  limits (2 degrees inside the mechanical stops) stay, and so do the
+  did-not-follow hold and the LIVE gate. NEUTRAL now parks from anywhere, at
+  15 degrees/s, joint by joint straight home: watch a long way back;
+- thumb/index pinch drags the tool in XYZ from the palm centre, its
+  orientation held (unchanged);
+- thumb/middle held, then a sideways move, turns the tool about the vertical,
+  5 degrees a centimetre, right = clockwise from above (the SO-101 wrist-roll
+  gesture). It used to follow the whole hand's orientation from the knuckles,
+  which jitters;
+- thumb/pinky held, then a sideways move, sets how far the jaw is open, 10%
+  of its travel a centimetre: right closes, left opens (the user's request).
+  The travel is still `GRIP_ENVELOPE`, 5 degrees of the gripper motor: its
+  open position has not been measured, and past its mechanical stop the motor
+  would push. Measure it and widen that constant.
+Replayed on the 14:18 hand recording with the real URDF: the arm moves in 96%
+of the dragging ticks (at a joint limit in 1.5%), almost always at the 15
+degree/s cap, the tool 1.8 cm behind its target at the median, 6.7 cm at p90.
+Still to do: the motors sag about 2.3 degrees under gravity (no feed-forward;
+the SDK's `compute_generalized_gravity` with `tau_scale` from
+`config/rebotarm_rs.yaml` is the vetted fix); the dragging hand is the right
+one only.
 
 With the SO-101 arms removed, stop any earlier bridge (the Lens hand socket
 can have only one owner), then run the camera-only unified page in the

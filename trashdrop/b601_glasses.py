@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from .b601 import B601HandMotion, B601Preview
-from .b601_motor import B601Motor
+from .b601_motor import JOINT_SPEED, B601Motor
 from .spectacles import (
     VIDEO_CAPTURE_HEIGHT, VIDEO_CAPTURE_WIDTH, VIDEO_FPS, VIDEO_PORT, VIDEO_QUALITY, VIDEO_WIDTH,
     Hands, VideoFrames, make_server, make_video_server, usb_tunnel,
@@ -49,8 +49,6 @@ class B601GlassesBridge:
         self.driver: B601Motor | None = None
         self.anchor_pose: tuple[np.ndarray, np.ndarray] | None = None
         self.anchor_generation = 0
-        self.grip_open = False
-        self.grip_latched = False
         self.server = None
         self.video = self.video_server = None
         self.telemetry = None
@@ -168,11 +166,11 @@ class B601GlassesBridge:
                     self.error = f"B601 enable refused: {exc}"
                     return
                 self.driver = motor
-            self.motion = B601HandMotion(scale=1.0)
+            self.motion = self._fresh_motion()
             self.anchor_pose = None
             self.anchor_generation = 0
             self.mode = "live"
-            print("B601 LIVE enabled: seven present-position holds; 8 deg/s joint cap", flush=True)
+            print(f"B601 LIVE enabled: seven present-position holds; {math.degrees(JOINT_SPEED):.0f} deg/s joint cap", flush=True)
         elif action == "neutral":
             if self.driver is not None:
                 if self.driver.start_park():
@@ -199,28 +197,13 @@ class B601GlassesBridge:
         elif action in ("manual", "auto", "empty"):
             self.error = "SO-101 is unplugged; B601 remains available in the same Lens"
 
-    def _grip(self, packet: dict | None, age: float) -> None:
-        if self.driver is None or age > 0.3 or not isinstance(packet, dict):
-            self.grip_latched = False
-            return
-        hand = packet.get("right")
-        if not isinstance(hand, dict) or not hand.get("tracked") or hand.get("pinch"):
-            self.grip_latched = False
-            return
-        try:
-            thumb = np.asarray(hand["thumb"], dtype=float)
-            pinky = np.asarray(hand["pinkyTip"], dtype=float)
-            gap = float(np.linalg.norm(thumb - pinky))
-        except (KeyError, TypeError, ValueError):
-            return
-        if not math.isfinite(gap):
-            return
-        if gap > 5.5:
-            self.grip_latched = False
-        elif gap < 2.5 and not self.grip_latched:
-            self.grip_latched = True
-            self.grip_open = not self.grip_open
-        self.driver.set_grip(self.grip_open)
+    def _fresh_motion(self) -> B601HandMotion:
+        """New clutches that keep the jaw where it is: a new one would otherwise close it."""
+
+        motion = B601HandMotion(scale=1.0)
+        if self.driver is not None:
+            motion.jaw = self.driver.grip_fraction()
+        return motion
 
     def tick(self) -> None:
         for command in self.hands.take_commands():
@@ -231,7 +214,7 @@ class B601GlassesBridge:
         elif self.mode == "live" and self.driver is not None:
             if not self.hands.connected:
                 self.driver.hold()
-                self.motion = B601HandMotion(scale=1.0)
+                self.motion = self._fresh_motion()
                 self.anchor_pose = None
                 self.anchor_generation = 0
             else:
@@ -239,7 +222,6 @@ class B601GlassesBridge:
                 if displacement is None:
                     self.driver.hold()
                     self.anchor_pose = None
-                    self._grip(packet, age)
                 else:
                     if self.anchor_generation != self.motion.anchor_generation:
                         self.anchor_pose = self.driver.tool_pose()
@@ -249,6 +231,8 @@ class B601GlassesBridge:
                         target_position = self.anchor_pose[0] + delta
                         target_rotation = rotation @ self.anchor_pose[1]
                         self.driver.target_tool(target_position, target_rotation)
+                # Thumb-pinky sets how far the jaw is open; every tick, so a hold keeps it there.
+                self.driver.set_grip_fraction(self.motion.jaw)
         if self.driver is not None:
             try:
                 parked = self.driver.step()
@@ -296,7 +280,7 @@ class B601GlassesBridge:
             joints = [round(math.degrees(angle), 1) for angle in self.driver.feedback]
             guide = {"mode": "moving" if self.mode in ("live", "parking") else "holding",
                      "state": self.motion.state if self.mode == "live" and state.startswith("holding:") else state,
-                     "joints": joints, "jaw": 60 if self.grip_open else 0,
+                     "joints": joints, "jaw": round(self.motion.jaw * 100),
                      "blocked": ["down"] if "table" in state else []}
         elif self.mode == "preview":
             guide = self.preview.guide()

@@ -93,6 +93,9 @@ class B601LiveTests(unittest.TestCase):
             def start_park(self):
                 return True
 
+            def grip_fraction(self):
+                return 0.0
+
         bridge = B601GlassesBridge(live_allowed=True, sdk_root=Path("/unused"))
         bridge.driver = FakeMotor()
         bridge.mode = "live"
@@ -174,6 +177,81 @@ class B601LiveTests(unittest.TestCase):
                 self.assertEqual(cell.state()["scene"]["size"], [640, 480])
             finally:
                 cell.close()
+
+
+def touching(*, x: float = 0.0, pinky: bool = False) -> dict:
+    """The right hand, index well apart, thumb touching the middle tip or (``pinky``) the pinky tip.
+
+    Looking along +z, as ``packet`` does, the wearer's right is -x.
+    """
+
+    message = packet(pinch=False, x=x, middle_touch=not pinky)
+    hand = message["right"]
+    hand["middleTip"] = [x + (1 if not pinky else 5), 0, 20]
+    hand["pinkyTip"] = [x + (1 if pinky else 6), 0, 20]
+    return message
+
+
+class B601ControlTests(unittest.TestCase):
+    """The pinch control made for the B601 after the 14:18 session: no range envelope, one speed cap."""
+
+    def test_a_step_keeps_its_direction_when_the_speed_cap_shrinks_it(self) -> None:
+        from trashdrop.b601_motor import dls_step
+
+        q = np.zeros(6)
+        jacobian = np.diag([1.0, 0.5, 0.25, 1.0, 1.0, 1.0])  # one metre a radian on x, half on y...
+        error = np.array([0.05, 0.05, 0.0, 0, 0, 0])
+        moved, pinned = dls_step(q, error, jacobian, np.full(6, -3.0), np.full(6, 3.0), 0.05)
+        self.assertEqual(pinned, [])
+        self.assertAlmostEqual(np.max(np.abs(moved)), JOINT_SPEED * 0.05)  # the cap, on the fastest joint
+        self.assertAlmostEqual(moved[1] / moved[0], 2.0, delta=0.01)  # joint by joint it would be 1; damping: 1.998
+
+    def test_a_target_out_of_reach_slides_along_a_limit_instead_of_stopping(self) -> None:
+        from trashdrop.b601_motor import LIMIT_MARGIN, dls_step
+
+        q = np.array([0.5 - LIMIT_MARGIN, 0, 0, 0, 0, 0])
+        error = np.array([0.05, 0.05, 0, 0, 0, 0])
+        moved, pinned = dls_step(q, error, np.eye(6), np.full(6, -0.5), np.full(6, 0.5), 0.05)
+        self.assertEqual(pinned, [0])
+        self.assertAlmostEqual(moved[0], q[0])  # held at the limit...
+        self.assertGreater(moved[1], 0.0)  # ...while the other joint still goes
+
+    def test_a_joint_starting_past_its_stop_may_only_come_back(self) -> None:
+        from trashdrop.b601_motor import dls_step
+
+        q = np.array([-0.012, 0, 0, 0, 0, 0])  # the park pose: J2 at -0.69 degrees, its limit 0
+        down, pinned = dls_step(q, np.array([-0.05, 0, 0, 0, 0, 0]), np.eye(6), np.zeros(6), np.ones(6), 0.05)
+        self.assertEqual((down[0], pinned), (q[0], [0]))
+        up, _ = dls_step(q, np.array([0.05, 0, 0, 0, 0, 0]), np.eye(6), np.zeros(6), np.ones(6), 0.05)
+        self.assertGreater(up[0], q[0])
+
+    def test_thumb_middle_and_a_move_right_turn_the_tool_clockwise_from_above(self) -> None:
+        motion = B601HandMotion(scale=1.0)
+        motion.update(packet(pinch=False), 0, now=0.0)
+        motion.update(touching(), 0, now=0.1)
+        motion.update(touching(), 0, now=0.3)
+        delta, rotation = motion.update(touching(x=-4.0), 0, now=0.4)  # 4 cm to the wearer's right
+        np.testing.assert_allclose(delta, np.zeros(3))
+        self.assertAlmostEqual(math.degrees(math.atan2(rotation[1, 0], rotation[0, 0])), -20.0)
+        np.testing.assert_allclose(rotation[:, 2], [0, 0, 1], atol=1e-12)  # about the vertical only
+
+    def test_thumb_pinky_and_a_sideways_move_set_the_jaw_while_the_arm_holds(self) -> None:
+        from trashdrop.b601 import JAW_PER_CM
+
+        motion = B601HandMotion(scale=1.0)
+        motion.update(packet(pinch=False), 0, now=0.0)
+        self.assertIsNone(motion.update(touching(pinky=True), 0, now=0.1))  # not held long enough yet
+        motion.update(touching(pinky=True), 0, now=0.3)
+        delta, rotation = motion.update(touching(pinky=True, x=3.0), 0, now=0.4)  # 3 cm left: opens
+        np.testing.assert_allclose(delta, np.zeros(3))
+        np.testing.assert_allclose(rotation, np.eye(3))
+        self.assertAlmostEqual(motion.jaw, 3 * JAW_PER_CM)
+        motion.update(packet(pinch=False), 0, now=0.5)  # let go: it stays
+        self.assertAlmostEqual(motion.jaw, 3 * JAW_PER_CM)
+        motion.update(touching(pinky=True, x=10.0), 0, now=0.6)
+        motion.update(touching(pinky=True, x=10.0), 0, now=0.8)
+        motion.update(touching(pinky=True, x=-20.0), 0, now=0.9)  # far right: shut, and no further
+        self.assertEqual(motion.jaw, 0.0)
 
 
 if __name__ == "__main__":

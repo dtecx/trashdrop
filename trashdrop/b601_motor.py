@@ -16,13 +16,22 @@ from pathlib import Path
 import numpy as np
 
 
-JOINT_SPEED = math.radians(8.0)  # still far below the SO-101 teleop rate; user requested a less sluggish B601
-GRIP_SPEED = math.radians(4.0)
-JOINT_ENVELOPE = math.radians(15.0)  # 5 cm lift at the recorded pose needs about 12 degrees at J3
+# The one motion limit for now (the user, 2026-09-27 14:40): no travel, turn or floor envelope. The
+# old demo envelope (5 cm, 15 degrees, not below the start) refused 77% of the drag ticks of the
+# 14:18 session, and a refused target left the arm standing until the next one got through.
+JOINT_SPEED = math.radians(15.0)
+GRIP_SPEED = math.radians(15.0)
+# Not a demo limit: the gripper motor's open position is not measured yet, and a target past its
+# mechanical stop would have the motor push against it.
 GRIP_ENVELOPE = math.radians(5.0)
-MAX_TOOL_TRAVEL = 0.05  # metres from the session's starting tool position
-MAX_TOOL_ROTATION = math.radians(15.0)
 FOLLOW_ERROR = math.radians(5.0)
+# Each tick takes one damped least-squares step of the six arm joints towards the tool target.
+IK_GAIN = 6.0  # 1/s: the step heads for the target at this rate, then JOINT_SPEED caps it
+IK_DAMPING = 0.02  # m: keeps the step small and steady near a singular pose
+ROTATION_WEIGHT = 0.1  # m per rad: a radian of tool orientation counts like 10 cm of position
+LEAD_M = 0.05  # a tick aims at most this far ahead of the tool...
+LEAD_RAD = math.radians(20.0)  # ...or turns towards at most this much of its orientation
+LIMIT_MARGIN = math.radians(2.0)  # kept inside the URDF joint limits, the mechanical stops
 HOST_ID = 0xFD
 MECH_POS = 0x7019
 MODELS = ("rs-06", "rs-06", "rs-06", "rs-00", "rs-00", "rs-00", "rs-00")
@@ -51,6 +60,32 @@ def velocity_step(current: np.ndarray, desired: np.ndarray, elapsed: float) -> n
     return current + np.clip(desired - current, -limit, limit)
 
 
+def dls_step(q: np.ndarray, error: np.ndarray, jacobian: np.ndarray, lower: np.ndarray, upper: np.ndarray,
+             dt: float, speed: float = JOINT_SPEED) -> tuple[np.ndarray, list[int]]:
+    """One damped least-squares step of the six arm joints towards a tool error; and the joints held at a limit.
+
+    ``error``: the tool's position (m) and orientation (rotation vector, rad) short of the target,
+    in the base frame, as ``jacobian`` (6 x 6, LOCAL_WORLD_ALIGNED). The step heads for the target
+    at IK_GAIN; when any joint would pass ``speed``, the whole step shrinks together, so the tool
+    keeps its direction (clipping joint by joint bends its path). A target out of reach leaves the
+    arm as near as it gets, and it slides along a joint limit rather than stopping dead.
+    """
+
+    weights = np.array([1.0, 1.0, 1.0, ROTATION_WEIGHT, ROTATION_WEIGHT, ROTATION_WEIGHT])
+    weighted = weights[:, None] * jacobian
+    step = weighted.T @ np.linalg.solve(weighted @ weighted.T + IK_DAMPING ** 2 * np.eye(6), weights * error)
+    velocity = IK_GAIN * step
+    fastest = float(np.max(np.abs(velocity))) / speed
+    if fastest > 1.0:
+        velocity /= fastest
+    wanted = q + velocity * max(dt, 0.0)
+    # A joint that starts past its margin (the park pose sits at a factory stop) may come inward only.
+    low = np.minimum(lower + LIMIT_MARGIN, q)
+    high = np.maximum(upper - LIMIT_MARGIN, q)
+    moved = np.clip(wanted, low, high)
+    return moved, [joint for joint in range(len(q)) if moved[joint] != wanted[joint]]
+
+
 class B601Motor:
     """One owner for seven motors; only enabled after an explicit LIVE command."""
 
@@ -67,8 +102,7 @@ class B601Motor:
         self._feedback_index = 0
         self._last_at = 0.0
         self._park_settle_since = 0.0
-        self._start_position = self._start_rotation = None
-        self._floor_z = 0.0
+        self.target: tuple[np.ndarray, np.ndarray] | None = None  # where the tool is headed, base frame
         self._sdk_root = self.urdf.parents[3]
         self.fault: str | None = None
         self.parking = False
@@ -131,8 +165,6 @@ class B601Motor:
                 if abs(self._read(motor) - angle) > math.radians(1):
                     raise RuntimeError(f"B601 J{index} moved unexpectedly while enabling")
             self._last_at = time.monotonic()
-            self._start_position, self._start_rotation = self.tool_pose()
-            self._floor_z = float(self._start_position[2])
             self.state = "holding: pinch with the right hand"
         except Exception:
             self.close()
@@ -151,51 +183,58 @@ class B601Motor:
         return frame.translation.copy(), frame.rotation.copy()
 
     def target_tool(self, position: np.ndarray, rotation: np.ndarray) -> bool:
-        """Solve a small 6-DoF tool step, refusing limits or downward motion."""
-
-        import pinocchio as pin
-        from reBotArm_control_py.kinematics.inverse_kinematics import IKParams, solve_ik
+        """Head the tool for this pose; step() takes it there at no more than JOINT_SPEED."""
 
         if (position.shape != (3,) or rotation.shape != (3, 3) or
                 not np.isfinite(position).all() or not np.isfinite(rotation).all()):
             raise ValueError("invalid B601 tool target")
+        self.target = (position.copy(), rotation.copy())
+        return True
+
+    def _track(self, dt: float) -> None:
+        """Set this tick's six joint set points one damped least-squares step towards the target."""
+
+        import pinocchio as pin
+
         q = np.zeros(self.model.nq)
         q[:6] = self.command[:6]
         pin.forwardKinematics(self.model, self.data, q)
         pin.updateFramePlacements(self.model, self.data)
-        if position[2] < self._floor_z - 1e-4:
-            self.state = "at the table: downward motion blocked"
-            return False
-        if np.linalg.norm(position - self._start_position) > MAX_TOOL_TRAVEL + 1e-4:
-            self.state = "at the short demo reach limit"
-            return False
-        if np.linalg.norm(pin.log3(rotation @ self._start_rotation.T)) > MAX_TOOL_ROTATION + 1e-4:
-            self.state = "at the short demo turn limit"
-            return False
-        result = solve_ik(self.model, self.data, self.tip_id, pin.SE3(rotation, position), q,
-                          IKParams(max_iter=60, tolerance=0.003, step_size=0.5, damping=1e-4),
-                          controlled_joints=6)
-        if not result.success or not np.isfinite(result.q).all():
-            self.state = "at the IK limit: holding"
-            return False
-        candidate = np.asarray(result.q[:6])
+        frame = self.data.oMf[self.tip_id]
+        position, rotation = self.target
+        short = position - frame.translation
+        turn = pin.log3(rotation @ frame.rotation.T)
+        distance, angle = float(np.linalg.norm(short)), float(np.linalg.norm(turn))
+        if distance > LEAD_M:
+            short *= LEAD_M / distance
+        if angle > LEAD_RAD:
+            turn *= LEAD_RAD / angle
+        jacobian = pin.computeFrameJacobian(self.model, self.data, q, self.tip_id,
+                                            pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)[:, :6]
         lower = np.asarray(self.model.lowerPositionLimit[:6])
         upper = np.asarray(self.model.upperPositionLimit[:6])
-        if (np.any(candidate < lower - math.radians(2)) or
-                np.any(candidate > upper + math.radians(2)) or
-                np.any((self.start[:6] < lower) & (candidate < self.start[:6] - 1e-4)) or
-                np.any((self.start[:6] > upper) & (candidate > self.start[:6] + 1e-4)) or
-                np.any(np.abs(candidate - self.start[:6]) > JOINT_ENVELOPE)):
-            self.state = "at a joint limit: holding"
-            return False
-        self.desired[:6] = candidate
-        self.state = "following right hand · 8°/s max"
-        return True
+        moved, pinned = dls_step(self.command[:6], np.concatenate((short, turn)), jacobian, lower, upper, dt)
+        self.desired[:6] = moved
+        if pinned:
+            self.state = "at a joint limit: " + ", ".join(f"J{joint + 1}" for joint in pinned)
+        elif distance < 0.003 and angle < math.radians(1.0):
+            self.state = "at the hand"
+        else:
+            self.state = f"following the hand · {math.degrees(JOINT_SPEED):.0f}°/s max"
 
     def set_grip(self, open_grip: bool) -> None:
-        self.desired[6] = self.start[6] + (GRIP_ENVELOPE if open_grip else 0.0)
+        self.set_grip_fraction(1.0 if open_grip else 0.0)
+
+    def set_grip_fraction(self, fraction: float) -> None:
+        """Open the jaw this share of its travel (0: as it was at LIVE, GRIP_ENVELOPE further: 1)."""
+
+        self.desired[6] = self.start[6] + GRIP_ENVELOPE * min(max(float(fraction), 0.0), 1.0)
+
+    def grip_fraction(self) -> float:
+        return min(max(float(self.desired[6] - self.start[6]) / GRIP_ENVELOPE, 0.0), 1.0)
 
     def hold(self) -> None:
+        self.target = None
         self.desired = self.command.copy()
         self.parking = False
         self.state = "holding: release and re-pinch to continue"
@@ -203,9 +242,9 @@ class B601Motor:
     def start_park(self) -> bool:
         if self.command is None:
             return False
-        if np.max(np.abs(self.command - self.park)) > math.radians(15):
-            self.state = "too far from saved sleep pose: holding"
-            return False
+        # From anywhere now that nothing keeps the arm near it (it refused past 15 degrees): the
+        # joints go straight to the sleep pose at JOINT_SPEED, so watch a long way home.
+        self.target = None
         self.desired = self.park.copy()
         self.parking = True
         self._park_settle_since = 0.0
@@ -218,7 +257,10 @@ class B601Motor:
         if self.command is None:
             return False
         now = time.monotonic()
-        self.command = velocity_step(self.command, self.desired, max(0.0, now - self._last_at))
+        elapsed = max(0.0, now - self._last_at)
+        if self.target is not None and not self.parking:
+            self._track(min(elapsed, 0.05))
+        self.command = velocity_step(self.command, self.desired, elapsed)
         self._last_at = now
         for motor, angle, (kp, kd) in zip(self.motors, self.command, GAINS):
             motor.send_mit(float(angle), 0.0, kp, kd, 0.0)
