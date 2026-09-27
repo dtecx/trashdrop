@@ -23,6 +23,12 @@ type Card = {
 
 const OPEN_PERCENT = 30;
 const HEIGHT_RANGE = [3, 35];
+// Keep the control HUD deterministically above the movable video Frame.
+// Shared render order zero flickers as coplanar UIKit surfaces rotate in stereo.
+const HUD_RENDER_ORDER = 10;
+// UIKit may still own a hovered button for a few frames after trigger-up.
+// Disabling that hierarchy in the callback can crash the native hover code.
+const HIDE_DELAY_S = 1;
 
 export class SpectaclesUI {
   private cards: { left: Card; right: Card };
@@ -31,11 +37,13 @@ export class SpectaclesUI {
   private jawOpen = false;
   private precisionLabel: Text;
   private gripLabel: Text;
+  private holdLabel: Text;
   private stopped = false;
   private menu: SceneObject;
-  private exitButton: SceneObject;
   private video: SceneObject | null = null;
   private presentationVisible = true;
+  private hideAt = 0;
+  private recenterRequested = false;
 
   constructor(private camera: SceneObject, private send: (command: Command) => void) {
     this.view = camera.getComponent("Component.Camera") as Camera;
@@ -50,10 +58,11 @@ export class SpectaclesUI {
 
   public placeVideo(frame: SceneObject) {
     this.video = frame;
-    this.place(frame, new vec2(0.5, 0.55), 62);
+    this.place(frame, new vec2(0.5, 0.55), 78);
   }
 
   public updateReport(report: any) {
+    this.applyDelayedHide();
     if (typeof report.presentation === "boolean") {
       this.setPresentation(report.presentation);
     }
@@ -65,7 +74,8 @@ export class SpectaclesUI {
     }
     this.precision = typeof report.scale === "number" && report.scale <= 0.5;
     this.stopped = report.stopped === true;
-    this.setText(this.precisionLabel, this.precision ? "PRECISE  1/2" : "PRECISION");
+    this.setText(this.precisionLabel, this.precision ? "NORMAL MODE" : "FINE MODE");
+    this.setText(this.holdLabel, this.stopped ? "RESUME" : "HOLD ARMS");
     const jaws = [this.cards.left.guide, this.cards.right.guide]
       .filter((guide) => guide !== null && typeof guide.jaw === "number") as ArmGuide[];
     this.jawOpen = jaws.length > 0 && jaws.every((guide) => (guide.jaw as number) >= OPEN_PERCENT);
@@ -73,6 +83,11 @@ export class SpectaclesUI {
   }
 
   public updateHands(message: any) {
+    this.applyDelayedHide();
+    if (this.recenterRequested) {
+      this.recenterRequested = false;
+      this.layout();
+    }
     for (const side of ["left", "right"] as const) {
       const hand = message && message[side];
       const marker = this.cards[side].marker;
@@ -112,24 +127,28 @@ export class SpectaclesUI {
       this.send({ command: "jaw", open: !this.jawOpen });
     });
     this.gripLabel = grip.label;
-    const precision = this.createButton(menu, "PRECISION", 0, 2.1, () => {
+    const precision = this.createButton(menu, "FINE MODE", 0, 2.1, () => {
       this.precision = !this.precision;
-      this.setText(this.precisionLabel, this.precision ? "PRECISE  1/2" : "PRECISION");
+      this.setText(this.precisionLabel, this.precision ? "NORMAL MODE" : "FINE MODE");
       this.send({ command: "precision", enabled: this.precision });
     });
     this.precisionLabel = precision.label;
-    this.createButton(menu, "HOME", 7.6, 2.1, () => this.send({ command: "home" }));
-    const stop = this.createButton(menu, "STOP", -3.8, -2.1, () => {
-      if (!this.stopped) {
-        this.send({ command: "stop" });
-      }
+    this.createButton(menu, "PARK ARMS", 7.6, 2.1, () => this.send({ command: "home" }));
+    const hold = this.createButton(menu, "HOLD ARMS", -7.6, -2.1, () => {
+      this.stopped = !this.stopped;
+      this.setText(this.holdLabel, this.stopped ? "RESUME" : "HOLD ARMS");
+      this.send({ command: "hold", enabled: this.stopped });
     });
-    stop.label.textFill.color = new vec4(1, 0.3, 0.25, 1);
-    const exit = this.createButton(menu, "WEB UI", 3.8, -2.1, () => {
+    hold.label.textFill.color = new vec4(1, 0.72, 0.2, 1);
+    this.holdLabel = hold.label;
+    this.createButton(menu, "RE-CENTER", 0, -2.1, () => {
+      // Move objects on the following update, after UIKit finishes dispatching
+      // this trigger. Mutating a hovered hierarchy inside the callback is unsafe.
+      this.recenterRequested = true;
+    });
+    this.createButton(menu, "EXIT UI", 7.6, -2.1, () => {
       this.send({ command: "presentation", enabled: false });
     });
-    this.exitButton = exit.object;
-    this.exitButton.enabled = false;
     return menu;
   }
 
@@ -139,12 +158,13 @@ export class SpectaclesUI {
     object.getTransform().setLocalPosition(new vec3(x, y, 0));
     const button = object.createComponent(CapsuleButton.getTypeName()) as CapsuleButton;
     button.size = new vec3(7, 3.6, 1);
+    button.renderOrder = HUD_RENDER_ORDER;
     button.playAudio = false;
     button.onTriggerUp.add(action);
     const labelObject = global.scene.createSceneObject(labelText + " Label");
     labelObject.setParent(object);
-    // Put labels in front of the UIKit mesh. Coplanar text flickers on device.
-    labelObject.getTransform().setLocalPosition(new vec3(0, 0, 0.55));
+    // Render order, not geometric separation, keeps stereo text stable.
+    labelObject.getTransform().setLocalPosition(new vec3(0, 0, 0.01));
     const label = this.createText(labelObject, 6.6, 3, 18);
     label.text = labelText;
     return { object: object, button: button, label: label };
@@ -155,6 +175,25 @@ export class SpectaclesUI {
       return;
     }
     this.presentationVisible = visible;
+    if (visible) {
+      this.hideAt = 0;
+      this.applyPresentation(true);
+      return;
+    }
+    for (const side of ["left", "right"] as const) {
+      this.cards[side].marker.getSceneObject().enabled = false;
+    }
+    this.hideAt = getTime() + HIDE_DELAY_S;
+  }
+
+  private applyDelayedHide() {
+    if (this.hideAt > 0 && getTime() >= this.hideAt) {
+      this.hideAt = 0;
+      this.applyPresentation(false);
+    }
+  }
+
+  private applyPresentation(visible: boolean) {
     for (const side of ["left", "right"] as const) {
       this.cards[side].object.enabled = visible;
       if (!visible) {
@@ -162,9 +201,17 @@ export class SpectaclesUI {
       }
     }
     this.menu.enabled = visible;
-    this.exitButton.enabled = visible;
     if (this.video !== null) {
       this.video.enabled = visible;
+    }
+  }
+
+  private layout() {
+    this.place(this.cards.left.object, new vec2(0.27, 0.18), 62);
+    this.place(this.cards.right.object, new vec2(0.73, 0.18), 62);
+    this.place(this.menu, new vec2(0.5, 0.82), 62);
+    if (this.video !== null) {
+      this.place(this.video, new vec2(0.5, 0.55), 78);
     }
   }
 
@@ -179,8 +226,9 @@ export class SpectaclesUI {
     text.verticalOverflow = VerticalOverflow.Shrink;
     text.worldSpaceRect = Rect.create(-width / 2, width / 2, -height / 2, height / 2);
     text.textFill.color = new vec4(1, 1, 1, 1);
+    text.renderOrder = HUD_RENDER_ORDER + 1;
     text.depthTest = false;
-    text.twoSided = false;
+    text.twoSided = true;
     return text;
   }
 

@@ -1413,6 +1413,11 @@ def follow(followers: dict[str, Follower], hands: Hands, arms: dict | None = Non
                 stopped, home_queue = True, []
                 for follower in followers.values():
                     follower.hold()
+            elif action == "hold":
+                stopped, home_queue = bool(command.get("enabled")), []
+                if stopped:
+                    for follower in followers.values():
+                        follower.hold()
             elif not stopped and action == "precision":
                 precise = bool(command.get("enabled"))
                 for follower in followers.values():

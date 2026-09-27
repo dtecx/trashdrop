@@ -38,7 +38,7 @@ to send the Lens to the glasses (see "Lens Studio facts").
 | `trashdrop/web/manual.py` | The unified page's owner of both Spectacles sockets, overhead stream and exclusive manual session. It reuses the cell's already-open camera and arm objects, so no bus is opened twice |
 | `spectacles/spectacles/` | Lens Studio **5.15.4** project (committed). Scripts in `Assets/Scripts/` |
 | `.../Assets/Scripts/HandStream.ts` | Sends both hands ~30/s and handles requested optical snapshots / spectator frames by encoding the colour camera and Lens render target. `previewToo` is off, so the LS preview does not connect |
-| `.../Assets/Scripts/SpectaclesUI.ts` | World-locked per-arm cards, hand labels and UIKit menu: grips, precision, home, stop and return to Web UI |
+| `.../Assets/Scripts/SpectaclesUI.ts` | World-locked per-arm cards, hand labels and UIKit menu: grips, fine mode, park, hold/resume, re-center and return to Web UI |
 | `.../Assets/Scripts/WebcamView.ts` | Video WebSocket 8766 -> `Base64.decodeTextureAsync` -> a movable/resizable UIKit Frame. The cropped image is letterboxed to preserve its complete width |
 | `tests/test_spectacles.py` | Socket, snapshots, spectator stream, video pacing, wearer frame, calibration, joystick, pinch, fist/jaw and two-arm-clearance tests |
 | `trashdrop/kinematics.py` `links()` | The arm's centre line (foot, lift, elbow, wrist, TCP) for keeping the arms apart |
@@ -189,6 +189,12 @@ findings above were made; no replay tool is in the repo yet (worth adding).
 - Log: `~/Library/Preferences/Snap/Lens Studio/logs/LensStudioLog-*.txt`.
   The glasses' `print` output lands there too (`handleLogMessage`), as do
   login, device connection and push events.
+- Lens Studio 5.15.4 can die with a native `SIGSEGV` and no preceding script
+  exception if a UIKit hierarchy is disabled from the trigger callback of a
+  button that is still hovered. Presentation exit is therefore applied one
+  second after trigger-up, and re-centering is deferred to the next hand
+  update. Repeated status text is de-duplicated and video statistics are
+  printed every 10 seconds to keep Push to Device logging light.
 - The LS preview has no hand tracking. Sockets it opens with `previewToo` on
   survive a preview reset: restart the bridge after such a test.
 - `CameraModule.createCameraRequest()` cannot run from a script's `onAwake`:
@@ -249,14 +255,16 @@ findings above were made; no replay tool is in the repo yet (worth adding).
    after the next Preview Lens push.
 2. **Proper UIKit interface: built in `bc097ef`.** The video is in a movable,
    resizable Frame; arm cards, hand labels and the grips / precision / home /
-   stop menu are world-locked. The next real optical snapshots decide final
-   type and angular sizes.
+   stop menu are world-locked. The controls were subsequently made explicit:
+   open/close grips, fine/normal mode, park arms, hold/resume, re-center the
+   complete layout and exit to the web UI. The next real optical snapshots
+   decide final type and angular sizes.
 3. **Unified jury page: implemented locally after `bc097ef`, real-device QA
    pending.** `trashdrop web` owns the existing Cell and the Spectacles
    bridge together. It has auto sort/pick, manual start/stop/mode, arm state,
    snapshots and the complete calibration checklist. **Enter Spectacles UI**
    hides every ordinary web control and shows only the stable overhead camera;
-   **WEB UI** in the glasses stops manual mode and restores the page. The raw
+   **EXIT UI** in the glasses stops manual mode and restores the page. The raw
    optical spectator stream works, but is deliberately parked while the Lens
    UI is tuned. The overhead Frame now contains the whole cropped width instead
    of cropping its left edge. Next: push Preview Lens, test this round trip and

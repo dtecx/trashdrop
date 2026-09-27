@@ -2,6 +2,7 @@
 
 const CONNECT_TIMEOUT_S = 5;
 const RETRY_S = 2;
+const REPORT_INTERVAL_S = 10;
 
 type VideoPacket = {
   seq: number;
@@ -125,7 +126,7 @@ export class WebcamView extends BaseScriptComponent {
       const now = getTime();
       if (this.reportAt === 0) {
         this.reportAt = now;
-      } else if (now - this.reportAt >= 1) {
+      } else if (now - this.reportAt >= REPORT_INTERVAL_S) {
         let age = "latency pending";
         if (this.agedFrames > 0) {
           const estimate = this.totalAgeMs / this.agedFrames;

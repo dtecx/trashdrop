@@ -223,7 +223,7 @@ class ManualBridge:
     def command(self, message: dict) -> str | None:
         if not self.active:
             return "manual mode is not running"
-        if message.get("command") not in ("jaw", "precision", "home", "stop"):
+        if message.get("command") not in ("jaw", "precision", "home", "hold", "stop"):
             return "unknown Spectacles command"
         self.hands.receive(message)
         return None

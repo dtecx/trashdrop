@@ -71,6 +71,7 @@ export class HandStream extends BaseScriptComponent {
   private snap: { id: number; kind: "snap" | "spectator"; view?: string; camera?: string } | null = null;
   private lastSnap: { id: number; view: string; camera: string } | null = null;
   private ui: SpectaclesUI;
+  private lastSaid = "";
 
   onAwake() {
     this.ui = new SpectaclesUI(this.camera, (command: any) => this.sendCommand(command));
@@ -399,6 +400,10 @@ export class HandStream extends BaseScriptComponent {
   }
 
   private say(text: string) {
+    if (text === this.lastSaid) {
+      return;
+    }
+    this.lastSaid = text;
     print("HandStream: " + text);
     if (this.status) {
       this.status.text = text;

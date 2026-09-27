@@ -1164,6 +1164,24 @@ class PinchTests(unittest.TestCase):
             follow({"left": follower}, home_hands, None, log=lambda _: None, clock=homing, sleep=homing.sleep)
         self.assertAlmostEqual(follower.q["shoulder_pan"], follower.home_q["shoulder_pan"])
 
+        held = FakeClock(stop_after=2)
+        hold_hands = Hands(clock=held)
+        hold_hands.put({"head": HEAD, "left": hand_at([-15, -20, -35], gap=12.0)})
+        hold_hands.receive({"command": "hold", "enabled": True})
+        before = dict(follower.q)
+        with self.assertRaises(KeyboardInterrupt):
+            follow({"left": follower}, hold_hands, None, log=lambda _: None, clock=held, sleep=held.sleep)
+        self.assertEqual(follower.q, before)
+        self.assertTrue(json.loads(hold_hands.report)["stopped"])
+
+        resumed = FakeClock(stop_after=2)
+        resume_hands = Hands(clock=resumed)
+        resume_hands.put({"head": HEAD, "left": hand_at([-15, -20, -35], gap=12.0)})
+        resume_hands.receive({"command": "hold", "enabled": False})
+        with self.assertRaises(KeyboardInterrupt):
+            follow({"left": follower}, resume_hands, None, log=lambda _: None, clock=resumed, sleep=resumed.sleep)
+        self.assertFalse(json.loads(resume_hands.report)["stopped"])
+
         stopped = FakeClock(stop_after=2)
         stop_hands = Hands(clock=stopped)
         stop_hands.put({"head": HEAD, "left": hand_at([-15, -20, -35], gap=12.0)})
