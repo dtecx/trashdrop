@@ -66,6 +66,7 @@ export class HandStream extends BaseScriptComponent {
   private lastSent = 0;
   private retryAt = 0;
   private cameraTexture: Texture | null = null;
+  private cameraEncoding = false;
   private snap: { id: number; kind: "snap" | "spectator"; view?: string; camera?: string } | null = null;
   private lastSnap: { id: number; view: string; camera: string } | null = null;
   private ui: SpectaclesUI;
@@ -260,29 +261,37 @@ export class HandStream extends BaseScriptComponent {
       return;
     }
     this.snap = { id: id, kind: kind };
+    this.cameraEncoding = false;
+    const quality = kind === "spectator" ? CompressionQuality.LowQuality : CompressionQuality.HighQuality;
     Base64.encodeTextureAsync(this.view, (jpeg: string) => {
       if (this.snap !== null && this.snap.id === id) {
         this.snap.view = jpeg;
-        this.finishSnapshot();
       }
     }, () => this.failSnapshot(id, "cannot encode the rendered view"),
-    CompressionQuality.HighQuality, EncodingType.Jpg);
-    // The colour camera is encoded by encodeCameraFrame on its next frame,
-    // so the physical scene and rendered overlay are from the same moment.
+    quality, EncodingType.Jpg);
+    // The colour camera is deliberately encoded only after the render target
+    // finishes. Starting both jobs together -- and another camera job on every
+    // 30 fps frame until the first callback -- can make SnapOS kill the Lens.
   }
 
   private encodeCameraFrame() {
-    if (this.snap === null || this.snap.camera !== undefined || this.cameraTexture === null) {
+    if (this.snap === null || this.snap.view === undefined || this.snap.camera !== undefined ||
+        this.cameraEncoding || this.cameraTexture === null) {
       return;
     }
     const id = this.snap.id;
+    const quality = this.snap.kind === "spectator" ? CompressionQuality.LowQuality : CompressionQuality.HighQuality;
+    this.cameraEncoding = true;
     Base64.encodeTextureAsync(this.cameraTexture, (jpeg: string) => {
+      this.cameraEncoding = false;
       if (this.snap !== null && this.snap.id === id) {
         this.snap.camera = jpeg;
         this.finishSnapshot();
       }
-    }, () => this.failSnapshot(id, "cannot encode the colour camera"),
-    CompressionQuality.HighQuality, EncodingType.Jpg);
+    }, () => {
+      this.cameraEncoding = false;
+      this.failSnapshot(id, "cannot encode the colour camera");
+    }, quality, EncodingType.Jpg);
   }
 
   private finishSnapshot() {
@@ -291,6 +300,7 @@ export class HandStream extends BaseScriptComponent {
     }
     const ready = { id: this.snap.id, kind: this.snap.kind, view: this.snap.view, camera: this.snap.camera };
     this.snap = null;
+    this.cameraEncoding = false;
     if (ready.kind === "snap") {
       this.lastSnap = ready;
     }
@@ -317,6 +327,7 @@ export class HandStream extends BaseScriptComponent {
     if (this.snap !== null && this.snap.id === id) {
       this.snap = null;
     }
+    this.cameraEncoding = false;
     this.say("snapshot " + id + ": " + reason);
   }
 

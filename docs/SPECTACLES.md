@@ -195,6 +195,12 @@ findings above were made; no replay tool is in the repo yet (worth adding).
   the real Spectacles throw `Unable to access camera` and the rest of that
   callback (including the hand socket) never starts. Create it from an
   `OnStartEvent`, and keep camera failure non-fatal so controls still connect.
+- Do not encode the Render Target and colour camera concurrently. A spectator
+  request used to start both, then `onNewFrame` started more camera encoders at
+  30 fps until the first callback; the real Lens exited to Lens Explorer as
+  soon as jury mode requested its first frame. The capture path is serial and
+  uses low-quality JPEGs for the 2 fps stream; explicit snapshots stay high
+  quality.
 - `adb` works (`adb reverse` for the sockets) but the glasses' shell is
   closed: `adb exec-out screencap` answers `error: closed`.
 - The Spectacles UI Kit (`Packages/SpectaclesUIKit.lspkg`: Frame, Capsule/
