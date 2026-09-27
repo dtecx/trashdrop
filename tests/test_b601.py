@@ -31,6 +31,16 @@ class B601PreviewTests(unittest.TestCase):
         self.assertEqual(guide["offset"], [0.0, 0.0, 0.0])
         self.assertEqual(guide["mode"], "holding")
 
+    def test_knuckle_frame_previews_wrist_orientation(self) -> None:
+        preview = B601Preview()
+        hand = {"tracked": True, "thumb": [0, 0, 0], "index": [1, 0, 0], "pinch": True,
+                "wrist": [0, -1, 0], "indexKnuckle": [1, 0, 0],
+                "middleKnuckle": [0, 0, 0], "pinkyKnuckle": [-1, 0, 0]}
+        preview.update({"right": hand}, 0)
+        hand.update(wrist=[1, 0, 0], indexKnuckle=[0, 1, 0],
+                    middleKnuckle=[0, 0, 0], pinkyKnuckle=[0, -1, 0])
+        self.assertEqual(preview.update({"right": hand}, 0)["rotation"], [0.0, 0.0, 90.0])
+
 
 class B601GateTests(unittest.TestCase):
     def test_real_b601_is_refused_before_touching_any_bus(self) -> None:

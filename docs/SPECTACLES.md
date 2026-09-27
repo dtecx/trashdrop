@@ -316,7 +316,8 @@ table. The two SO-101 arms must be put in their saved neutral poses before
 the B601 is commissioned. `trashdrop web --dry-run` now offers **center B601
 · preview** and the palm menu offers **B601 PREVIEW**. This reserves the
 manual session exclusively, uses the right hand's thumb/index pinch as a
-clutch, shows Lens-world displacement, and sends **no** motor commands to
+clutch, shows Lens-world displacement and wrist roll/pitch/yaw relative to
+the clutch start, and sends **no** motor commands to
 the B601 or the SO-101 arms. The B601 entry is refused when dry run is off;
 do not present the preview as working robot teleoperation. The menu still
 suppresses hand tracking while a button or video Frame is manipulated.

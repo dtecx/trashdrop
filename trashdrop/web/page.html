@@ -383,7 +383,8 @@ function renderManual(s) {
   $('manual-arms').innerHTML = p.target === 'b601' && p.active ? (() => {
     const guide = arms.b601 || {};
     const offset = Array.isArray(guide.offset) ? guide.offset.join(', ') : '—';
-    return `<div class="arm-card" style="grid-column:1/-1"><b>B601 hand preview</b>${esc(guide.state || 'waiting')}<br>Lens-world hand displacement: ${esc(offset)} cm · no motor output</div>`;
+    const rotation = Array.isArray(guide.rotation) ? guide.rotation.join(', ') : '—';
+    return `<div class="arm-card" style="grid-column:1/-1"><b>B601 hand preview</b>${esc(guide.state || 'waiting')}<br>Translation: ${esc(offset)} cm · wrist R/P/Y: ${esc(rotation)}°<br>No motor output</div>`;
   })() : ['left', 'right'].map((name) => {
     const arm = arms[name];
     if (!arm) return `<div class="arm-card"><b>${name} arm</b>offline</div>`;
