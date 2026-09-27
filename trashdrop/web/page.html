@@ -134,7 +134,7 @@
     <div class="card">
       <h2>Spectacles</h2>
       <div class="manual-status" id="manual-status">bridge starting…</div>
-      <div class="row"><label for="manual-target">Robot</label><select id="manual-target"><option value="so101">two SO-101 arms</option><option value="b601">center B601 · preview</option></select></div>
+      <div class="row"><label for="manual-target">Robot</label><select id="manual-target"><option value="so101">two SO-101 arms</option><option value="b601">center B601-RS · preview</option></select></div>
       <div class="row"><label for="manual-mode">Hand control</label><select id="manual-mode"><option value="pinch">pinch and drag</option><option value="joystick">joystick</option></select></div>
       <div class="row"><label for="manual-scale">Precision</label><select id="manual-scale"><option value="1">normal · 1×</option><option value="0.5">precise · ½×</option></select></div>
       <div class="row"><label for="manual-facing">Wearer stands</label><select id="manual-facing"><option value="same">behind the arms</option><option value="them">facing the arms</option></select></div>
@@ -145,7 +145,7 @@
         <button id="snapshot" style="grid-column:1/-1">Take optical snapshot</button>
       </div>
       <div class="arm-cards" id="manual-arms"></div>
-      <div class="manual-status" id="b601-note" hidden>B601 preview tracks the right hand only and moves no robot. The SO-101 arms are not moved to neutral automatically. If the B601 is already mounted, verify clearance before pressing Neutral: Dry run does not disable that action. Real B601 control also needs verified zero and USB-CAN.</div>
+      <div class="manual-status" id="b601-note" hidden>B601-RS preview tracks the right hand only and moves no robot. The SO-101 arms are not moved to neutral automatically. Verify clearance before pressing Neutral: Dry run does not disable that action. The 48 V supply and XCAN-USB adapter have been identified, but CAN access, motor zero, base transform and clearance are not commissioned.</div>
       <div class="snapshots" id="snapshots"></div>
     </div>
     <div class="card">
@@ -366,7 +366,7 @@ function renderManual(s) {
   const p = s.spectacles || {};
   const b601Selected = $('manual-target').value === 'b601';
   $('b601-note').hidden = !b601Selected;
-  $('manual-start').textContent = b601Selected ? 'Start B601 preview' : 'Start manual';
+  $('manual-start').textContent = b601Selected ? 'Start B601-RS preview' : 'Start manual';
   $('manual-mode').disabled = b601Selected;
   document.body.classList.toggle('presentation', !!p.presentation);
   const link = p.connected ? '<b>glasses connected</b>' : 'waiting for the glasses';
@@ -384,7 +384,7 @@ function renderManual(s) {
     const guide = arms.b601 || {};
     const offset = Array.isArray(guide.offset) ? guide.offset.join(', ') : '—';
     const rotation = Array.isArray(guide.rotation) ? guide.rotation.join(', ') : '—';
-    return `<div class="arm-card" style="grid-column:1/-1"><b>B601 hand preview</b>${esc(guide.state || 'waiting')}<br>Translation: ${esc(offset)} cm · wrist R/P/Y: ${esc(rotation)}°<br>No motor output</div>`;
+    return `<div class="arm-card" style="grid-column:1/-1"><b>B601-RS hand preview</b>${esc(guide.state || 'waiting')}<br>Translation: ${esc(offset)} cm · wrist R/P/Y: ${esc(rotation)}°<br>No motor output</div>`;
   })() : ['left', 'right'].map((name) => {
     const arm = arms[name];
     if (!arm) return `<div class="arm-card"><b>${name} arm</b>offline</div>`;

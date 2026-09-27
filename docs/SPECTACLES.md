@@ -309,12 +309,27 @@ findings above were made; no replay tool is in the repo yet (worth adding).
 
 ## Next steps (in order)
 
-### Central reBot B601-DM (2026-09-27)
+### Central reBot B601-RS (2026-09-27)
 
-The team expects a third, 6-DoF-plus-gripper B601-DM at the centre of the
-table. The two SO-101 arms must be put in their saved neutral poses before
-the B601 is commissioned. `trashdrop web --dry-run` now offers **center B601
-· preview** and the palm menu offers **B601 PREVIEW**. This reserves the
+The third, 6-DoF-plus-gripper arm is now mounted at the centre of the table.
+The user identified it as **B601-RS**, confirmed that its power supply says
+**48 V output**, and photographed its USB-TO-CAN UTC-101 adapter. macOS
+enumerates the adapter as `XCAN-USB` (`0c72:000c`); it does not create a
+`/dev/cu.*` serial port. The adapter's `120R / 0R / BOOT` switch is for CAN
+termination and firmware boot, not a serial mode. Do not switch to BOOT or
+flash firmware as part of routine setup.
+
+**Wiring hold (2026-09-27):** the user reported that the two conductors on
+the UTC-101 are connected to `CANL` (red) and `GND`, leaving `CANH` empty.
+This is not a complete CAN differential pair. Power off the 48 V supply and
+unplug USB before touching any wiring; do not infer the signal identities
+from wire colors. Trace both conductors back to the labeled power/signal
+splitter and verify against Seeed's RS wiring diagram before trying even a
+read-only bus scan. The Lens/web B601 mode remains preview-only.
+
+The two SO-101 arms must be put in their saved neutral poses before the B601
+is commissioned. `trashdrop web --dry-run` offers **center B601-RS · preview**
+and the palm menu offers **B601-RS**. This reserves the
 manual session exclusively, uses the right hand's thumb/index pinch as a
 clutch, shows Lens-world displacement and wrist roll/pitch/yaw relative to
 the clutch start, and sends **no** motor commands to
@@ -325,35 +340,30 @@ The preview does not put the SO-101 arms in neutral. `Cell.neutral()` does
 move real SO-101 arms even when the page's Dry run option is on, so inspect
 clearance before pressing Neutral if the centre arm is already mounted.
 
-Before enabling real B601 motion, obtain the actual adapter identity,
-confirm the exact DM model and 24 V power arrangement, perform Seeed's
-motor-ID/zero checks, measure the central base transform and the clearance
-to *both* SO-101 neutral poses, and test tiny single-joint moves with a
-physical stop ready. Seeed's official SDK uses Pinocchio and MotorBridge
-and requires Python >=3.10,<3.12; its full control tutorial recommends a
-physical Ubuntu system, while MotorBridge's setup page says its gateway can
-run on macOS. This repository uses Python 3.13, so a separate 3.11 process
-or a verified compatible driver will be needed rather than importing the
-SDK into `trashdrop web` as it stands. The two SO-101 buses must remain
-owned by the web process.
+Before enabling real B601-RS motion, verify the seven motor identities and
+their zero calibration, establish a working read-only CAN transport on this
+Mac, measure the central base transform and clearance to *both* SO-101
+neutral poses, and only then test tiny single-joint moves with a physical
+stop ready and the user's explicit permission. The RS model uses RobStride
+RS06/RS00 motors, CAN at 1 Mbit/s and 48 V. The official SDK's RS config is
+`config/rebotarm_rs.yaml` (`vendor: robstride`, `channel: can0`); using the
+earlier DM serial transport and 24 V instructions would be wrong. Linux
+SocketCAN does not supply `can0` on macOS. A Mac CAN user-space transport may
+be possible, but has **not** been verified with this UTC-101 adapter. The
+MacCAN PCBUSB library documents support for genuine PEAK devices only, so
+its compatibility with this `XCAN-USB` cannot be assumed. This repository
+uses Python 3.13 while the cloned SDK has a separate Python 3.11 environment;
+that import test did **not** prove USB-CAN access or actuation. The two SO-101
+buses must remain owned by the web process.
 
-Mac feasibility check (read-only, 2026-09-27): the official SDK cloned into a
-separate Python 3.11 uv environment and MotorBridge imported on this Mac.
-The SDK's lockfile selected `cmeel-tinyxml2` 10, although its Pinocchio/URDF
-wheel links `libtinyxml2.11.dylib`; upgrading that package to 11 in the
-temporary environment made the 8-DoF URDF load. This proves imports, **not**
-USB-CAN or actuation. More importantly, SDK `RebotArm._make_controller()`
-selects the DM serial transport only for a `/dev/tty...` prefix (Mac ports
-are usually `/dev/cu...`), and the example `RebotArmEndPose.start()` leaves
-its first joint target at zero. Neither path is safe to use unchanged on
-the live arm. The eventual adapter must explicitly use
-`Controller.from_dm_serial(channel, 921600)`, read and validate all seven
-joint positions, seed every target to those measured positions **before**
-enabling, and never run `safe_home()` automatically on stop. The rig-specific
-base transform, workspace and collision clearance remain to be measured.
+The SDK's `RebotArmEndPose.start()` begins with a zero target. Do not use it
+unchanged on the live arm: read and validate all seven present positions,
+seed every target to those positions *before* enabling, and do not run an
+automatic home move on stop. The rig-specific workspace and collision
+clearance remain to be measured.
 
-- https://wiki.seeedstudio.com/rebot_b601_dm_getting_started/
-- https://wiki.seeedstudio.com/rebot_arm_b601_dm_pinocchio_meshcat/
+- https://wiki.seeedstudio.com/rebot_b601_rs_getting_started/
+- https://wiki.seeedstudio.com/rebot_arm_b601_rs_pinocchio_meshcat/
 - https://github.com/Seeed-Projects/reBotArm_control_py
 
 1. **Snapshots from the glasses: built in `afa41ce`.** A trigger at

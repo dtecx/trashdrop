@@ -1,4 +1,4 @@
-"""Safe Spectacles input preview for a centrally mounted reBot B601-DM.
+"""Safe Spectacles input preview for a centrally mounted reBot B601-RS.
 
 The coordinates here are displacements in the Lens world, not robot poses.
 No B601 motor driver is wired until its zero, base transform, limits and

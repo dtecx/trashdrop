@@ -160,7 +160,7 @@ export class SpectaclesUI {
     const error = typeof report.controlError === "string" ? report.controlError : "";
     const mode = error === "photograph the empty zone first" ? "CLEAR ZONE · TAP EMPTY" : error ||
       (report.busy === "empty" ? "CAPTURING EMPTY ZONE" :
-       this.b601Active ? "B601 · HAND PREVIEW ONLY" :
+       this.b601Active ? "B601-RS · HAND PREVIEW ONLY" :
        this.manualActive ? "SO-101 · HAND CONTROL" : this.autoActive ? "AUTO · SORTING" :
        report.busy === "neutral" ? "MOVING TO NEUTRAL" :
        this.emptyNeeded ? "CLEAR ZONE · TAP EMPTY" : "EMPTY READY · TAP AUTO");
@@ -259,7 +259,7 @@ export class SpectaclesUI {
       this.send({ command: "presentation", enabled: false });
     });
     exit.textFill.color = new vec4(0.72, 0.75, 0.82, 1);
-    this.b601Label = this.createButton(menu, "B601 PREVIEW", 0, -5.6, 16, 3.2, 16, () => {
+    this.b601Label = this.createButton(menu, "B601-RS", 0, -5.6, 16, 3.2, 16, () => {
       this.send({ command: "b601", enabled: !this.b601Active });
       this.queueMenuClose();
     });
