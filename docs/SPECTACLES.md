@@ -44,7 +44,10 @@ to send the Lens to the glasses (see "Lens Studio facts").
 | `trashdrop/kinematics.py` `links()` | The arm's centre line (foot, lift, elbow, wrist, TCP) for keeping the arms apart |
 | `trashdrop/placement.py` `to_sheet()` | Arm frame -> sheet frame (inverse of `to_arm`) |
 | `out/spectacles/session-*.jsonl` | Every session's messages from the glasses, one JSON line each with the bridge's time `at` (gitignored) |
-| `spectables/spectables-integration/` | The **obsolete** Lens Studio 5.24 project, committed by Codex in `2371440`. Safe to delete (not done) |
+
+The obsolete Lens Studio 5.24 project `spectables/spectables-integration/`, committed by
+Codex in `2371440`, was removed from the repository on 2026-09-27 at the user's request. Git
+history still has it.
 
 ## Control, as it stands
 
@@ -675,6 +678,6 @@ to send the updated UI to Spectacles.
    limits (the servo calibration, moving the pan through its whole physical
    range). Also odd: `rig touch` printed the same residuals for the right
    arm as for the left.
-5. Cleanups: delete `spectables/`; fix the Lens project's `.gitattributes`;
+5. Cleanups (`spectables/` is already deleted): fix the Lens project's `.gitattributes`;
    add a session replay tool; reconcile the layout description in
    `AGENTS.md` with `rig.toml`.
