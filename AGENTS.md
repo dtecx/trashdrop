@@ -13,6 +13,13 @@ with a shared `mixed` fallback for uncertain or unsupported items.
 The repository contains the *virtual* model of that cell plus the tooling to
 build a real dataset. Hardware is not connected yet.
 
+**Since 2026-09-27 the main goal is teleoperating the arms through Snap
+Spectacles** (`trashdrop/spectacles.py`, the Lens Studio project in
+`spectacles/spectacles/`); the sorting code stays and must keep working.
+Its state, the facts learned the hard way, and what is next are in
+[`docs/SPECTACLES.md`](docs/SPECTACLES.md) -- read it before touching any of
+that.
+
 ### Facts that shape every decision
 
 | | |
