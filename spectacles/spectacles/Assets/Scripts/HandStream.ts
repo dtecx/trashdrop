@@ -14,6 +14,7 @@
  * and use: spectacles/README.md in the TrashDrop repository.
  */
 import { SIK } from "SpectaclesInteractionKit.lspkg/SIK";
+import { SpectaclesUI } from "./SpectaclesUI";
 
 type Side = "left" | "right";
 
@@ -51,6 +52,11 @@ export class HandStream extends BaseScriptComponent {
   view: Texture;
 
   @input
+  @allowUndefined
+  @hint("The world-locked UIKit Frame containing the overhead video")
+  videoFrame: SceneObject;
+
+  @input
   @hint("Connect from Lens Studio's preview too, to try the link without the glasses. Leave it off otherwise: the preview runs on the Mac, reaches it at the same address, and its hands would mix with the glasses'")
   previewToo: boolean = false;
 
@@ -62,8 +68,13 @@ export class HandStream extends BaseScriptComponent {
   private cameraTexture: Texture | null = null;
   private snap: { id: number; view?: string; camera?: string } | null = null;
   private lastSnap: { id: number; view: string; camera: string } | null = null;
+  private ui: SpectaclesUI;
 
   onAwake() {
+    this.ui = new SpectaclesUI(this.camera, (command: any) => this.sendCommand(command));
+    if (this.videoFrame) {
+      this.ui.placeVideo(this.videoFrame);
+    }
     if (global.deviceInfoSystem.isEditor() && !this.previewToo) {
       // Mixed in, the preview's hands -- none, as a rule -- would re-anchor
       // each arm every other message, and the arms would barely move.
@@ -167,6 +178,7 @@ export class HandStream extends BaseScriptComponent {
       left: hand("left"),
       right: hand("right"),
     };
+    this.ui.updateHands(message);
     try {
       this.socket.send(JSON.stringify(message));
     } catch (error) {
@@ -190,6 +202,9 @@ export class HandStream extends BaseScriptComponent {
     }
     if (report !== null && typeof report === "object" && typeof report.snap === "number") {
       this.capture(report.snap);
+    }
+    if (report !== null && typeof report === "object") {
+      this.ui.updateReport(report);
     }
     if (report === null || typeof report !== "object" || typeof report.status !== "string") {
       this.say(data);
@@ -281,6 +296,18 @@ export class HandStream extends BaseScriptComponent {
       this.snap = null;
     }
     this.say("snapshot " + id + ": " + reason);
+  }
+
+  private sendCommand(command: any) {
+    if (this.socket === null || !this.open) {
+      this.say("control unavailable: the Mac bridge is not connected");
+      return;
+    }
+    try {
+      this.socket.send(JSON.stringify(command));
+    } catch (error) {
+      this.drop("cannot send control: " + error);
+    }
   }
 
   private say(text: string) {

@@ -5,6 +5,7 @@
     - !<own> 0005641c-028d-459a-0000-000000014b4d
     - !<own> 5aa0f98b-e799-448c-a2dc-cae5d04fa2a4
     - !<own> 396b52e4-ba3b-48fe-a56d-6d0927ddc607
+    - !<own> 80989ca3-a826-41e1-9965-a9a91a5f4251
   layers: !<Layers/267ee9a7-aff2-4f9d-9a49-f71214747d03>
     userLayers:
       []
@@ -26,7 +27,6 @@
     HasSegmentScaleCompensation: false
   Children:
     - !<own> eaa1696f-13ed-4899-9f32-51018d4f6526
-    - !<own> 80989ca3-a826-41e1-9965-a9a91a5f4251
   Components:
     - !<own> 00000000-0000-0065-0000-000000000065
     - !<own> e5553c8a-0b7e-4ef4-92d9-3e1318fb82c1
@@ -1677,19 +1677,109 @@
 - !<SceneObject/80989ca3-a826-41e1-9965-a9a91a5f4251>
   PrefabRemaps:
     []
-  Name: Webcam Window
+  Name: Video Frame
   Enabled: true
   Layers: 1
   LocalTransform: !<TransformEntity>
-    Position: {x: 0.000000, y: -11.500000, z: -60.000000}
+    Position: {x: 0.000000, y: -3.000000, z: -62.000000}
     Rotation: {x: 0.000000, y: 0.000000, z: 0.000000}
-    Scale: {x: 45.000000, y: 34.000000, z: 1.000000}
+    Scale: {x: 1.000000, y: 1.000000, z: 1.000000}
+    HasSegmentScaleCompensation: false
+  Children:
+    - !<own> 5c55d43f-29e1-4b8a-96f9-8aa761a88a20
+  Components:
+    - !<own> 41cc65d9-9807-4c34-9274-f33e989b1d94
+- !<SceneObject/5c55d43f-29e1-4b8a-96f9-8aa761a88a20>
+  PrefabRemaps:
+    []
+  Name: Webcam Image
+  Enabled: true
+  Layers: 1
+  LocalTransform: !<TransformEntity>
+    Position: {x: 0.000000, y: 0.000000, z: 0.010000}
+    Rotation: {x: 0.000000, y: 0.000000, z: 0.000000}
+    Scale: {x: 38.000000, y: 28.000000, z: 1.000000}
     HasSegmentScaleCompensation: false
   Children:
     []
   Components:
     - !<own> b6e8f71c-7a46-47cd-960d-082e51540d3d
     - !<own> ebe83ab3-fd80-4517-881b-645fda64114f
+- !<ScriptComponent/41cc65d9-9807-4c34-9274-f33e989b1d94>
+  PrefabRemaps:
+    []
+  Name: Frame
+  Enabled: true
+  ScriptAsset: !<reference> 3b46d829-f6db-432a-914c-3551904d3994
+  ScriptInputsDefault:
+    autoShowHide: true
+    _appearance: true
+    _padding: true
+    _allowScaling: true
+    allowNonUniformScaling: true
+    autoScaleContent: true
+    relativeZ: true
+    _onlyInteractOnBorder: true
+    allowTranslation: true
+    _cutOutCenter: true
+    _minimumSize: true
+    _maximumSize: true
+    useBillboarding: true
+    xOnTranslate: true
+    xAlways: true
+    xBufferDegrees: true
+    yOnTranslate: true
+    yAlways: true
+    yBufferDegrees: true
+    useSnapping: true
+    itemSnapping: true
+    worldSnapping: true
+    _showFollowButton: true
+    useFollowBehavior: true
+    _following: true
+    _showCloseButton: true
+    _enableInteractionPlane: true
+    _interactionPlaneOffset: true
+    _interactionPlanePadding: true
+    _targetingVisual: true
+  ScriptTypesDefault:
+    {}
+  ScriptInputs:
+    "":
+      autoShowHide: false
+      _appearance: Small
+      _innerSize: !<Vec2> {x: 38.000000, y: 28.000000}
+      _padding: !<Vec2> {x: 0.000000, y: 0.000000}
+      _allowScaling: true
+      allowNonUniformScaling: false
+      autoScaleContent: true
+      relativeZ: true
+      _onlyInteractOnBorder: true
+      allowTranslation: true
+      _cutOutCenter: true
+      _minimumSize: !<Vec2> {x: 20.000000, y: 15.000000}
+      _maximumSize: !<Vec2> {x: 70.000000, y: 52.000000}
+      useBillboarding: true
+      xOnTranslate: true
+      xAlways: false
+      xBufferDegrees: !<float> 0.000000
+      yOnTranslate: true
+      yAlways: false
+      yBufferDegrees: !<float> 0.000000
+      useSnapping: true
+      itemSnapping: true
+      worldSnapping: true
+      _showFollowButton: false
+      useFollowBehavior: false
+      _following: false
+      _showCloseButton: false
+      _enableInteractionPlane: true
+      _interactionPlaneOffset: !<Vec3> {x: 0.000000, y: 0.000000, z: 0.000000}
+      _interactionPlanePadding: !<Vec2> {x: 1.000000, y: 1.000000}
+      _targetingVisual: !<float> 1.000000
+  ScriptTypes:
+    "":
+      {}
 - !<SceneObject/80e9d924-bd3c-4176-9c52-05a2603b2a4e>
   PrefabRemaps:
     []
@@ -1855,6 +1945,7 @@
   ScriptInputsDefault:
     url: true
     rate: true
+    videoFrame: true
     previewToo: true
   ScriptTypesDefault:
     {}
@@ -1866,6 +1957,7 @@
       rate: !<float> 30.000000
       status: !<reference.Text> 8d0bb99d-7657-4f66-a129-f784328e1220
       view: !<reference.Texture> 923415f5-4245-4675-ade1-6d69d6d23e71
+      videoFrame: !<reference.SceneObject> 80989ca3-a826-41e1-9965-a9a91a5f4251
       previewToo: false
   ScriptTypes:
     "":
@@ -2790,7 +2882,7 @@
   PrefabRemaps:
     []
   Name: Arm Status
-  Enabled: true
+  Enabled: false
   Layers: 1
   LocalTransform: !<TransformEntity>
     Position: {x: 0.000000, y: 10.000000, z: -60.000000}

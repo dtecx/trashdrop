@@ -38,6 +38,7 @@ from trashdrop.spectacles import (
     FIST,
     GRACE_S,
     CLEARANCE_CM,
+    GRIPPER_SPEED,
     HAND_FOR,
     HEIGHT_CM,
     LEAD_CM,
@@ -231,6 +232,19 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(snapshots.requested(), 2000)
             self.assertIsNone(snapshots.receive({"snap": 2000, "view": "bad", "camera": "bad"}))
             self.assertEqual(snapshots.requested(), 2000)
+
+    def test_menu_commands_are_queued_without_replacing_the_hands(self) -> None:
+        hands = Hands(clock=lambda: 10.0)
+        message = {"left": {"tracked": True}}
+        hands.put(message)
+        hands.receive({"command": "precision", "enabled": True})
+        hands.receive({"command": "jaw", "open": False})
+        self.assertEqual(hands.latest()[0], message)
+        self.assertEqual(hands.take_commands(), [
+            {"command": "precision", "enabled": True},
+            {"command": "jaw", "open": False},
+        ])
+        self.assertEqual(hands.take_commands(), [])
 
 
 class VideoSocketTests(unittest.TestCase):
@@ -448,6 +462,42 @@ class FollowerTests(unittest.TestCase):
         self.assertLess(fingers[2], -0.7)
         tcp = self.kinematics.tcp(self.ready) * 100
         self.assertGreater(tcp[2], self.placement.table_height(*tcp[:2]) + 5.0)
+
+    def test_the_arm_card_report_has_state_grip_height_and_turn(self) -> None:
+        follower = self.follower()
+        guide = follower.guide()
+        self.assertEqual(guide["state"], "holding")
+        self.assertEqual(guide["jaw"], round(follower.q["gripper"]))
+        self.assertEqual(guide["roll"], round(follower.q["wrist_roll"]))
+        self.assertIsInstance(guide["tip"], int)
+
+    def test_menu_jaw_moves_at_the_normal_speed_and_stop_holds_it(self) -> None:
+        follower = self.follower()
+        follower.q["gripper"] = 0.0
+        follower.command_jaw(True)
+        follower.finish_commands(0.1)
+        self.assertAlmostEqual(follower.q["gripper"], GRIPPER_SPEED * 0.1)
+        follower.hold()
+        held = follower.q["gripper"]
+        follower.finish_commands(1.0)
+        self.assertEqual(follower.q["gripper"], held)
+
+    def test_home_is_speed_capped_and_keeps_the_grip(self) -> None:
+        follower = self.follower(speed=60.0)
+        follower.q["shoulder_pan"] += 12.0
+        follower.q["wrist_roll"] -= 6.0
+        follower.q["gripper"] = 17.0
+        before = dict(follower.q)
+        follower.begin_home()
+        follower.step_home(0.02)
+        for joint in ARM_JOINTS:
+            self.assertLessEqual(abs(follower.q[joint] - before[joint]), 60.0 * 0.02 + 1e-9)
+        while follower.homing:
+            follower.step_home(0.02)
+        for joint in ARM_JOINTS:
+            self.assertAlmostEqual(follower.q[joint], follower.home_q[joint])
+        self.assertEqual(follower.q["gripper"], 17.0)
+        self.assertEqual(follower.state, "home")
 
     def test_within_the_dead_zone_nothing_moves(self) -> None:
         follower = self.follower()
@@ -1057,6 +1107,45 @@ class PinchTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             follow(followers, hands, None, log=states.append, clock=clock, sleep=clock.sleep)
         self.assertTrue(states[0].startswith("left: free, jaw closed | right: free, jaw closed (dry run)"), states[0])
+
+    def test_menu_precision_grip_home_and_stop_reach_the_control_loop(self) -> None:
+        from trashdrop.kinematics import Kinematics
+        from trashdrop.spectacles import PinchFollower, follow
+
+        clock = FakeClock(stop_after=6)
+        follower = PinchFollower("left", Kinematics(), None,
+                                 dict(NEUTRAL, shoulder_lift=30.0, wrist_flex=60.0))
+        hands = Hands(clock=clock)
+        hands.put({"head": HEAD, "left": hand_at([-15, -20, -35], gap=12.0)})
+        hands.receive({"command": "precision", "enabled": True})
+        hands.receive({"command": "jaw", "open": True})
+        with self.assertRaises(KeyboardInterrupt):
+            follow({"left": follower}, hands, None, log=lambda _: None, clock=clock, sleep=clock.sleep)
+        self.assertEqual(follower.scale, 0.5)
+        self.assertGreater(follower.q["gripper"], 0.0)
+        report = json.loads(hands.report)
+        self.assertEqual(report["mode"], "pinch")
+        self.assertEqual(report["scale"], 0.5)
+        self.assertIn("left", report["arms"])
+
+        follower.q["shoulder_pan"] += 12.0
+        homing = FakeClock(stop_after=20)
+        home_hands = Hands(clock=homing)
+        home_hands.put({"head": HEAD, "left": hand_at([-15, -20, -35], gap=12.0)})
+        home_hands.receive({"command": "home"})
+        with self.assertRaises(KeyboardInterrupt):
+            follow({"left": follower}, home_hands, None, log=lambda _: None, clock=homing, sleep=homing.sleep)
+        self.assertAlmostEqual(follower.q["shoulder_pan"], follower.home_q["shoulder_pan"])
+
+        stopped = FakeClock(stop_after=2)
+        stop_hands = Hands(clock=stopped)
+        stop_hands.put({"head": HEAD, "left": hand_at([-15, -20, -35], gap=12.0)})
+        stop_hands.receive({"command": "stop"})
+        before = dict(follower.q)
+        with self.assertRaises(KeyboardInterrupt):
+            follow({"left": follower}, stop_hands, None, log=lambda _: None, clock=stopped, sleep=stopped.sleep)
+        self.assertEqual(follower.q, before)
+        self.assertTrue(json.loads(stop_hands.report)["stopped"])
 
 
 if __name__ == "__main__":

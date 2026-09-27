@@ -207,6 +207,7 @@ class Hands:
     def __init__(self, clock=time.monotonic, record=None, snapshots=None) -> None:
         self._lock = threading.Lock()
         self._message, self._at = None, -math.inf
+        self._commands: collections.deque[dict] = collections.deque()
         self.clock = clock
         self.record = record
         self.snapshots = snapshots
@@ -219,6 +220,10 @@ class Hands:
 
         if self.snapshots is not None and isinstance(message, dict) and "snap" in message:
             self.snapshots.receive(message)
+            return
+        if isinstance(message, dict) and isinstance(message.get("command"), str):
+            with self._lock:
+                self._commands.append(message)
             return
         self.put(message)
 
@@ -239,6 +244,14 @@ class Hands:
 
         with self._lock:
             return self._message, self.clock() - self._at
+
+    def take_commands(self) -> list[dict]:
+        """Commands pressed in the Lens since the last control tick."""
+
+        with self._lock:
+            commands = list(self._commands)
+            self._commands.clear()
+        return commands
 
     def answer(self) -> str:
         """Current arm report, with a snapshot request while the trigger is pending."""
@@ -847,6 +860,9 @@ class Follower:
         self.blocked: list[str] = []  # the ways the hand pushes that its arm cannot go (heading_words)
         self.mode = "calibrating"  # calibrating, holding, moving, turning, lost, centring: for the glasses' colours
         self.state = "calibrating"
+        self.home_q = {joint: self.q[joint] for joint in ARM_JOINTS}
+        self.homing = False
+        self.menu_jaw: float | None = None
 
     def tcp_cm(self) -> np.ndarray:
         return self.kinematics.tcp({joint: self.q[joint] for joint in ARM_JOINTS}) * 100
@@ -870,8 +886,66 @@ class Follower:
             return None
         start, wearer = self.neutral
         return {"centre": [round(float(value), 1) for value in start], "axes": np.round(wearer, 3).tolist(),
-                "half": self.dead_zone, "mode": self.mode, "blocked": list(self.blocked),
-                "tip": round(self.tip_height())}
+                "half": self.dead_zone, "mode": self.mode, "state": self.state,
+                "blocked": list(self.blocked), "tip": round(self.tip_height()),
+                "jaw": round(self.q["gripper"]), "roll": round(self.q["wrist_roll"])}
+
+    def command_jaw(self, opened: bool | None = None) -> None:
+        """Open, close, or toggle the jaw from the Lens menu, at the normal jaw speed."""
+
+        if opened is None:
+            opened = self.q["gripper"] < OPEN / 2
+        self.menu_jaw = OPEN if opened else 0.0
+
+    def finish_commands(self, dt: float) -> None:
+        if self.menu_jaw is None:
+            return
+        most = GRIPPER_SPEED * dt
+        delta = self.menu_jaw - self.q["gripper"]
+        self.q["gripper"] += min(max(delta, -most), most)
+        if abs(self.menu_jaw - self.q["gripper"]) < 1e-6:
+            self.menu_jaw = None
+
+    def hold(self) -> None:
+        """Cancel every in-flight menu or hand motion at the current pose."""
+
+        let_go = getattr(self, "let_go", None)
+        if let_go is not None:
+            let_go()
+        self.homing = False
+        self.menu_jaw = None
+        if hasattr(self, "jaw"):
+            self.jaw = self.q["gripper"]
+
+    def begin_home(self) -> None:
+        """Leave the current gesture and start a speed-capped return to the ready pose."""
+
+        self.hold()
+        self.homing = True
+
+    def step_home(self, dt: float, others: list[np.ndarray] | None = None) -> dict[str, float]:
+        """One collision-aware joint step home; the jaw stays as it is so an item is not dropped."""
+
+        most = self.speed * dt
+        candidate = dict(self.q)
+        for joint in ARM_JOINTS:
+            delta = self.home_q[joint] - self.q[joint]
+            candidate[joint] += min(max(delta, -most), most)
+        stopped = None
+        if others and self.placement is not None:
+            gap = min(lines_apart(self.centre_line(candidate), other) for other in others)
+            now = min(lines_apart(self.centre_line(), other) for other in others)
+            if gap < CLEARANCE_CM and gap < now:
+                candidate, stopped = dict(self.q), "the other arm"
+        self.q = candidate
+        remaining = max(abs(self.home_q[joint] - self.q[joint]) for joint in ARM_JOINTS)
+        self.homing = remaining > 1e-6
+        self.mode = "moving" if self.homing else "holding"
+        self.state = "returning home" + (f": at {stopped}" if stopped else "") if self.homing else "home"
+        self.blocked = [] if stopped is None else ["home"]
+        if not self.homing:
+            self.target = self.tcp_cm()
+        return self.q
 
     def engage(self, neutral, wearer) -> None:
         """Calibrated: the hand rests at ``neutral``, and ``wearer`` is forward, right and up."""
@@ -1207,7 +1281,16 @@ class PinchFollower(Follower):
     def guide(self) -> dict:
         """What the glasses show for this arm's hand: how it fares, where it cannot go, the finger's height."""
 
-        return {"mode": self.mode, "blocked": list(self.blocked), "tip": round(self.tip_height())}
+        clockwise = self.sense * (self.q["wrist_roll"] - self.start_roll)
+        return {"mode": self.mode, "state": self.state, "blocked": list(self.blocked),
+                "tip": round(self.tip_height()), "jaw": round(self.q["gripper"]),
+                "roll": round(self.q["wrist_roll"]), "turn": round(clockwise)}
+
+    def command_jaw(self, opened: bool | None = None) -> None:
+        if opened is None:
+            opened = self.jaw < OPEN / 2
+        self.jaw = OPEN if opened else 0.0
+        self.menu_jaw = None
 
 
 def ready_pose(kinematics, placement, neutral: dict[str, float],
@@ -1243,9 +1326,29 @@ def follow(followers: dict[str, Follower], hands: Hands, arms: dict | None = Non
     sides = {name: HAND_FOR[facing][name] for name in followers}  # arm -> the hand that drives it
     calibration = Calibration(sorted(set(sides.values())), hold_s)
     period, last, said, reported, unseen = 1.0 / RATE_HZ, clock(), None, -math.inf, 0.0
+    stopped, home_queue = False, []
     while True:
         now = clock()
         dt, last = min(max(now - last, 0.0), 0.1), now
+        for command in hands.take_commands():
+            action = command["command"]
+            if action == "stop":
+                stopped, home_queue = True, []
+                for follower in followers.values():
+                    follower.hold()
+            elif not stopped and action == "precision":
+                precise = bool(command.get("enabled"))
+                for follower in followers.values():
+                    if hasattr(follower, "scale"):
+                        follower.scale = 0.5 if precise else SCALE
+            elif not stopped and action == "jaw":
+                opened = command.get("open")
+                for follower in followers.values():
+                    follower.command_jaw(opened if isinstance(opened, bool) else None)
+            elif not stopped and action == "home":
+                home_queue = list(followers)
+                for follower in followers.values():
+                    follower.begin_home()
         message, age = hands.latest()
         fresh = message if message is not None and age <= STALE_S else {}
         hand_of = {name: fresh.get(side) for name, side in sides.items()}
@@ -1271,13 +1374,28 @@ def follow(followers: dict[str, Follower], hands: Hands, arms: dict | None = Non
                     follower.engage(neutral[sides[name]], wearer)
                 engaged, unseen = True, 0.0
         lines = {name: follower.centre_line() for name, follower in followers.items()}
+        active_home = home_queue[0] if home_queue else None
         for name, follower in followers.items():
             others = [line for other, line in lines.items() if other != name and line is not None]
-            q = follower.update(hand_of[name], dt, others=others or None, head=fresh.get("head"))
+            if stopped:
+                follower.state, follower.mode, follower.blocked = "stopped", "holding", []
+                q = follower.q
+            elif active_home is not None:
+                if name == active_home:
+                    q = follower.step_home(dt, others=others or None)
+                else:
+                    follower.state, follower.mode, follower.blocked = "waiting while the other arm goes home", "holding", []
+                    q = follower.q
+            else:
+                q = follower.update(hand_of[name], dt, others=others or None, head=fresh.get("head"))
+            follower.finish_commands(dt)
+            q = follower.q
             lines[name] = follower.centre_line()
             if arms:
                 arm = arms[name]
                 arm.bus.write_goals({MOTORS[joint]: arm.to_ticks(joint, value) for joint, value in q.items()})
+        if active_home is not None and not followers[active_home].homing:
+            home_queue.pop(0)
         if engaged:
             status = " | ".join(f"{name}: {follower.state}" for name, follower in followers.items())
         else:
@@ -1285,9 +1403,13 @@ def follow(followers: dict[str, Follower], hands: Hands, arms: dict | None = Non
         if not arms:
             status += " (dry run)"
         hands.status = status
-        guides = {sides[name]: follower.guide() for name, follower in followers.items()}
-        hands.report = json.dumps({"status": status, "hands": {side: guide for side, guide in guides.items() if guide}},
-                                  separators=(",", ":"))
+        arm_guides = {name: follower.guide() for name, follower in followers.items()}
+        guides = {sides[name]: arm_guides[name] for name in followers}
+        scale = next((follower.scale for follower in followers.values() if hasattr(follower, "scale")), None)
+        hands.report = json.dumps({"status": status, "hands": {side: guide for side, guide in guides.items() if guide},
+                                   "arms": {name: guide for name, guide in arm_guides.items() if guide},
+                                   "mode": "pinch" if scale is not None else "joystick", "scale": scale,
+                                   "stopped": stopped}, separators=(",", ":"))
         if status != said:
             said = status
             log(status + ("" if hands.connected else "; the glasses are not connected"))
