@@ -25,6 +25,12 @@ from .spectacles import (
 )
 
 
+def bearing(point, fallback: float) -> float:
+    """The base's bearing to a point, degrees (0 ahead, positive to the left); ``fallback`` over the base."""
+
+    return math.degrees(math.atan2(point[1], point[0])) if math.hypot(point[0], point[1]) > 0.05 else fallback
+
+
 class B601GlassesBridge:
     """Keep Lens messages and all CAN commands on separate owning threads."""
 
@@ -231,11 +237,16 @@ class B601GlassesBridge:
                 else:
                     if self.anchor_generation != self.motion.anchor_generation:
                         position, rotation = self.driver.tool_pose()
-                        self.anchor_pose = (position, *heading_and_pitch(rotation))
+                        heading, pitch = heading_and_pitch(rotation)
+                        # The heading is kept against the base's bearing to the jaw: swung round, the
+                        # arm turns the jaw with it. Held fixed in the room, the wrist twisted against
+                        # the swing and the arm stuck going sideways far out (15:52).
+                        self.anchor_pose = (position, heading - bearing(position, 0.0), pitch)
                         self.anchor_generation = self.motion.anchor_generation
                     if self.anchor_pose is not None:
                         delta, turn = displacement
-                        start, heading, pitch = self.anchor_pose
+                        start, relative, pitch = self.anchor_pose
+                        heading = bearing(start + delta, bearing(start, 0.0)) + relative
                         heading += math.degrees(math.atan2(turn[1, 0], turn[0, 0]))  # thumb-middle
                         if self.motion.gesture == "tilt":  # thumb-ring: level to straight down
                             pitch = min(max(pitch - self.motion.tilt, -90.0), 0.0)

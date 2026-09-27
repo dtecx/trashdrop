@@ -83,6 +83,7 @@ export class SpectaclesUI {
   private video: SceneObject | null = null;
   // Where the video Frame was when it was parked out of view; null while it shows.
   private videoParked: { position: vec3; rotation: quat } | null = null;
+  private videoWasFollowing = true;
   private frameEventsBound = false;
   private frameInteracting = false;
   private frameInteractionAt = 0;
@@ -351,7 +352,18 @@ export class SpectaclesUI {
     frame.onScalingStart.add(start);
     frame.onTranslationEnd.add(() => this.endFrameInteraction());
     frame.onScalingEnd.add(() => this.endFrameInteraction());
+    // UIKit's own follow: the video stays in front of the wearer, easing after the head, and its
+    // round button pins it where it is. World-locked, it stayed behind, and dragging it by its thin
+    // border rarely took ("the webcam window does not move", 2026-09-27).
+    frame.setUseFollow(true);
+    frame.showFollowButton = true;
+    frame.setFollowing(this.videoParked === null);
     this.frameEventsBound = true;
+  }
+
+  private videoFrame(): Frame | null {
+    if (this.video === null) return null;
+    return (this.video.getComponent(Frame.getTypeName()) as Frame) || null;
   }
 
   private endFrameInteraction() {
@@ -473,13 +485,17 @@ export class SpectaclesUI {
   private showVideo(show: boolean) {
     if (this.video === null) return;
     const transform = this.video.getTransform();
+    const frame = this.frameEventsBound ? this.videoFrame() : null;
     if (!show && this.videoParked === null) {
+      this.videoWasFollowing = frame !== null && frame.following;
+      if (frame !== null) frame.setFollowing(false);  // following, it would come straight back
       this.videoParked = { position: transform.getWorldPosition(), rotation: transform.getWorldRotation() };
       transform.setWorldPosition(new vec3(0, -10000, 0));
     } else if (show && this.videoParked !== null) {
       transform.setWorldPosition(this.videoParked.position);
       transform.setWorldRotation(this.videoParked.rotation);
       this.videoParked = null;
+      if (frame !== null && this.videoWasFollowing) frame.setFollowing(true);
     }
   }
 

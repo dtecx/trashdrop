@@ -54,7 +54,8 @@ TAU_LIMIT = np.array([18.0, 18.0, 18.0, 7.0, 7.0, 7.0])  # N m: half the URDF ef
 # at 15:20 J2 (an RS06, rated 11 N m, peak 36) held 10-13 N m against gravity for 205 of 218 s with
 # the arm stretched 60 cm out, then gave way, and the arm fell on the table. No step is taken that
 # would leave a joint holding more than this (about 70% of the rating: RS06 J1-J3, RS00 J4-J6, 5 N m).
-LOAD_LIMIT = np.array([8.0, 8.0, 8.0, 3.5, 3.5, 3.5])
+LOAD_LIMIT = np.array([9.0, 9.0, 9.0, 3.5, 3.5, 3.5])  # J1-J3 8 until ~15:55: sideways at 56 cm out stuck
+LOAD_SLACK = 0.5  # N m past LOAD_LIMIT that a step along it may creep (0.02 a tick), never more
 HOT_C = 70.0  # a motor at least this warm (its driver or its rotor) is named in the state
 HOST_ID = 0xFD
 MECH_POS = 0x7019
@@ -71,6 +72,13 @@ def sleep_pose(path: Path) -> np.ndarray:
     if pose.shape != (7,) or not np.isfinite(pose).all():
         raise ValueError("b601_park.toml needs seven finite joint angles")
     return pose
+
+
+def heavier_than(heavier: np.ndarray, load: np.ndarray) -> np.ndarray:
+    """The joints a step would load past what they may hold: see LOAD_LIMIT and LOAD_SLACK."""
+
+    heavier, load = np.abs(heavier), np.abs(load)
+    return (heavier > LOAD_LIMIT + LOAD_SLACK) | ((heavier > LOAD_LIMIT) & (heavier > load + 0.02))
 
 
 def gripper_range(path: Path, closed: float) -> tuple[float, float]:
@@ -294,13 +302,35 @@ class B601Motor:
         upper = np.asarray(self.model.upperPositionLimit[:6])
         moved, pinned = dls_step(self.command[:6], np.concatenate((short, turn)), jacobian, lower, upper, dt)
         load, heavier = self._load(self.command[:6]), self._load(moved)
-        over = (np.abs(heavier) > LOAD_LIMIT) & (np.abs(heavier) > np.abs(load) + 0.05)
+        # Past the limit a step may add 0.02 N m at most, and never pass LOAD_SLACK over it. (With
+        # 0.05 N m a tick and no ceiling, a slow hand crept J2 from 8 to 11.7 N m in the simulation.)
+        over = heavier_than(heavier, load)
+        sliding = False
+        if over.any():
+            # Slide along the limit: keep what goes round the base, up and in; drop only what reaches
+            # further out or lower. Refusing the whole step held the arm still when the hand went
+            # sideways at 56 cm out (15:52): along a straight line the reach grows a little.
+            out = np.array([frame.translation[0], frame.translation[1], 0.0])
+            if np.linalg.norm(out) > 1e-6:
+                out /= np.linalg.norm(out)
+                along_limit = short - max(float(short @ out), 0.0) * out
+                along_limit[2] = max(along_limit[2], 0.0)
+                slid, slid_pinned = dls_step(self.command[:6], np.concatenate((along_limit, turn)), jacobian,
+                                             lower, upper, dt)
+                slid_load = self._load(slid)
+                if not heavier_than(slid_load, load).any():
+                    moved, pinned, heavier, sliding = slid, slid_pinned, slid_load, True
+                    over = np.zeros(6, dtype=bool)
         if over.any():
             joint = int(np.argmax(np.where(over, np.abs(heavier) - LOAD_LIMIT, -np.inf)))
             self.desired[:6] = self.command[:6]
             self.state = f"at the load limit: J{joint + 1} would hold {abs(heavier[joint]):.0f} N m; come back or up"
             return
         self.desired[:6] = moved
+        if sliding:
+            joint = int(np.argmax(np.abs(heavier) / LOAD_LIMIT))
+            self.state = f"at the load limit (J{joint + 1} {abs(heavier[joint]):.0f} N m): sideways, up or back only"
+            return
         hot = int(np.argmax(self.temperature))
         faulty = int(np.argmax(self.status != 0))
         if self.status[faulty] != 0:

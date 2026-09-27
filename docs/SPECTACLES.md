@@ -551,6 +551,26 @@ and made the timeout likelier. Now:
 Replayed on the day's four B601 hand recordings: "no gesture" fell from 64,
 80, 67 and 42% of the ticks to 49, 72, 51 and 26%.
 
+**~15:58: sideways far out; the video follows.**
+- "Hard to move the base left/right past some point": the load limit. At
+  56-58 cm out, J2 already held 8 N m, and a hand going sideways along a
+  straight line reaches a little further out every tick, so each step was
+  refused. Now a refused step is tried again without the part that reaches
+  out or down; round the base, up and in still go ("at the load limit (J2 9 N
+  m): sideways, up or back only"). The limit is 9 N m on J1-J3 (82% of the
+  RS06 rating; J2 fell at 10-13 for minutes). Past it, a step may add 0.02 N m
+  and never pass 0.5 over (`heavier_than`). Found while testing: with 0.05 N m
+  of slack a tick and no ceiling, a slow hand crept J2 to 11.7 N m.
+- The jaw's heading is kept against the base's bearing to the jaw
+  (`b601_glasses.bearing`), so swinging the arm turns the jaw with it. Held
+  fixed in the room, the wrist twisted against the swing. On the URDF, a goal
+  swept 40 cm sideways at 60 cm out slides along the limit arc to y -0.27 m,
+  J2 never past 8.97 N m.
+- "The webcam window does not move in space": the UIKit Frame's own follow
+  behavior (`setUseFollow`, `setFollowing`) keeps it in front of the wearer,
+  and its round follow button pins it in place. It stops following while the
+  glasses UI is off and parks it.
+
 With the SO-101 arms removed, stop any earlier bridge (the Lens hand socket
 can have only one owner), then run the camera-only unified page in the
 operator's camera-enabled terminal:
